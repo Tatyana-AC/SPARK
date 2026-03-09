@@ -1,0 +1,803 @@
+"""
+SPARK — Full Pipeline Application (v2: SPARK Panel UI)
+
+Capture text from any application, process it, and paste it back.
+
+Hotkeys (global, work from any app):
+    Cmd+Ctrl+C  —  Capture selected text
+    Cmd+Ctrl+R  —  Release (paste processed text back)
+"""
+
+import os
+import sys
+import logging
+
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QFrame,
+    QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QGridLayout, QSizePolicy,
+    QSystemTrayIcon, QMenu,
+)
+from PyQt6.QtCore import Qt, QTimer, QPoint
+from PyQt6.QtGui import QFont, QColor, QPainter, QPainterPath, QCursor, QIcon, QPixmap
+
+sys.path.insert(0, '/Users/tatyanacruz/Documents/Spring 26/SPARK')
+
+from host_pc.accessibility import AccessibilityManager
+from host_pc.accessibility.base import TextSource
+from host_pc.accessibility.tracker import WindowContextTracker
+from host_pc.browser import get_browser_tab
+from host_pc.db import SparkDB
+from host_pc.hotkeys import GlobalHotkeyManager
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s  %(name)s  %(levelname)s  %(message)s")
+logger = logging.getLogger(__name__)
+
+# ── Palette (matches your existing palette) ───────────────────
+BG           = "#111827"
+SURFACE      = "#1A2234"
+SURFACE_ALT  = "#0F172A"
+BORDER       = "#1F2D42"
+BORDER_LIT   = "#334155"
+TEXT         = "#F9FAFB"
+TEXT_DIM     = "#6B7280"
+TEXT_MID     = "#D1D5DB"
+ACCENT       = "#7aa2f7"
+GREEN        = "#10B981"
+GREEN_DIM    = "rgba(16,185,129,0.15)"
+GREEN_BORDER = "rgba(16,185,129,0.35)"
+CAPTURE_BG   = "#0A1A12"
+CAPTURE_BORDER = "#14532D"
+ORANGE       = "#e0af68"
+RED          = "#f7768e"
+PURPLE       = "#bb9af7"
+
+
+# ── Stylesheet ────────────────────────────────────────────────
+QSS = f"""
+QWidget#root {{
+    background-color: {BG};
+    border-radius: 18px;
+}}
+QWidget {{
+    font-family: 'SF Pro Text', -apple-system, 'Helvetica Neue', sans-serif;
+}}
+QLabel#section_label {{
+    color: {TEXT_DIM};
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    background: transparent;
+}}
+QLabel#app_title {{
+    color: {TEXT};
+    font-size: 22px;
+    font-weight: 800;
+    background: transparent;
+}}
+QLabel#app_subtitle {{
+    color: {TEXT_DIM};
+    font-size: 12px;
+    background: transparent;
+}}
+QFrame#divider {{
+    background-color: {SURFACE};
+    max-height: 1px;
+    min-height: 1px;
+    border: none;
+}}
+QFrame#context_card {{
+    background-color: {SURFACE};
+    border-radius: 10px;
+    border: 1px solid {BORDER};
+}}
+QFrame#context_card:hover {{
+    background-color: #1E293B;
+    border: 1px solid {BORDER_LIT};
+}}
+QLabel#card_title {{
+    color: {TEXT_MID};
+    font-size: 13px;
+    font-weight: 600;
+    background: transparent;
+}}
+QLabel#card_title_active {{
+    color: {TEXT};
+    font-size: 13px;
+    font-weight: 700;
+    background: transparent;
+}}
+QLabel#card_subtitle {{
+    color: {TEXT_DIM};
+    font-size: 11px;
+    background: transparent;
+}}
+QLabel#active_badge {{
+    background-color: {GREEN_DIM};
+    color: {GREEN};
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 2px 9px;
+    border: 1px solid {GREEN_BORDER};
+}}
+QFrame#capture_frame {{
+    background-color: {CAPTURE_BG};
+    border-radius: 10px;
+    border: 1px solid {CAPTURE_BORDER};
+}}
+QLabel#capture_text {{
+    color: #22C55E;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 11px;
+    background: transparent;
+    padding: 4px;
+}}
+QLabel#live_dot {{
+    color: {GREEN};
+    font-size: 11px;
+    font-weight: 700;
+    background: transparent;
+}}
+QLabel#status_label {{
+    color: {TEXT_DIM};
+    font-size: 11px;
+    background: transparent;
+    padding: 2px;
+}}
+QPushButton#action_btn {{
+    background-color: {SURFACE};
+    border-radius: 10px;
+    border: 1px solid {BORDER};
+    text-align: left;
+    padding: 12px 14px;
+    color: {TEXT};
+}}
+QPushButton#action_btn:hover {{
+    background-color: #1E293B;
+    border: 1px solid {BORDER_LIT};
+}}
+QPushButton#action_btn:pressed {{
+    background-color: {SURFACE_ALT};
+}}
+QPushButton#action_btn:disabled {{
+    color: {TEXT_DIM};
+    border: 1px solid {BORDER};
+}}
+QLabel#btn_title {{
+    color: {TEXT_MID};
+    font-size: 13px;
+    font-weight: 700;
+    background: transparent;
+}}
+QLabel#btn_subtitle {{
+    color: {TEXT_DIM};
+    font-size: 11px;
+    background: transparent;
+}}
+QLabel#close_btn {{
+    color: #374151;
+    font-size: 14px;
+    background: transparent;
+    padding: 2px 6px;
+}}
+QLabel#close_btn:hover {{
+    color: #9CA3AF;
+}}
+QPushButton#poll_toggle {{
+    background-color: transparent;
+    color: {ACCENT};
+    border: 1px solid {ACCENT};
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 12px;
+}}
+QPushButton#poll_toggle:hover {{
+    background-color: {ACCENT};
+    color: {BG};
+}}
+QPushButton#poll_toggle[active="true"] {{
+    color: {RED};
+    border-color: {RED};
+}}
+QPushButton#poll_toggle[active="true"]:hover {{
+    background-color: {RED};
+    color: {BG};
+}}
+"""
+
+
+# ── Reusable widgets ──────────────────────────────────────────
+
+class ContextCard(QFrame):
+    def __init__(self, title="—", subtitle="", active=False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("context_card")
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(8)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        self.title_lbl = QLabel(title)
+        self.title_lbl.setObjectName("card_title_active" if active else "card_title")
+        row.addWidget(self.title_lbl)
+
+        self.badge = QLabel("Active")
+        self.badge.setObjectName("active_badge")
+        self.badge.setVisible(active)
+        row.addWidget(self.badge)
+        row.addStretch()
+        col.addLayout(row)
+
+        self.sub_lbl = QLabel(subtitle)
+        self.sub_lbl.setObjectName("card_subtitle")
+        col.addWidget(self.sub_lbl)
+        lay.addLayout(col)
+
+    def update_data(self, title: str, subtitle: str, active: bool = False):
+        self.title_lbl.setText(title)
+        self.title_lbl.setObjectName("card_title_active" if active else "card_title")
+        self.title_lbl.setStyle(self.title_lbl.style())  # force QSS refresh
+        self.sub_lbl.setText(subtitle)
+        self.badge.setVisible(active)
+
+
+class ActionButton(QPushButton):
+    def __init__(self, title: str, subtitle: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("action_btn")
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setMinimumHeight(68)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(3)
+
+        self._title_lbl = QLabel(title)
+        self._title_lbl.setObjectName("btn_title")
+        self._title_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lay.addWidget(self._title_lbl)
+
+        self._sub_lbl = QLabel(subtitle)
+        self._sub_lbl.setObjectName("btn_subtitle")
+        self._sub_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        lay.addWidget(self._sub_lbl)
+
+    def set_subtitle(self, text: str):
+        self._sub_lbl.setText(text)
+
+# --Sensitive content guard  ─────────────────────────
+class PrivacyGuard:
+    def __init__(self):
+        # 1. Block by Bundle ID (App-level)
+        self.blocked_bundles = {
+            "com.apple.KeychainAccess",  # Passwords
+            "com.agilebits.onepassword", # 1Password
+            "com.apple.systempreferences", # System Settings
+            "com.microsoft.authenticator", # 2FA
+            "com.apple.AddressBook"        # Contacts
+        }
+
+        # 2. Block by Window Title Keywords (Content-level)
+        self.sensitive_keywords = [
+            "bank", "incognito", "private", "checkout", 
+            "payment", "credit card", "password", "vault"
+        ]
+
+    def is_safe(self, app_bundle, window_title):
+        # Check if the app itself is forbidden
+        if app_bundle in self.blocked_bundles:
+            return False
+            
+        # Check if the window title suggests sensitive activity
+        title_lower = window_title.lower()
+        if any(key in title_lower for key in self.sensitive_keywords):
+            return False
+            
+        return True
+# ── Main panel ────────────────────────────────────────────────
+
+class SparkPanel(QWidget):
+    """
+    Frameless floating SPARK panel — replaces SparkPipeline window.
+    Wires directly into AccessibilityManager, WindowContextTracker,
+    GlobalHotkeyManager, and SparkDB from your existing architecture.
+    """
+
+    POLL_INTERVAL = 125   # ms
+    MAX_CAPTURE_LINES = 6
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("root")
+        
+        self.privacy_guard = PrivacyGuard()
+
+        # ── Window flags: frameless, always-on-top ──
+        # NOTE: Do NOT use Qt.WindowType.Tool — on macOS it hides the
+        # window whenever another application receives focus.
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedWidth(440)
+        self.setStyleSheet(QSS)
+
+        # ── Backend (same objects as SparkPipeline) ──────────────
+        self.manager = AccessibilityManager()
+        self.hotkeys = GlobalHotkeyManager()
+
+        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spark.db")
+        self.db = SparkDB(db_path)
+        self.tracker = WindowContextTracker(db=self.db)
+
+        self.captured_text: str = ""
+        self.processed_text: str = ""
+        self.is_polling = False
+        self._capture_lines: list[str] = []
+        self._drag_pos: QPoint | None = None
+
+        self._build_ui()
+        self._connect_hotkeys()
+        self.hotkeys.start()
+
+        self.poll_timer = QTimer()
+        self.poll_timer.setInterval(self.POLL_INTERVAL)
+        self.poll_timer.timeout.connect(self._on_poll_tick)
+
+        self._blink_timer = QTimer()
+        self._blink_timer.timeout.connect(self._blink_live)
+        self._blink_state = True
+
+        # Restore saved position (or default to bottom-right)
+        self._restore_position()
+
+    # ─────────────────────────────────────────────────────────────
+    # UI construction
+    # ─────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        inner = QWidget()
+        inner.setObjectName("root")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(22, 20, 22, 22)
+        lay.setSpacing(0)
+
+        # ── Header ───────────────────────────────────────────
+        hdr = QHBoxLayout()
+
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        t = QLabel("SPARK")
+        t.setObjectName("app_title")
+        s = QLabel("AI Desktop Assistant")
+        s.setObjectName("app_subtitle")
+        title_col.addWidget(t)
+        title_col.addWidget(s)
+        hdr.addLayout(title_col)
+        hdr.addStretch()
+
+        close = QLabel("✕")
+        close.setObjectName("close_btn")
+        close.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        close.mousePressEvent = lambda _: self.hide()
+        hdr.addWidget(close, alignment=Qt.AlignmentFlag.AlignTop)
+
+        lay.addLayout(hdr)
+        lay.addSpacing(14)
+        lay.addWidget(self._divider())
+        lay.addSpacing(14)
+
+        # ── Live Context ──────────────────────────────────────
+        ctx_hdr = QHBoxLayout()
+        ctx_lbl = QLabel("LIVE CONTEXT")
+        ctx_lbl.setObjectName("section_label")
+        ctx_hdr.addWidget(ctx_lbl)
+        ctx_hdr.addStretch()
+
+        self.poll_btn = QPushButton("Start Polling")
+        self.poll_btn.setObjectName("poll_toggle")
+        self.poll_btn.setProperty("active", "false")
+        self.poll_btn.setFixedHeight(24)
+        self.poll_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.poll_btn.clicked.connect(self._on_toggle_polling)
+        ctx_hdr.addWidget(self.poll_btn)
+        lay.addLayout(ctx_hdr)
+        lay.addSpacing(10)
+
+        # 3 context cards (active + 2 history)
+        self.ctx_card_active = ContextCard("—", "No window detected", active=True)
+        self.ctx_card_prev1  = ContextCard("—", "")
+        self.ctx_card_prev2  = ContextCard("—", "")
+        for card in (self.ctx_card_active, self.ctx_card_prev1, self.ctx_card_prev2):
+            lay.addWidget(card)
+            lay.addSpacing(6)
+
+        lay.addSpacing(10)
+        lay.addWidget(self._divider())
+        lay.addSpacing(14)
+
+        # ── Live Capture ──────────────────────────────────────
+        cap_hdr = QHBoxLayout()
+        cap_sec = QLabel("LIVE CAPTURE")
+        cap_sec.setObjectName("section_label")
+        cap_hdr.addWidget(cap_sec)
+        cap_hdr.addStretch()
+
+        self.live_dot = QLabel("● Live")
+        self.live_dot.setObjectName("live_dot")
+        cap_hdr.addWidget(self.live_dot)
+        lay.addLayout(cap_hdr)
+        lay.addSpacing(10)
+
+        cap_frame = QFrame()
+        cap_frame.setObjectName("capture_frame")
+        cap_inner = QVBoxLayout(cap_frame)
+        cap_inner.setContentsMargins(14, 12, 14, 12)
+
+        self.capture_lbl = QLabel("Polling not started…")
+        self.capture_lbl.setObjectName("capture_text")
+        self.capture_lbl.setWordWrap(True)
+        self.capture_lbl.setMinimumHeight(60)
+        cap_inner.addWidget(self.capture_lbl)
+        lay.addWidget(cap_frame)
+        lay.addSpacing(10)
+
+        # Status line
+        self.status_lbl = QLabel("Ready — select text in any app, then Cmd+Ctrl+C")
+        self.status_lbl.setObjectName("status_label")
+        self.status_lbl.setWordWrap(True)
+        lay.addWidget(self.status_lbl)
+        lay.addSpacing(14)
+
+        lay.addWidget(self._divider())
+        lay.addSpacing(14)
+
+        # ── Suggested Actions ─────────────────────────────────
+        act_lbl = QLabel("SUGGESTED ACTIONS")
+        act_lbl.setObjectName("section_label")
+        lay.addWidget(act_lbl)
+        lay.addSpacing(10)
+
+        grid = QGridLayout()
+        grid.setSpacing(8)
+
+        self.btn_capture  = ActionButton("Capture Text", "Cmd+Ctrl+C — grab selection")
+        self.btn_release  = ActionButton("Release Text", "Cmd+Ctrl+R — paste processed")
+        self.btn_summarize = ActionButton("Summarize Window", "Quick overview of visible text")
+        self.btn_history  = ActionButton("Show History", "View previous window contexts")
+
+        self.btn_release.setEnabled(False)
+
+        self.btn_capture.clicked.connect(self._on_capture)
+        self.btn_release.clicked.connect(self._on_release)
+        self.btn_summarize.clicked.connect(self._on_summarize)
+        self.btn_history.clicked.connect(self._on_show_history)
+
+        grid.addWidget(self.btn_capture,  0, 0)
+        grid.addWidget(self.btn_release,  0, 1)
+        grid.addWidget(self.btn_summarize, 1, 0)
+        grid.addWidget(self.btn_history,  1, 1)
+        lay.addLayout(grid)
+
+        outer.addWidget(inner)
+
+    def _divider(self) -> QFrame:
+        d = QFrame()
+        d.setObjectName("divider")
+        return d
+
+    # ─────────────────────────────────────────────────────────────
+    # Hotkeys — same signals as SparkPipeline
+    # ─────────────────────────────────────────────────────────────
+
+    def _connect_hotkeys(self):
+        self.hotkeys.signals.capture_triggered.connect(self._on_capture)
+        self.hotkeys.signals.release_triggered.connect(self._on_release)
+        self.hotkeys.signals.toggle_triggered.connect(self.toggle)
+
+    # ─────────────────────────────────────────────────────────────
+    # Polling — identical logic to SparkPipeline._on_poll_tick
+    # ─────────────────────────────────────────────────────────────
+
+    def _on_toggle_polling(self):
+        if self.is_polling:
+            self.poll_timer.stop()
+            self._blink_timer.stop()
+            self.is_polling = False
+            self.poll_btn.setText("Start Polling")
+            self.poll_btn.setProperty("active", "false")
+            self.poll_btn.setStyle(self.poll_btn.style())
+            self.live_dot.setText("● Live")
+        else:
+            self.is_polling = True
+            self.poll_btn.setText("Stop Polling")
+            self.poll_btn.setProperty("active", "true")
+            self.poll_btn.setStyle(self.poll_btn.style())
+            self.poll_timer.start()
+            self._blink_timer.start(800)
+            self._on_poll_tick()
+
+    def _on_poll_tick(self):
+        info = self.manager.get_active_window_info()
+        if not info:
+            self.ctx_card_active.update_data("—", "No window detected", active=True)
+            self._push_capture_line("No active window detected")
+            return
+        # Ignore the SPARK panel itself
+        if info.pid == os.getpid():
+            return
+        # --- PRIVACY CHECK ---
+        if not self.privacy_guard.is_safe(info.bundle_id, info.title):
+            self.ctx_card_active.update_data("PROTECTED", "Privacy Filter Active", active=True)
+            self._set_status("🛡️ Privacy Guard: Content Hidden", RED)
+            # We stop here so no text is extracted or saved to DB
+            return
+        # ---------------------
+
+        tab = get_browser_tab(info.app_name)
+        detail = f"{tab.tab_title}" if (tab and tab.tab_title) else info.title
+        if tab and not self.privacy_guard.is_safe(info.bundle_id, tab.tab_title):
+            self.ctx_card_active.update_data(info.app_name, "Protected URL", active=True)
+            return
+        self.ctx_card_active.update_data(info.app_name, detail, active=True)
+
+        # Try to get text
+        text, source = None, None
+        try:
+            text = self.manager.get_focused_element_text()
+            if text:
+                source = TextSource.FOCUSED_ELEMENT
+        except Exception:
+            pass
+
+        if not text:
+            try:
+                text = self.manager.get_window_text()
+                if text:
+                    source = TextSource.FULL_WINDOW
+            except Exception:
+                pass
+
+        #Edit 
+
+        if text and text.strip() and source:
+            preview = text[:120].replace("\n", " ")
+            self._push_capture_line(f"[{info.app_name}] {preview}")
+            self.tracker.update(info, text, source, tab=tab)
+        else:
+            self._push_capture_line(f"[{info.app_name}] (no text extracted)")
+
+        self._refresh_history_cards()
+
+    def _refresh_history_cards(self):
+        previous = self.tracker.get_all_previous()
+        cards = [self.ctx_card_prev1, self.ctx_card_prev2]
+        for i, card in enumerate(cards):
+            if i < len(previous):
+                snap = previous[i]
+                subtitle = snap.url or snap.window_info.title
+                card.update_data(snap.window_info.app_name, subtitle or "", active=False)
+            else:
+                card.update_data("—", "", active=False)
+
+    def _push_capture_line(self, line: str):
+        """Append a line to the live capture box (max MAX_CAPTURE_LINES)."""
+        self._capture_lines.append(line)
+        if len(self._capture_lines) > self.MAX_CAPTURE_LINES:
+            self._capture_lines = self._capture_lines[-self.MAX_CAPTURE_LINES:]
+        self.capture_lbl.setText("\n".join(self._capture_lines))
+
+    def _blink_live(self):
+        self._blink_state = not self._blink_state
+        self.live_dot.setText("● Live" if self._blink_state else "  Live")
+
+    # ─────────────────────────────────────────────────────────────
+    # Actions — same logic as SparkPipeline
+    # ─────────────────────────────────────────────────────────────
+
+    def _on_capture(self):
+        self._set_status("Capturing selection…", ORANGE)
+        QTimer.singleShot(200, self._do_capture)
+
+    def _do_capture(self):
+        info = self.manager.get_active_window_info()
+        if info and not self.privacy_guard.is_safe(info.bundle_id, info.title):
+            self._set_status("Cannot capture: Sensitive window detected", RED)
+            return
+        text = self.manager.get_selected_text()
+        if text and text.strip():
+            self.captured_text = text
+            # TODO: Replace with your AI/LLM call. Example:
+            #   self._set_status("Processing with AI…", ORANGE)
+            #   QTimer.singleShot(0, lambda: self._run_ai(text))
+            # where _run_ai runs the model in a thread and sets self.processed_text.
+            self.processed_text = text
+            self.btn_release.setEnabled(True)
+            self.btn_release.set_subtitle(f"{len(self.processed_text)} chars ready")
+            self._set_status(
+                f"Captured {len(text)} chars — Cmd+Ctrl+R to paste back", GREEN
+            )
+            self._push_capture_line(f"[CAPTURED] {text[:80].replace(chr(10),' ')}…")
+        else:
+            self._set_status("No text selected — highlight text first, then capture", RED)
+
+    def _on_release(self):
+        if not self.processed_text:
+            self._set_status("Nothing to release — capture text first", RED)
+            return
+        self._set_status("Releasing text…", ORANGE)
+        QTimer.singleShot(200, self._do_release)
+
+    def _do_release(self):
+        ok = self.manager.paste_text(self.processed_text)
+        if ok:
+            self._set_status("Text pasted back into application ✓", GREEN)
+        else:
+            self._set_status("Paste failed — make sure a text field is focused", RED)
+
+    def _on_summarize(self):
+        """Summarize whatever is currently visible in the active window."""
+        info = self.manager.get_active_window_info()
+        if not info:
+            self._set_status("No active window to summarize", RED)
+            return
+        try:
+            text = self.manager.get_window_text() or ""
+            if not text.strip():
+                self._set_status("No text found in active window", RED)
+                return
+            # TODO: Replace preview with an actual LLM summarization call.
+            # Run it in a thread to avoid blocking the Qt event loop, e.g.:
+            #   threading.Thread(target=self._summarize_async, args=(text,)).start()
+            preview = text[:200].replace("\n", " ")
+            self._push_capture_line(f"[SUMMARY] {preview}…")
+            self._set_status("Summary captured to Live Capture", GREEN)
+        except Exception as e:
+            self._set_status(f"Summarize failed: {e}", RED)
+
+    def _on_show_history(self):
+        """Flash history into the capture box."""
+        previous = self.tracker.get_all_previous()
+        if not previous:
+            self._set_status("No history yet — start polling first", ORANGE)
+            return
+        for snap in previous:
+            line = f"[HIST] {snap.window_info.app_name} — {(snap.url or snap.window_info.title or '')[:60]}"
+            self._push_capture_line(line)
+        self._set_status(f"Showing {len(previous)} history entries", GREEN)
+
+    # ─────────────────────────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────────────────────────
+
+    def _set_status(self, text: str, color: str = TEXT_DIM):
+        self.status_lbl.setText(text)
+        self.status_lbl.setStyleSheet(f"color: {color}; font-size: 11px; background: transparent;")
+
+    # ─────────────────────────────────────────────────────────────
+    # Frameless window painting + drag
+    # ─────────────────────────────────────────────────────────────
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(
+            float(self.rect().x()), float(self.rect().y()),
+            float(self.rect().width()), float(self.rect().height()),
+            18.0, 18.0
+        )
+        p.fillPath(path, QColor(BG))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, e):
+        if self._drag_pos and e.buttons() == Qt.MouseButton.LeftButton:
+            self.move(e.globalPosition().toPoint() - self._drag_pos)
+
+    def mouseReleaseEvent(self, e):
+        if self._drag_pos is not None:
+            self.db.set_pref("panel_x", str(self.pos().x()))
+            self.db.set_pref("panel_y", str(self.pos().y()))
+        self._drag_pos = None
+
+    # ─────────────────────────────────────────────────────────────
+    # Toggle show/hide (call from hotkey or tray icon)
+    # ─────────────────────────────────────────────────────────────
+
+    def toggle(self):
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+
+    def _restore_position(self):
+        """Move to saved position, or default to bottom-right."""
+        saved_x = self.db.get_pref("panel_x")
+        saved_y = self.db.get_pref("panel_y")
+        if saved_x is not None and saved_y is not None:
+            self.move(int(saved_x), int(saved_y))
+        else:
+            self._position_bottom_right()
+
+    def _position_bottom_right(self):
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.adjustSize()
+        x = screen.right() - self.width() - 20
+        y = screen.bottom() - self.height() - 20
+        self.move(x, y)
+
+    # ─────────────────────────────────────────────────────────────
+    # Cleanup
+    # ─────────────────────────────────────────────────────────────
+
+    def closeEvent(self, event):
+        self.poll_timer.stop()
+        self._blink_timer.stop()
+        self.hotkeys.stop()
+        self.db.close()
+        super().closeEvent(event)
+
+
+# ── Entry point ───────────────────────────────────────────────
+
+def _make_tray_icon() -> QIcon:
+    """Create a simple 32x32 tray icon (blue spark dot)."""
+    px = QPixmap(32, 32)
+    px.fill(QColor(0, 0, 0, 0))
+    p = QPainter(px)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QColor(ACCENT))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(4, 4, 24, 24)
+    p.end()
+    return QIcon(px)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setQuitOnLastWindowClosed(False)
+
+    panel = SparkPanel()
+
+    # ── System tray ──────────────────────────────────────────
+    tray = QSystemTrayIcon(_make_tray_icon(), app)
+    tray_menu = QMenu()
+    show_action = tray_menu.addAction("Show / Hide")
+    show_action.triggered.connect(panel.toggle)
+    tray_menu.addSeparator()
+    quit_action = tray_menu.addAction("Quit")
+    quit_action.triggered.connect(app.quit)
+    tray.setContextMenu(tray_menu)
+    tray.activated.connect(
+        lambda reason: panel.toggle()
+        if reason == QSystemTrayIcon.ActivationReason.Trigger
+        else None
+    )
+    tray.show()
+
+    panel.show()
+    sys.exit(app.exec())
+
+
+if __name__ == '__main__':
+    main()
