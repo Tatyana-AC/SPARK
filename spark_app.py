@@ -29,6 +29,8 @@ from host_pc.accessibility.tracker import WindowContextTracker
 from host_pc.browser import get_browser_tab
 from host_pc.db import SparkDB
 from host_pc.hotkeys import GlobalHotkeyManager
+from host_pc.hid import KeyboardHIDManager
+from host_pc.hid.keyboard_hid import STATUS_PROCESSING, STATUS_DONE, STATUS_ERROR
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s  %(name)s  %(levelname)s  %(message)s")
@@ -75,8 +77,9 @@ class SparkPipeline(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.manager = AccessibilityManager()
-        self.hotkeys = GlobalHotkeyManager()
+        self.manager      = AccessibilityManager()
+        self.hotkeys      = GlobalHotkeyManager()
+        self.keyboard_hid = KeyboardHIDManager()
 
         db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spark.db")
         self.db = SparkDB(db_path)
@@ -88,7 +91,9 @@ class SparkPipeline(QMainWindow):
 
         self._init_ui()
         self._connect_hotkeys()
+        self._connect_keyboard_hid()
         self.hotkeys.start()
+        self.keyboard_hid.start()
 
         self.poll_timer = QTimer()
         self.poll_timer.setInterval(self.POLL_INTERVAL)
@@ -135,6 +140,20 @@ class SparkPipeline(QMainWindow):
             }}
         """)
         root.addWidget(self.status_label)
+
+        # HID connection pill
+        self.hid_status_label = QLabel("● Keyboard  disconnected")
+        self.hid_status_label.setFont(self._font(9))
+        self.hid_status_label.setStyleSheet(f"""
+            QLabel {{
+                color: {RED};
+                background-color: {SURFACE};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 6px 12px;
+            }}
+        """)
+        root.addWidget(self.hid_status_label)
 
         # ── Live Context card ────────────────────────────────
         poll_card = QFrame()
@@ -335,6 +354,37 @@ class SparkPipeline(QMainWindow):
         self.hotkeys.signals.capture_triggered.connect(self._on_capture)
         self.hotkeys.signals.release_triggered.connect(self._on_release)
 
+    # ── Keyboard HID wiring ───────────────────────────────────
+
+    def _connect_keyboard_hid(self) -> None:
+        self.keyboard_hid.signals.capture_triggered.connect(self._on_capture)
+        self.keyboard_hid.signals.release_triggered.connect(self._on_release)
+        self.keyboard_hid.signals.connected_changed.connect(self._on_hid_connected)
+
+    def _on_hid_connected(self, connected: bool) -> None:
+        if connected:
+            self.hid_status_label.setText("● Keyboard  connected")
+            self.hid_status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {GREEN};
+                    background-color: {SURFACE};
+                    border: 1px solid {BORDER};
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                }}
+            """)
+        else:
+            self.hid_status_label.setText("● Keyboard  disconnected")
+            self.hid_status_label.setStyleSheet(f"""
+                QLabel {{
+                    color: {RED};
+                    background-color: {SURFACE};
+                    border: 1px solid {BORDER};
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                }}
+            """)
+
     # ── Polling ────────────────────────────────────────────────
 
     def _on_toggle_polling(self) -> None:
@@ -423,6 +473,7 @@ class SparkPipeline(QMainWindow):
         QTimer.singleShot(200, self._do_capture)
 
     def _do_capture(self) -> None:
+        self.keyboard_hid.send_status(STATUS_PROCESSING)
         text = self.manager.get_selected_text()
         if text and text.strip():
             self.captured_text = text
@@ -436,8 +487,10 @@ class SparkPipeline(QMainWindow):
                 f"Captured {len(text)} chars & processed — Cmd+Ctrl+R to paste back",
                 GREEN,
             )
+            self.keyboard_hid.send_status(STATUS_DONE)
         else:
             self._set_status("No text selected — highlight text first, then capture", RED)
+            self.keyboard_hid.send_status(STATUS_ERROR)
 
     def _on_release(self) -> None:
         if not self.processed_text:
@@ -447,11 +500,14 @@ class SparkPipeline(QMainWindow):
         QTimer.singleShot(200, self._do_release)
 
     def _do_release(self) -> None:
+        self.keyboard_hid.send_status(STATUS_PROCESSING)
         ok = self.manager.paste_text(self.processed_text)
         if ok:
             self._set_status("Text pasted back into application", GREEN)
+            self.keyboard_hid.send_status(STATUS_DONE)
         else:
             self._set_status("Paste failed — make sure a text field is focused", RED)
+            self.keyboard_hid.send_status(STATUS_ERROR)
 
     # ── Helpers ───────────────────────────────────────────────
 
@@ -538,6 +594,7 @@ class SparkPipeline(QMainWindow):
     def closeEvent(self, event) -> None:
         self.poll_timer.stop()
         self.hotkeys.stop()
+        self.keyboard_hid.stop()
         self.db.close()
         super().closeEvent(event)
 

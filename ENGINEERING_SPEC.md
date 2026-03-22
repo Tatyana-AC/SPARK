@@ -1,9 +1,9 @@
 # SPARK — Engineering Specification
 ## Host-Side Context Engine & Firmware Integration Layer
 
-**Version:** 1.0
-**Status:** Draft
-**Nodes:** Host PC (macOS/Win) · Pico Hub (RP2040/MicroPython) · Jetson Brain (NVIDIA)
+**Version:** 1.1
+**Status:** Active
+**Nodes:** Host PC (macOS/Win) · Pico Hub (RP2040/QMK + MicroPython) · Jetson Brain (NVIDIA)
 
 ---
 
@@ -11,38 +11,51 @@
 
 1. [System Overview](#1-system-overview)
 2. [Host-Side Engineering — Data Acquisition](#2-host-side-engineering--data-acquisition)
-3. [Firmware Integration — Pico Hub & Jetson Interface](#3-firmware-integration--pico-hub--jetson-interface)
-4. [Integration Protocol — Wire Format & Handshake](#4-integration-protocol--wire-format--handshake)
-5. [Error Handling & Fault Tolerance](#5-error-handling--fault-tolerance)
-6. [OpCode Reference Table](#6-opcode-reference-table)
+3. [Keyboard HID Layer](#3-keyboard-hid-layer)
+4. [Firmware Integration — Pico Hub & Jetson Interface](#4-firmware-integration--pico-hub--jetson-interface)
+5. [Integration Protocol — Wire Format & Handshake](#5-integration-protocol--wire-format--handshake)
+6. [Error Handling & Fault Tolerance](#6-error-handling--fault-tolerance)
+7. [Build & Flash Reference](#7-build--flash-reference)
+8. [OpCode Reference Table](#8-opcode-reference-table)
 
 ---
 
 ## 1. System Overview
 
-SPARK is a distributed assistive input system composed of three physically distinct compute nodes communicating over two serial channels.
+SPARK is a distributed assistive input system composed of three physically distinct compute nodes. The Host PC connects to **two independent Pico devices** over USB — one running QMK firmware (keyboard HID path) and one running MicroPython (context relay path).
 
 ```
-┌──────────────────────┐   USB CDC      ┌──────────────────────┐   UART/USB     ┌──────────────────────┐
-│     HOST PC          │ ────────────→  │    PICO HUB          │ ────────────→  │   JETSON BRAIN       │
-│  macOS / Windows     │  115200 baud   │  RP2040 MicroPython  │  115200 baud   │  NVIDIA Jetson       │
-│                      │                │                      │                │                      │
-│  • AccessibilityMgr  │                │  • Serial passthrough│                │  • PacketParser      │
-│  • WindowTracker     │                │  • Button GPIO IRQ   │                │  • JetsonDB          │
-│  • SerialSender      │                │  • Packet injection  │                │  • LLM interface     │
-│  • SparkPanel (Qt6)  │                │                      │                │                      │
-└──────────────────────┘                └──────────────────────┘                └──────────────────────┘
-         ↑
-    USB Raw HID
-         ↓
-┌──────────────────────┐
-│  PICO (QMK firmware) │
-│  SparkHIDClient      │
-│  Text → keystrokes   │
-└──────────────────────┘
+                          ┌─────────────────────────────────────────────────────┐
+                          │                    HOST PC                          │
+                          │              macOS / Windows                        │
+                          │                                                     │
+                          │  AccessibilityMgr   WindowContextTracker            │
+                          │  SerialSender       SparkPanel (PyQt6)              │
+                          │  KeyboardHIDManager SparkHIDClient                  │
+                          └────────┬────────────────────┬───────────────────────┘
+                                   │                    │
+                          USB CDC serial           USB Raw HID
+                          (context relay)        (text output + keyboard cmds)
+                                   │                    │
+                    ┌──────────────▼──┐        ┌────────▼──────────────┐
+                    │   PICO HUB      │        │   PICO QMK            │
+                    │  MicroPython    │        │  QMK firmware         │
+                    │                 │        │  VID 0xC4C4           │
+                    │ Serial relay    │        │  PID 0x5350           │
+                    │ Button GPIO IRQ │        │  Raw HID interface    │
+                    └──────────┬──────┘        │  Text → keystrokes    │
+                               │               └───────────────────────┘
+                          UART/USB
+                               │
+                    ┌──────────▼──────┐
+                    │  JETSON BRAIN   │
+                    │  NVIDIA Jetson  │
+                    │                 │
+                    │  PacketParser   │
+                    │  JetsonDB       │
+                    │  LLM interface  │
+                    └─────────────────┘
 ```
-
-> **Note:** The Host connects to two separate Pico devices — one running QMK (HID text output path) and one running MicroPython (context relay path). These are independent USB connections.
 
 ---
 
@@ -163,11 +176,128 @@ Offset  Size  struct fmt  C type     Field
 
 ---
 
-## 3. Firmware Integration — Pico Hub & Jetson Interface
+## 3. Keyboard HID Layer
 
-### 3.1 Hardware Routing
+### 3.1 Overview
 
-The Pico Hub performs **transparent serial bridging** between two physical channels:
+`KeyboardHIDManager` (`host_pc/hid/keyboard_hid.py`) manages the bidirectional Raw HID channel between the Host and the QMK Pico. It mirrors the structure of `GlobalHotkeyManager` — a signals class plus a manager with `start()` / `stop()` — so it integrates identically into `spark_app.py` and `spark_app_v2.py`.
+
+```
+KeyboardHIDSignals(QObject)
+  .capture_triggered   pyqtSignal()       ← keyboard key pressed: trigger capture
+  .release_triggered   pyqtSignal()       ← keyboard key pressed: trigger release
+  .connected_changed   pyqtSignal(bool)   ← device plugged / unplugged
+
+KeyboardHIDManager
+  .start()             open device + start daemon reader thread
+  .stop()              join thread + close device
+  .send_status(byte)   write CMD_HOST_STATUS report to keyboard
+```
+
+### 3.2 Device Identity
+
+All values taken directly from `spark_qmk/keyboards/spark/keyboard.json` and `tools/spark_raw_hid_demo.py`:
+
+| Constant | Value | Source |
+|---|---|---|
+| `SPARK_VID` | `0xC4C4` | `keyboard.json` → `usb.vid` |
+| `SPARK_PID` | `0x5350` | `keyboard.json` → `usb.pid` |
+| `RAW_USAGE_PAGE` | `0xFF60` | QMK Raw HID spec |
+| `RAW_USAGE_ID` | `0x61` | QMK Raw HID spec |
+| `REPORT_SIZE` | `32` | `spark_raw_hid_demo.py` |
+
+### 3.3 Keyboard → Host Commands (0xA0–0xAF range)
+
+The keyboard sends 32-byte reports with the command byte at position 0, matching the convention established in `spark_raw_hid_demo.py`.
+
+| Byte 0 | Name | Description |
+|---|---|---|
+| `0xA0` | `CMD_KB_CAPTURE` | Physical key pressed — trigger text capture |
+| `0xA1` | `CMD_KB_RELEASE` | Physical key pressed — trigger text release |
+
+### 3.4 Host → Keyboard Feedback (0xB0–0xBF range)
+
+`send_status(status_byte)` writes a 32-byte report with `CMD_HOST_STATUS` at byte 0 and the status code at byte 1. The keyboard firmware uses this to drive LED/display feedback.
+
+```
+Byte 0: 0xB0  CMD_HOST_STATUS
+Byte 1: status code
+          0x01  STATUS_PROCESSING   — capture/release started
+          0x02  STATUS_DONE         — operation completed successfully
+          0x03  STATUS_ERROR        — operation failed
+Bytes 2–31: 0x00 (reserved)
+```
+
+### 3.5 Connection Lifecycle
+
+```
+start()
+  │
+  └─ daemon thread: _run()
+       │
+       ├─ _try_open()  ──── fail ──→ sleep 2 s → retry
+       │    └── success
+       │         emit connected_changed(True)
+       │
+       ├─ _read_loop()
+       │    ├─ device.read(32, timeout=500 ms)
+       │    ├─ timeout → loop (checks _running flag)
+       │    └─ data → _dispatch(report)
+       │         ├─ 0xA0 → emit capture_triggered
+       │         ├─ 0xA1 → emit release_triggered
+       │         └─ other → log + ignore
+       │
+       └─ on error/disconnect
+            emit connected_changed(False)
+            close device → retry loop
+```
+
+The 500 ms read timeout ensures `stop()` is acknowledged within ~500 ms without busy-waiting.
+
+### 3.6 Capture / Release Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant KB as QMK Pico<br/>(keyboard)
+    participant HID as KeyboardHIDManager<br/>(reader thread)
+    participant App as SparkPanel<br/>(Qt main thread)
+    participant Acc as AccessibilityManager
+
+    KB->>HID: Raw HID report [0xA0, 0x00, ...]
+    HID->>HID: _dispatch() → cmd=0xA0
+    HID->>App: emit capture_triggered  (Qt signal)
+
+    App->>HID: send_status(0x01)  STATUS_PROCESSING
+    HID->>KB: Raw HID report [0xB0, 0x01, ...]
+
+    App->>Acc: get_selected_text()
+    Acc-->>App: captured text
+
+    App->>HID: send_status(0x02)  STATUS_DONE
+    HID->>KB: Raw HID report [0xB0, 0x02, ...]
+
+    Note over App: processed_text ready<br/>Release button enabled
+```
+
+### 3.7 Python Dependency
+
+The Raw HID interface requires the `hidapi` PyPI package (installs as the `hid` module with a bundled native library). **Do not install the separate `hid` package** — it is a different library that requires a system `libhidapi` and will shadow the correct module.
+
+```
+# requirements.txt — correct
+hidapi>=0.14.0   ✓
+
+# do not add
+hid>=1.0.4       ✗  (conflicts with hidapi on macOS)
+```
+
+---
+
+## 4. Firmware Integration — Pico Hub & Jetson Interface
+
+### 4.1 Hardware Routing
+
+The MicroPython Pico Hub performs **transparent serial bridging** between two physical channels:
 
 ```
 Host PC                      Pico RP2040                   Jetson Brain
@@ -188,11 +318,9 @@ USB CDC (tty.usbmodem*)  →  sys.stdin.buffer          →  UART0 RX (GP1)
 
 The relay loop runs at ~100 Hz (10 ms sleep), well above the 8 Hz incoming packet rate. USB bytes are forwarded in 64-byte chunks via `select.poll()` with a zero timeout (non-blocking).
 
-### 3.2 Packet Interleaving — Button Injection
+### 4.2 Packet Interleaving — Button Injection
 
 The Pico never decodes Host packets. It treats the Host byte stream as opaque and writes it verbatim to UART. Button packets are **injected between Host packets** at naturally occurring boundaries.
-
-Since `select.poll(0)` is polled first each loop iteration, the Pico flushes all pending Host bytes before checking buttons. A `BUTTON_PRESS` packet is only written after the current USB chunk has been forwarded, eliminating mid-packet corruption:
 
 ```
 Loop iteration (10 ms)
@@ -206,7 +334,7 @@ Loop iteration (10 ms)
 
 Because all SPARK packets are self-framed (MAGIC + CRC), even if an injection occurs between two back-to-back Host packets, the Jetson `PacketParser` will correctly parse all three packets in sequence.
 
-### 3.3 Jetson SQL State Machine
+### 4.3 Jetson SQL State Machine
 
 `JetsonDB` maintains a single `active_session_id` integer. The state machine has three transitions:
 
@@ -251,39 +379,13 @@ CREATE TABLE button_events (
 );
 ```
 
-#### Trigger 0x01 — INSERT
-
-```sql
-INSERT INTO sessions (app_name, title, text, started_at, updated_at)
-VALUES (?, ?, ?, unixepoch('now'), unixepoch('now'));
--- active_session_id ← last_insert_rowid()
-```
-
-#### Trigger 0x02 — UPDATE
-
-```sql
-UPDATE sessions
-SET    text = ?, updated_at = unixepoch('now')
-WHERE  id = :active_session_id;
--- No new row created. One row per window visit regardless of 8 Hz update rate.
-```
-
-#### Trigger 0x05 — BUTTON PRESS context fetch
-
-```sql
-SELECT app_name, title, text, started_at
-FROM   sessions
-WHERE  id = :active_session_id;
--- Result passed to LLM inference pipeline
-```
-
 ---
 
-## 4. Integration Protocol — Wire Format & Handshake
+## 5. Integration Protocol — Wire Format & Handshake
 
-### 4.1 Packet Frame
+### 5.1 Packet Frame
 
-Every packet on the wire (both Host→Hub and Hub→Jetson channels) uses this identical frame:
+Every packet on the wire uses this identical frame:
 
 ```
  Byte 0    Byte 1    Byte 2    Byte 3    Byte 4    Byte 5..N    Byte N+1
@@ -295,20 +397,17 @@ Every packet on the wire (both Host→Hub and Hub→Jetson channels) uses this i
 │◄─────────────────────── CRC covers everything above ─────────►│         │
 ```
 
-> **Note on START/END bytes:** This protocol uses a two-byte `MAGIC` sequence (`SP` = `0x53 0x50`) as a synchronisation marker rather than separate START and END bytes. The `PacketParser` state machine re-synchronises on MAGIC after any framing error, achieving the same fault isolation without adding 2 bytes of overhead per packet.
-
 | Field | Size | Type | Description |
 |---|---|---|---|
 | MAGIC | 2 bytes | `uint8_t[2]` | `{0x53, 0x50}` — sync sequence `'SP'` |
-| TYPE | 1 byte | `uint8_t` | OpCode — see §6 |
+| TYPE | 1 byte | `uint8_t` | OpCode — see §8 |
 | LEN | 2 bytes | `uint16_t` LE | Payload byte count |
 | PAYLOAD | LEN bytes | `uint8_t[]` | OpCode-specific data |
 | CRC8 | 1 byte | `uint8_t` | CRC-8/MAXIM over all preceding bytes |
 
-Minimum packet size: **6 bytes** (0-byte payload).
-Maximum payload: **65535 bytes** (governed by `uint16_t` LEN field).
+Minimum packet size: **6 bytes** (0-byte payload). Maximum payload: **65535 bytes**.
 
-### 4.2 CRC Algorithm
+### 5.2 CRC Algorithm
 
 **CRC-8/MAXIM** (Dallas 1-Wire): poly = `0x31`, reflected input and output, init = `0x00`, XorOut = `0x00`.
 
@@ -324,7 +423,7 @@ uint8_t crc8(const uint8_t *data, size_t len) {
 }
 ```
 
-### 4.3 Sequence Diagram — Window Change Event
+### 5.3 Sequence Diagram — Window Change Event
 
 ```mermaid
 sequenceDiagram
@@ -360,77 +459,144 @@ sequenceDiagram
     Pico->>Jetson: uart.write(bytes)
     Jetson->>DB: on_window_update(text)
     DB->>DB: UPDATE sessions SET text=? WHERE id=active_session_id
-
-    Note over Pico: Button 0 pressed (GPIO14 falling edge)
-    Pico->>Pico: _build_button_press(0)
-    Pico->>Jetson: [SP][0x05][0x01][0x00][0x00][CRC8]
-    Jetson->>DB: on_button_press(0)
-    DB->>DB: INSERT INTO button_events ...
-    DB-->>Jetson: session context for LLM
 ```
 
-### 4.4 Sequence Diagram — Pico Button Injection Detail
+### 5.4 Sequence Diagram — Keyboard-Initiated Capture
 
 ```mermaid
 sequenceDiagram
-    participant USB as USB CDC<br/>(Host bytes)
-    participant Loop as Pico Main Loop<br/>(10 ms)
-    participant GPIO as GPIO 14–17
-    participant UART as UART TX → Jetson
+    participant KB as QMK Pico<br/>(keyboard)
+    participant HID as KeyboardHIDManager<br/>(reader thread)
+    participant App as SparkPanel<br/>(Qt main thread)
+    participant Acc as AccessibilityManager
 
-    loop Every 10 ms
-        Loop->>USB: select.poll(timeout=0)
-        alt bytes available
-            USB-->>Loop: chunk (≤64 bytes)
-            Loop->>UART: uart.write(chunk)
-        end
-
-        Loop->>GPIO: read pins 14–17
-        alt falling edge detected on pin N
-            Loop->>Loop: _build_button_press(N)
-            Loop->>UART: uart.write(BUTTON_PRESS packet)
-            Note over UART: Injected AFTER host chunk,<br/>never mid-packet
-        end
-    end
+    KB->>HID: [0xA0, 0x00 × 31]  CMD_KB_CAPTURE
+    HID->>App: emit capture_triggered
+    App->>HID: send_status(0x01)  PROCESSING
+    HID->>KB: [0xB0, 0x01, 0x00 × 30]
+    App->>Acc: get_selected_text()
+    Acc-->>App: text
+    App->>HID: send_status(0x02)  DONE
+    HID->>KB: [0xB0, 0x02, 0x00 × 30]
 ```
 
 ---
 
-## 5. Error Handling & Fault Tolerance
+## 6. Error Handling & Fault Tolerance
 
-### 5.1 Host USB Disconnect (Pico unplugged)
+### 6.1 Host USB Disconnect (MicroPython Pico unplugged)
 
-`SerialSender._send()` catches `serial.SerialException` on write and sets `self._serial = None`. The host continues operating normally — window tracking, UI updates, and HID device communication are unaffected. The next poll tick calls `_send()`, which returns `False` silently. No reconnect timer is implemented in v1.0; reconnect requires `SerialSender.connect()` to be called again (e.g., on application restart or a future reconnect button).
+`SerialSender._send()` catches `serial.SerialException` on write and sets `self._serial = None`. The host continues operating normally. No reconnect timer in v1.1; reconnect on app restart.
 
-### 5.2 Pico → Jetson UART Disconnect
+### 6.2 QMK Pico Disconnect (keyboard unplugged)
 
-The Pico has no write-error detection in v1.0 — `uart.write()` is fire-and-forget. Bytes written to the UART hardware buffer while the Jetson is not listening will be silently dropped by the RP2040 hardware. No session state is corrupted; when the Jetson receiver restarts it simply waits for the next `MAGIC` sequence to re-synchronise.
+`KeyboardHIDManager._read_loop()` catches all exceptions and breaks out of the read loop. The outer `_run()` loop emits `connected_changed(False)`, closes the device, waits 2 seconds, and retries `_try_open()`. **Reconnect is fully automatic** — no user action required.
 
-### 5.3 CRC Failure on Jetson
+### 6.3 Pico → Jetson UART Disconnect
 
-`PacketParser._dispatch()` discards any packet whose computed CRC does not match the received CRC byte and calls `_reset()`. The parser re-enters `_SYNC` state and waits for the next `MAGIC` sequence. Because packets are individually framed, a single corrupted packet does not affect subsequent packets.
+The MicroPython Pico has no write-error detection — `uart.write()` is fire-and-forget. Bytes written while the Jetson is not listening are silently dropped. When the Jetson receiver restarts it re-synchronises on the next `MAGIC` sequence.
 
-### 5.4 Jetson UART Buffer Full
+### 6.4 CRC Failure on Jetson
 
-The Jetson `serial.read(256)` call has a 1-second timeout. If the read loop stalls (e.g., heavy LLM inference blocking the thread), the OS UART FIFO will eventually overflow and drop bytes. The `PacketParser` will detect the resulting framing error via CRC mismatch and re-synchronise on the next `MAGIC`. For v2.0, the receiver should run in a dedicated thread with a queue to decouple I/O from DB writes.
+`PacketParser._dispatch()` discards any packet whose computed CRC does not match and calls `_reset()`. The parser re-enters `_SYNC` state. A single corrupted packet does not affect subsequent packets.
 
-### 5.5 No Active Session on UPDATE
+### 6.5 Jetson UART Buffer Full
 
-If `JetsonDB.on_window_update()` is called before any `on_window_new()` (e.g., receiver started mid-session), `active_session_id` is `None`. The method logs a warning and returns without executing the `UPDATE`. No database state is corrupted.
+The Jetson `serial.read(256)` call has a 1-second timeout. If the read loop stalls, the OS UART FIFO will overflow and drop bytes. The `PacketParser` will detect the framing error via CRC mismatch and re-synchronise. For v2.0, the receiver should run in a dedicated thread with a queue.
+
+### 6.6 No Active Session on UPDATE
+
+If `JetsonDB.on_window_update()` is called before any `on_window_new()`, `active_session_id` is `None`. The method logs a warning and returns without executing the `UPDATE`.
 
 ---
 
-## 6. OpCode Reference Table
+## 7. Build & Flash Reference
+
+### 7.1 QMK Firmware (QMK Pico — keyboard HID)
+
+**Toolchain setup (macOS, one-time):**
+
+```bash
+# Install QMK CLI via pipx (avoids Homebrew Python conflicts)
+brew install pipx
+pipx install qmk
+pipx ensurepath
+
+# Install ARM cross-compiler (requires sudo for .pkg installer)
+brew install --cask gcc-arm-embedded
+
+# Run QMK setup (clones qmk_firmware + submodules)
+qmk setup --yes
+```
+
+**Build:**
+
+```bash
+cd spark_qmk
+PATH="/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/bin:$PATH" sh build_spark.sh
+# output: .build/spark_default.uf2
+```
+
+**Flash** (Pico must be in bootloader mode — hold BOOTSEL while plugging in):
+
+```bash
+cp .build/spark_default.uf2 /Volumes/RPI-RP2/
+# Pico reboots automatically; RPI-RP2 drive disappears
+```
+
+**Verify** (device should enumerate as VID `0xC4C4` PID `0x5350`):
+
+```bash
+system_profiler SPUSBDataType | grep -A4 "C4C4"
+```
+
+### 7.2 MicroPython Relay (MicroPython Pico — context bridge)
+
+```bash
+pip install mpremote
+mpremote cp pico/main.py :main.py
+```
+
+### 7.3 Host App Dependencies
+
+```bash
+cd SPARK
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Key dependency note: `hidapi>=0.14.0` provides the `hid` Python module with a bundled native library. Do **not** install the separate `hid` package alongside it — the two conflict on macOS.
+
+### 7.4 Running the App
+
+```bash
+source .venv/bin/activate
+python spark_app_v2.py
+```
+
+---
+
+## 8. OpCode Reference Table
+
+### Serial Protocol (Host ↔ Hub ↔ Jetson)
 
 | OpCode | Name | Direction | Payload | DB Action on Jetson |
 |---|---|---|---|---|
 | `0x01` | `WINDOW_NEW` | Host → Hub → Jetson | `uint8 app_len` + `app_name` + `uint8 title_len` + `title` + `uint16 text_len` + `text` | `INSERT INTO sessions` → store `active_session_id` |
 | `0x02` | `WINDOW_UPDATE` | Host → Hub → Jetson | `uint16 text_len` + `text` | `UPDATE sessions SET text WHERE id = active_session_id` |
-| `0x03` | `WINDOW_CLOSE` | *(reserved)* | *(TBD)* | Close/finalise active session |
+| `0x03` | `WINDOW_CLOSE` | *(reserved)* | *(TBD)* | Finalise active session |
 | `0x04` | `HOST_PING` | *(reserved)* | none | Heartbeat / keep-alive; no DB write |
 | `0x05` | `BUTTON_PRESS` | Hub → Jetson | `uint8 button_id` | `INSERT INTO button_events` → fetch session context for LLM |
-| `0x06` | `LLM_RESULT` | *(reserved)* | `uint16 text_len` + `text` | Downstream result from Jetson LLM → route to HID output |
+| `0x06` | `LLM_RESULT` | *(reserved)* | `uint16 text_len` + `text` | Jetson LLM result → route to HID output |
+
+### Raw HID Protocol (Host ↔ QMK Pico, 32-byte reports)
+
+| Byte[0] | Name | Direction | Byte[1] | Description |
+|---|---|---|---|---|
+| `0xA0` | `CMD_KB_CAPTURE` | Keyboard → Host | — | Physical key triggered capture |
+| `0xA1` | `CMD_KB_RELEASE` | Keyboard → Host | — | Physical key triggered release |
+| `0xB0` | `CMD_HOST_STATUS` | Host → Keyboard | status code | `0x01` processing · `0x02` done · `0x03` error |
 
 > **String encoding:** all `text`, `app_name`, and `title` fields are UTF-8, no null terminator. Length fields are byte counts (not character counts).
 > **Endianness:** all multi-byte integers are **little-endian** (`<` in Python `struct`, `__attribute__((packed))` in C with `uint16_t`).
-> **OpCodes `0x03`, `0x04`, `0x06`** are reserved for future use. Firmware and host implementations must not error on unknown OpCodes — log and discard.
+> **Unknown OpCodes:** firmware and host implementations must not error on unknown OpCodes — log and discard.
