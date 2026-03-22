@@ -1,7 +1,11 @@
 """
-SPARK Host — serial packet sender to the Pico Hub.
+SPARK Host — serial packet sender to the Pico Hub (CDC interface).
 
-Sends WINDOW_NEW (0x01) and WINDOW_UPDATE (0x02) packets over USB CDC serial.
+The single Pico Hub (QMK, VID 0xC4C4 / PID 0x5350) exposes a USB CDC
+serial interface alongside its Raw HID interface.  This module writes
+WINDOW_NEW (0x01) and WINDOW_UPDATE (0x02) packets to that CDC port;
+the Pico Hub forwards them transparently to the Jetson Brain via UART.
+
 Requires pyserial:  pip install pyserial
 """
 
@@ -37,7 +41,7 @@ class SerialSender:
 
     @staticmethod
     def _find_pico_port() -> Optional[str]:
-        """Return the first USB CDC serial port that looks like a Pico."""
+        """Return the first USB CDC serial port that looks like the Pico Hub."""
         if sys.platform == 'darwin':
             candidates = glob.glob('/dev/tty.usbmodem*')
         elif sys.platform.startswith('win'):

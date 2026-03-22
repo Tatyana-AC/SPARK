@@ -3,7 +3,7 @@
 
 **Version:** 1.1
 **Status:** Active
-**Nodes:** Host PC (macOS/Win) · Pico Hub (RP2040/QMK + MicroPython) · Jetson Brain (NVIDIA)
+**Nodes:** Host PC (macOS/Win) · Pico Hub (RP2040/QMK) · Jetson Brain (NVIDIA)
 
 ---
 
@@ -22,7 +22,7 @@
 
 ## 1. System Overview
 
-SPARK is a distributed assistive input system composed of three physically distinct compute nodes. The Host PC connects to **two independent Pico devices** over USB — one running QMK firmware (keyboard HID path) and one running MicroPython (context relay path).
+SPARK is a distributed assistive input system composed of three physically distinct compute nodes. The Host PC connects to a **single Pico Hub** over USB — the Pico runs QMK firmware and exposes two USB interfaces: a Raw HID interface for keyboard commands and a CDC serial interface for context relay to the Jetson Brain.
 
 ```
                           ┌─────────────────────────────────────────────────────┐
@@ -31,30 +31,32 @@ SPARK is a distributed assistive input system composed of three physically disti
                           │                                                     │
                           │  AccessibilityMgr   WindowContextTracker            │
                           │  SerialSender       SparkPanel (PyQt6)              │
-                          │  KeyboardHIDManager SparkHIDClient                  │
+                          │  KeyboardHIDManager                                 │
                           └────────┬────────────────────┬───────────────────────┘
                                    │                    │
                           USB CDC serial           USB Raw HID
-                          (context relay)        (text output + keyboard cmds)
+                          (context relay)        (keyboard cmds 0xA0/0xA1/0xB0)
                                    │                    │
-                    ┌──────────────▼──┐        ┌────────▼──────────────┐
-                    │   PICO HUB      │        │   PICO QMK            │
-                    │  MicroPython    │        │  QMK firmware         │
-                    │                 │        │  VID 0xC4C4           │
-                    │ Serial relay    │        │  PID 0x5350           │
-                    │ Button GPIO IRQ │        │  Raw HID interface    │
-                    └──────────┬──────┘        │  Text → keystrokes    │
-                               │               └───────────────────────┘
-                          UART/USB
-                               │
-                    ┌──────────▼──────┐
-                    │  JETSON BRAIN   │
-                    │  NVIDIA Jetson  │
-                    │                 │
-                    │  PacketParser   │
-                    │  JetsonDB       │
-                    │  LLM interface  │
-                    └─────────────────┘
+                          ┌────────▼────────────────────▼──────────┐
+                          │              PICO HUB                   │
+                          │           QMK firmware                  │
+                          │           VID 0xC4C4  PID 0x5350        │
+                          │                                         │
+                          │  Raw HID interface  (keyboard signals)  │
+                          │  CDC serial relay   (context packets)   │
+                          │  Button GPIO IRQ    (GP14–GP17)         │
+                          └─────────────────────┬───────────────────┘
+                                                 │
+                                            UART (GP0/GP1)
+                                                 │
+                                    ┌────────────▼────────┐
+                                    │    JETSON BRAIN      │
+                                    │    NVIDIA Jetson     │
+                                    │                      │
+                                    │    PacketParser      │
+                                    │    JetsonDB          │
+                                    │    LLM interface     │
+                                    └──────────────────────┘
 ```
 
 ---
@@ -297,7 +299,7 @@ hid>=1.0.4       ✗  (conflicts with hidapi on macOS)
 
 ### 4.1 Hardware Routing
 
-The MicroPython Pico Hub performs **transparent serial bridging** between two physical channels:
+The Pico Hub (single RP2040 running QMK) performs **transparent serial bridging** between two physical channels:
 
 ```
 Host PC                      Pico RP2040                   Jetson Brain
@@ -320,7 +322,7 @@ The relay loop runs at ~100 Hz (10 ms sleep), well above the 8 Hz incoming packe
 
 ### 4.2 Packet Interleaving — Button Injection
 
-The Pico never decodes Host packets. It treats the Host byte stream as opaque and writes it verbatim to UART. Button packets are **injected between Host packets** at naturally occurring boundaries.
+The Pico Hub never decodes Host packets. It treats the Host byte stream as opaque and writes it verbatim to UART. Button packets are **injected between Host packets** at naturally occurring boundaries.
 
 ```
 Loop iteration (10 ms)
@@ -484,15 +486,15 @@ sequenceDiagram
 
 ## 6. Error Handling & Fault Tolerance
 
-### 6.1 Host USB Disconnect (MicroPython Pico unplugged)
+### 6.1 Host USB Disconnect (Pico Hub unplugged — CDC interface)
 
 `SerialSender._send()` catches `serial.SerialException` on write and sets `self._serial = None`. The host continues operating normally. No reconnect timer in v1.1; reconnect on app restart.
 
-### 6.2 QMK Pico Disconnect (keyboard unplugged)
+### 6.2 Host USB Disconnect (Pico Hub unplugged — HID interface)
 
 `KeyboardHIDManager._read_loop()` catches all exceptions and breaks out of the read loop. The outer `_run()` loop emits `connected_changed(False)`, closes the device, waits 2 seconds, and retries `_try_open()`. **Reconnect is fully automatic** — no user action required.
 
-### 6.3 Pico → Jetson UART Disconnect
+### 6.3 Pico Hub → Jetson UART Disconnect
 
 The MicroPython Pico has no write-error detection — `uart.write()` is fire-and-forget. Bytes written while the Jetson is not listening are silently dropped. When the Jetson receiver restarts it re-synchronises on the next `MAGIC` sequence.
 
@@ -512,7 +514,9 @@ If `JetsonDB.on_window_update()` is called before any `on_window_new()`, `active
 
 ## 7. Build & Flash Reference
 
-### 7.1 QMK Firmware (QMK Pico — keyboard HID)
+### 7.1 Pico Hub Firmware (single RP2040 — QMK)
+
+The single Pico Hub runs QMK firmware. It exposes two USB interfaces to the Host: a Raw HID interface (keyboard commands 0xA0/0xA1/0xB0) and a CDC serial interface (context relay to Jetson). The relay logic in `pico/main.py` documents the serial bridge behaviour that is implemented in QMK C.
 
 **Toolchain setup (macOS, one-time):**
 
@@ -550,14 +554,7 @@ cp .build/spark_default.uf2 /Volumes/RPI-RP2/
 system_profiler SPUSBDataType | grep -A4 "C4C4"
 ```
 
-### 7.2 MicroPython Relay (MicroPython Pico — context bridge)
-
-```bash
-pip install mpremote
-mpremote cp pico/main.py :main.py
-```
-
-### 7.3 Host App Dependencies
+### 7.2 Host App Dependencies
 
 ```bash
 cd SPARK
@@ -567,7 +564,7 @@ pip install -r requirements.txt
 
 Key dependency note: `hidapi>=0.14.0` provides the `hid` Python module with a bundled native library. Do **not** install the separate `hid` package alongside it — the two conflict on macOS.
 
-### 7.4 Running the App
+### 7.3 Running the App
 
 ```bash
 source .venv/bin/activate

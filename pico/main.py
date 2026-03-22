@@ -1,21 +1,30 @@
 """
-SPARK Pico Hub — MicroPython relay firmware.
+SPARK Pico Hub — serial relay reference (MicroPython pseudocode).
+
+This file documents the relay and button-injection logic that runs on the
+single Pico Hub device (RP2040, QMK firmware, VID 0xC4C4 / PID 0x5350).
+The production implementation is QMK C code in the spark_qmk repository.
+This MicroPython version serves as a readable specification and can be
+used for rapid prototyping on a bare RP2040 before porting to QMK.
 
 Role: sit between the Host PC (USB CDC) and the Jetson Brain (UART),
-forwarding all Host packets transparently while injecting BUTTON_PRESS
-(0x05) packets whenever a physical button is pressed.
+forwarding all Host context packets transparently while injecting
+BUTTON_PRESS (0x05) packets whenever a physical button is pressed.
+Keyboard capture/release signals (0xA0 / 0xA1) are handled separately
+via the Raw HID interface of the same QMK device.
 
-Wiring
-──────
-  USB  ←→ Host PC (CDC serial, appears as /dev/tty.usbmodem* on macOS)
-  GP0 (TX) → Jetson RX
-  GP1 (RX) ← Jetson TX   (UART0, 115200 baud)
+Wiring (single Pico Hub)
+────────────────────────
+  USB  ←→ Host PC  — CDC serial  (context relay, /dev/tty.usbmodem*)
+                    — Raw HID    (keyboard commands 0xA0/0xA1/0xB0)
+  GP0 (TX) → Jetson RX   (UART0, 115200 baud)
+  GP1 (RX) ← Jetson TX   (reserved, future ACK)
   GP14 — Button 0  (active-low, internal pull-up)
   GP15 — Button 1
   GP16 — Button 2
   GP17 — Button 3
 
-Flash with:  mpremote cp pico/main.py :main.py
+MicroPython prototype flash:  mpremote cp pico/main.py :main.py
 """
 
 import sys
