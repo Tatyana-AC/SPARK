@@ -1,444 +1,358 @@
 """
-Raw HID communication layer for SPARK device.
+SPARK Raw HID upload client.
 
-Handles USB communication with the RP2040 microcontroller running SPARK firmware.
-Provides background thread-based report reading with callbacks for device events
-(button presses, encoder changes, parameter updates).
+Sends chunked UTF-8 text to the SPARK device (RP2040/QMK) over the Raw HID
+upload protocol v0x0002. Reports are 32 bytes; each chunk carries 27 bytes of
+payload.
 
-The SPARK device is identified by VID 0xC4C4 and PID 0x5350.
-
-Protocol:
-    Report byte 0:  Message type (0x01=button, 0x02=encoder, 0x03=param_update)
-    Report bytes 1–4:  Payload (button_id, encoder_delta, or float-encoded parameter value)
-    Report size:  64 bytes total (padded with 0x00)
+Typical flow:
+    client = SparkHIDClient()
+    if client.is_connected():
+        info   = client.get_info()
+        status = client.upload(AppCommand.SUBMIT_TEXT, "hello world")
+        if status.ok:
+            print("device will type the text back")
 """
 
 import logging
-import threading
-import time
-from abc import ABC, abstractmethod
+import zlib
 from dataclasses import dataclass
-from enum import Enum
-from typing import Optional, Callable, Any
-import struct
+from enum import IntEnum
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# USB identifiers for SPARK device
-SPARK_VID = 0xC4C4
-SPARK_PID = 0x5350
-SPARK_REPORT_SIZE = 64
+# ── USB / HID constants ────────────────────────────────────────
+SPARK_VID          = 0xC4C4
+SPARK_PID          = 0x5350
+RAW_USAGE_PAGE     = 0xFF60   # QMK Raw HID usage page
+RAW_USAGE_ID       = 0x61
+REPORT_SIZE        = 32
+CHUNK_PAYLOAD_SIZE = 27
 
 
-class MessageType(Enum):
-    """HID report message types from firmware."""
-    BUTTON = 0x01
-    ENCODER = 0x02
-    PARAM_UPDATE = 0x03
+# ── Protocol enums ─────────────────────────────────────────────
+
+class Command(IntEnum):
+    GET_INFO      = 0x01
+    BEGIN_UPLOAD  = 0x10
+    UPLOAD_CHUNK  = 0x11
+    COMMIT_UPLOAD = 0x12
+    ABORT_UPLOAD  = 0x13
+    STATUS        = 0x7F
+
+
+class StatusCode(IntEnum):
+    OK                  = 0x00
+    BUSY                = 0x01
+    INVALID_STATE       = 0x02
+    INVALID_LENGTH      = 0x03
+    INVALID_INDEX       = 0x04
+    CRC_MISMATCH        = 0x05
+    TOO_LARGE           = 0x06
+    UNSUPPORTED_COMMAND = 0x07
+    INCOMPLETE_UPLOAD   = 0x08
+    INTERNAL_ERROR      = 0x09
+
+
+class AppCommand(IntEnum):
+    SUBMIT_TEXT = 0x0001   # device types back the uploaded text
+    PING        = 0x0002   # device responds with "spark ready"
+    FEATURE_1   = 0x0101
+    FEATURE_2   = 0x0102
+    FEATURE_3   = 0x0103
+    FEATURE_4   = 0x0104
+
+
+# ── Result types ───────────────────────────────────────────────
+
+@dataclass
+class DeviceInfo:
+    protocol_version:  int
+    chunk_payload_size: int
+    max_upload_bytes:  int
+    max_chunk_count:   int
+    capabilities:      int
+    upload_active:     bool
+    active_message_id: int
 
 
 @dataclass
-class ButtonEvent:
-    """A button press/release event from the device."""
-    button_id: int
-    pressed: bool
+class UploadStatus:
+    message_id: int
+    code:       StatusCode
+    value0:     int
+    value1:     int
+    detail:     str
 
-    def __repr__(self) -> str:
-        state = "pressed" if self.pressed else "released"
-        return f"ButtonEvent(id={self.button_id}, {state})"
+    @property
+    def ok(self) -> bool:
+        return self.code == StatusCode.OK
 
-
-@dataclass
-class EncoderEvent:
-    """An encoder rotation event from the device."""
-    encoder_id: int
-    delta: int  # positive = clockwise, negative = counter-clockwise
-
-    def __repr__(self) -> str:
-        direction = "CW" if self.delta > 0 else "CCW"
-        return f"EncoderEvent(id={self.encoder_id}, delta={self.delta} {direction})"
+    def __str__(self) -> str:
+        return (
+            f"msg={self.message_id} status={self.code.name}"
+            + (f" detail={self.detail!r}" if self.detail else "")
+        )
 
 
-@dataclass
-class ParameterUpdateEvent:
-    """A parameter update event (temperature, top_p, max_tokens, etc.)."""
-    param_id: int
-    value: float
-
-    def __repr__(self) -> str:
-        return f"ParameterUpdateEvent(id={self.param_id}, value={self.value})"
+class SparkProtocolError(RuntimeError):
+    """Raised when the device returns an unexpected response."""
 
 
-class HIDDevice(ABC):
-    """Abstract base class for HID device implementations."""
+# ── Client ─────────────────────────────────────────────────────
 
-    @abstractmethod
-    def open(self) -> bool:
-        """Open connection to device. Returns True on success."""
-        pass
+class SparkHIDClient:
+    """
+    Synchronous Raw HID client for the SPARK device.
 
-    @abstractmethod
-    def close(self) -> None:
-        """Close connection to device."""
-        pass
+    All methods block the calling thread. Run upload() from a background
+    thread to keep the Qt event loop responsive.
+    """
 
-    @abstractmethod
-    def is_open(self) -> bool:
-        """Check if device is currently open."""
-        pass
-
-    @abstractmethod
-    def read(self, size: int = SPARK_REPORT_SIZE) -> Optional[bytes]:
-        """
-        Read a report from the device.
-
-        Args:
-            size: Expected report size in bytes
-
-        Returns:
-            Bytes read, or None if no data available or error
-        """
-        pass
-
-    @abstractmethod
-    def write(self, data: bytes) -> int:
-        """
-        Write a report to the device.
-
-        Args:
-            data: Bytes to write (will be padded to SPARK_REPORT_SIZE)
-
-        Returns:
-            Number of bytes written, or -1 on error
-        """
-        pass
-
-
-class RealHIDDevice(HIDDevice):
-    """Real HID device using hid library."""
-
-    def __init__(self, vid: int, pid: int):
+    def __init__(self, vid: int = SPARK_VID, pid: int = SPARK_PID) -> None:
         self.vid = vid
         self.pid = pid
-        self.device = None
-        self._lock = threading.Lock()
+        self._device = None
+        self._message_id = 0
 
-    def open(self) -> bool:
-        """Open connection to SPARK device by VID/PID."""
+    # ── Connection helpers ─────────────────────────────────────
+
+    def _matching_interfaces(self) -> list:
         try:
             import hid
         except ImportError:
-            logger.error("hid module not found. Install: pip install hidapi")
-            return False
+            logger.error("hidapi not installed — run: pip install hidapi")
+            return []
 
+        devices = hid.enumerate(self.vid, self.pid)
+        matches = [
+            d for d in devices
+            if d.get("usage_page") == RAW_USAGE_PAGE and d.get("usage") == RAW_USAGE_ID
+        ]
+        # Fallback: accept any interface for this VID/PID
+        return matches if matches else devices
+
+    def is_connected(self) -> bool:
+        """Return True if the SPARK Raw HID interface is visible on USB."""
+        return bool(self._matching_interfaces())
+
+    def _open(self) -> None:
+        """Open the HID device if not already open."""
         try:
-            with self._lock:
-                if self.device is not None:
-                    return True
+            import hid
+        except ImportError:
+            raise SparkProtocolError("hidapi not installed — run: pip install hidapi")
 
-                self.device = hid.device()
-                self.device.open(self.vid, self.pid)
-                self.device.set_nonblocking(True)
-                logger.info(f"Opened HID device {self.vid:04x}:{self.pid:04x}")
-                return True
-        except Exception as e:
-            logger.error(f"Failed to open HID device: {e}")
-            self.device = None
-            return False
+        if self._device is not None:
+            return
+
+        matches = self._matching_interfaces()
+        if not matches:
+            raise SparkProtocolError(
+                f"SPARK device not found (VID 0x{self.vid:04X} PID 0x{self.pid:04X})"
+            )
+
+        self._device = hid.device()
+        self._device.open_path(matches[0]["path"])
+        self._device.set_nonblocking(False)
+        logger.info("Opened SPARK Raw HID device")
 
     def close(self) -> None:
-        """Close connection to device."""
-        with self._lock:
-            if self.device is not None:
-                try:
-                    self.device.close()
-                except Exception as e:
-                    logger.warning(f"Error closing HID device: {e}")
-                finally:
-                    self.device = None
-                logger.info("Closed HID device")
-
-    def is_open(self) -> bool:
-        """Check if device is open."""
-        with self._lock:
-            return self.device is not None
-
-    def read(self, size: int = SPARK_REPORT_SIZE) -> Optional[bytes]:
-        """Read a report from device."""
-        with self._lock:
-            if self.device is None:
-                return None
+        """Close the HID device."""
+        if self._device is not None:
             try:
-                data = self.device.read(size, timeout_ms=100)
-                return bytes(data) if data else None
-            except Exception as e:
-                logger.warning(f"HID read error: {e}")
-                return None
+                self._device.close()
+            except Exception as exc:
+                logger.warning(f"Error closing HID device: {exc}")
+            finally:
+                self._device = None
+            logger.info("Closed SPARK Raw HID device")
 
-    def write(self, data: bytes) -> int:
-        """Write a report to device."""
-        with self._lock:
-            if self.device is None:
-                return -1
-            try:
-                # Pad to report size
-                padded = data + b'\x00' * (SPARK_REPORT_SIZE - len(data))
-                padded = padded[:SPARK_REPORT_SIZE]
-                return self.device.write(padded)
-            except Exception as e:
-                logger.warning(f"HID write error: {e}")
-                return -1
+    # ── Low-level I/O ──────────────────────────────────────────
 
+    def _write(self, report: bytes) -> None:
+        self._open()
+        # Some platforms need a leading zero-byte report ID
+        payload = bytes([0]) + report
+        written = self._device.write(payload)
+        if written not in (len(payload), len(report)):
+            raise SparkProtocolError(
+                f"Short HID write: wrote {written} of {len(payload)} bytes"
+            )
 
-class MockHIDDevice(HIDDevice):
-    """Mock HID device for testing without physical hardware."""
+    def _read(self, timeout_ms: int = 2000) -> bytes:
+        self._open()
+        data = self._device.read(REPORT_SIZE, timeout_ms)
+        if not data:
+            raise SparkProtocolError("Timed out waiting for device response")
+        report = bytes(data)
+        # Strip leading report-ID byte if present
+        if len(report) == REPORT_SIZE + 1 and report[0] == 0:
+            report = report[1:]
+        if len(report) != REPORT_SIZE:
+            raise SparkProtocolError(
+                f"Unexpected report size: {len(report)} (expected {REPORT_SIZE})"
+            )
+        return report
 
-    def __init__(self):
-        self._open = False
-        self._write_queue = []
+    def _next_message_id(self) -> int:
+        self._message_id = (self._message_id % 0xFFFF) + 1
+        return self._message_id
 
-    def open(self) -> bool:
-        """Mock open (always succeeds)."""
-        self._open = True
-        logger.info("Opened mock HID device")
-        return True
+    # ── Protocol helpers ───────────────────────────────────────
 
-    def close(self) -> None:
-        """Mock close."""
-        self._open = False
-        logger.info("Closed mock HID device")
+    @staticmethod
+    def _u16(data: bytes, offset: int) -> int:
+        return data[offset] | (data[offset + 1] << 8)
 
-    def is_open(self) -> bool:
-        """Check if mock device is open."""
-        return self._open
+    @staticmethod
+    def _u32(data: bytes, offset: int) -> int:
+        return (
+            data[offset]
+            | (data[offset + 1] << 8)
+            | (data[offset + 2] << 16)
+            | (data[offset + 3] << 24)
+        )
 
-    def read(self, size: int = SPARK_REPORT_SIZE) -> Optional[bytes]:
-        """Mock read (returns None — no data)."""
-        return None
+    @staticmethod
+    def _parse_detail(raw: bytes) -> str:
+        return raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
 
-    def write(self, data: bytes) -> int:
-        """Mock write (stores for verification in tests)."""
-        if not self._open:
-            return -1
-        self._write_queue.append(data)
-        return len(data)
+    def _read_status(self, expected_cmd: int, message_id: int, timeout_ms: int = 2000) -> UploadStatus:
+        reply = self._read(timeout_ms)
+        if reply[0] != Command.STATUS:
+            raise SparkProtocolError(
+                f"Expected STATUS (0x7F), got 0x{reply[0]:02X}"
+            )
+        related_cmd    = reply[1]
+        reply_msg_id   = self._u16(reply, 2)
+        status_code    = reply[4]
+        value0         = self._u32(reply, 6)
+        value1         = self._u32(reply, 10)
+        detail         = self._parse_detail(reply[14:32])
 
-
-class RawHIDListener:
-    """
-    Background thread-based HID report reader for SPARK device.
-
-    Continuously reads 64-byte reports from the device and parses them into
-    structured events (button, encoder, parameter update). Fires registered
-    callbacks when events are received.
-
-    Supports auto-reconnect on device disconnect.
-    """
-
-    def __init__(self, device: Optional[HIDDevice] = None, auto_reconnect: bool = True):
-        """
-        Initialize the HID listener.
-
-        Args:
-            device: HIDDevice instance (defaults to RealHIDDevice)
-            auto_reconnect: Automatically reconnect on device disconnect
-        """
-        self.device = device or RealHIDDevice(SPARK_VID, SPARK_PID)
-        self.auto_reconnect = auto_reconnect
-
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._lock = threading.Lock()
-
-        # Callbacks
-        self._on_button_press: Optional[Callable[[ButtonEvent], None]] = None
-        self._on_encoder_change: Optional[Callable[[EncoderEvent], None]] = None
-        self._on_param_update: Optional[Callable[[ParameterUpdateEvent], None]] = None
-        self._on_error: Optional[Callable[[str], None]] = None
-
-    def start(self) -> bool:
-        """
-        Start the background listener thread.
-
-        Returns:
-            True if started successfully, False otherwise
-        """
-        with self._lock:
-            if self._running:
-                logger.warning("RawHIDListener already running")
-                return False
-
-            if not self.device.open():
-                logger.error("Failed to open HID device")
-                return False
-
-            self._running = True
-            self._thread = threading.Thread(target=self._read_loop, daemon=True)
-            self._thread.start()
-            logger.info("RawHIDListener thread started")
-            return True
-
-    def stop(self) -> None:
-        """Stop the background listener thread."""
-        with self._lock:
-            self._running = False
-
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
-
-        self.device.close()
-        logger.info("RawHIDListener thread stopped")
-
-    def is_running(self) -> bool:
-        """Check if listener is running."""
-        with self._lock:
-            return self._running
-
-    def on_button_press(self, callback: Callable[[ButtonEvent], None]) -> None:
-        """Register callback for button press events."""
-        self._on_button_press = callback
-
-    def on_encoder_change(self, callback: Callable[[EncoderEvent], None]) -> None:
-        """Register callback for encoder change events."""
-        self._on_encoder_change = callback
-
-    def on_param_update(self, callback: Callable[[ParameterUpdateEvent], None]) -> None:
-        """Register callback for parameter update events."""
-        self._on_param_update = callback
-
-    def on_error(self, callback: Callable[[str], None]) -> None:
-        """Register callback for error messages."""
-        self._on_error = callback
-
-    def send_report(self, data: bytes) -> bool:
-        """
-        Send a report to the device.
-
-        Args:
-            data: Bytes to send (will be padded to 64 bytes)
-
-        Returns:
-            True if sent successfully, False otherwise
-        """
-        if not self.device.is_open():
-            logger.warning("Cannot send report: device not open")
-            return False
-
-        result = self.device.write(data)
-        if result < 0:
-            logger.error("Failed to send report to device")
-            return False
-
-        logger.debug(f"Sent {result} bytes to device")
-        return True
-
-    def _read_loop(self) -> None:
-        """Background thread main loop that reads and parses HID reports."""
-        reconnect_delay = 1.0
-
-        while True:
-            with self._lock:
-                if not self._running:
-                    break
-
-            if not self.device.is_open():
-                if self.auto_reconnect:
-                    logger.info(f"Device disconnected, reconnecting in {reconnect_delay}s...")
-                    time.sleep(reconnect_delay)
-                    if self.device.open():
-                        reconnect_delay = 1.0
-                    else:
-                        reconnect_delay = min(reconnect_delay * 1.5, 10.0)
-                else:
-                    break
-                continue
-
-            try:
-                data = self.device.read(SPARK_REPORT_SIZE)
-                if data is None:
-                    time.sleep(0.01)  # No data available, small sleep
-                    continue
-
-                self._parse_report(data)
-            except Exception as e:
-                error_msg = f"Error in HID read loop: {e}"
-                logger.error(error_msg)
-                if self._on_error:
-                    self._on_error(error_msg)
-                self.device.close()
-
-    def _parse_report(self, data: bytes) -> None:
-        """
-        Parse a 64-byte HID report into structured events.
-
-        Args:
-            data: Raw 64-byte report from device
-        """
-        if not data or len(data) < 5:
-            logger.warning("Invalid report size")
-            return
-
-        msg_type = data[0]
+        if related_cmd != expected_cmd or reply_msg_id != message_id:
+            raise SparkProtocolError(
+                f"STATUS mismatch: cmd=0x{related_cmd:02X} (expected 0x{expected_cmd:02X}), "
+                f"msg={reply_msg_id} (expected {message_id})"
+            )
 
         try:
-            if msg_type == MessageType.BUTTON.value:
-                self._parse_button(data)
-            elif msg_type == MessageType.ENCODER.value:
-                self._parse_encoder(data)
-            elif msg_type == MessageType.PARAM_UPDATE.value:
-                self._parse_param_update(data)
-            else:
-                logger.warning(f"Unknown message type: 0x{msg_type:02x}")
-        except Exception as e:
-            logger.error(f"Error parsing report: {e}")
+            code = StatusCode(status_code)
+        except ValueError:
+            code = StatusCode.INTERNAL_ERROR
 
-    def _parse_button(self, data: bytes) -> None:
-        """Parse a button event from report bytes 1-4."""
-        if not self._on_button_press:
-            return
+        return UploadStatus(
+            message_id=message_id,
+            code=code,
+            value0=value0,
+            value1=value1,
+            detail=detail,
+        )
 
-        button_id = data[1]
-        pressed = bool(data[2])
-        event = ButtonEvent(button_id=button_id, pressed=pressed)
-        logger.debug(f"Parsed button event: {event}")
-        self._on_button_press(event)
+    # ── Public API ─────────────────────────────────────────────
 
-    def _parse_encoder(self, data: bytes) -> None:
-        """Parse an encoder event from report bytes 1-4."""
-        if not self._on_encoder_change:
-            return
+    def get_info(self) -> DeviceInfo:
+        """Query device capabilities."""
+        report = bytearray(REPORT_SIZE)
+        report[0] = Command.GET_INFO
+        self._write(bytes(report))
+        reply = self._read()
 
-        encoder_id = data[1]
-        # Delta is signed int32, little-endian
-        delta = struct.unpack('<i', data[2:6])[0]
-        event = EncoderEvent(encoder_id=encoder_id, delta=delta)
-        logger.debug(f"Parsed encoder event: {event}")
-        self._on_encoder_change(event)
+        if reply[0] != Command.GET_INFO:
+            raise SparkProtocolError(
+                f"Expected GET_INFO response, got 0x{reply[0]:02X}"
+            )
 
-    def _parse_param_update(self, data: bytes) -> None:
-        """Parse a parameter update event from report bytes 1-4."""
-        if not self._on_param_update:
-            return
+        return DeviceInfo(
+            protocol_version  = self._u16(reply, 1),
+            chunk_payload_size= reply[3],
+            max_upload_bytes  = self._u32(reply, 4),
+            max_chunk_count   = self._u16(reply, 8),
+            capabilities      = reply[10],
+            upload_active     = bool(reply[11]),
+            active_message_id = self._u16(reply, 12),
+        )
 
-        param_id = data[1]
-        # Value is float32, little-endian
-        value = struct.unpack('<f', data[2:6])[0]
-        event = ParameterUpdateEvent(param_id=param_id, value=value)
-        logger.debug(f"Parsed param update: {event}")
-        self._on_param_update(event)
+    def upload(self, app_command: AppCommand, text: str) -> UploadStatus:
+        """
+        Upload UTF-8 text to the device.
 
+        Handles BEGIN_UPLOAD → chunks → COMMIT_UPLOAD and returns the final
+        status. Raises SparkProtocolError on transport or protocol errors.
+        """
+        payload    = text.encode("utf-8")
+        message_id = self._next_message_id()
+        crc32      = zlib.crc32(payload) & 0xFFFFFFFF
+        total_len  = len(payload)
+        chunks     = [
+            payload[i : i + CHUNK_PAYLOAD_SIZE]
+            for i in range(0, total_len, CHUNK_PAYLOAD_SIZE)
+        ]
 
-def create_listener(mock: bool = False, auto_reconnect: bool = True) -> RawHIDListener:
-    """
-    Factory function to create a RawHIDListener instance.
+        logger.info(
+            f"upload msg={message_id} cmd=0x{app_command:04X} "
+            f"len={total_len} chunks={len(chunks)}"
+        )
 
-    Args:
-        mock: If True, use MockHIDDevice for testing
-        auto_reconnect: Enable automatic reconnection on device disconnect
+        # ── BEGIN_UPLOAD ──────────────────────────────────────
+        begin = bytearray(REPORT_SIZE)
+        begin[0]  = Command.BEGIN_UPLOAD
+        begin[1]  = message_id & 0xFF
+        begin[2]  = (message_id >> 8) & 0xFF
+        begin[3]  = int(app_command) & 0xFF
+        begin[4]  = (int(app_command) >> 8) & 0xFF
+        begin[5]  = 0x01                          # ENCODING_UTF8
+        begin[7]  = total_len & 0xFF
+        begin[8]  = (total_len >> 8) & 0xFF
+        begin[9]  = (total_len >> 16) & 0xFF
+        begin[10] = (total_len >> 24) & 0xFF
+        begin[11] = crc32 & 0xFF
+        begin[12] = (crc32 >> 8) & 0xFF
+        begin[13] = (crc32 >> 16) & 0xFF
+        begin[14] = (crc32 >> 24) & 0xFF
+        self._write(bytes(begin))
 
-    Returns:
-        Configured RawHIDListener instance
-    """
-    device = MockHIDDevice() if mock else RealHIDDevice(SPARK_VID, SPARK_PID)
-    return RawHIDListener(device=device, auto_reconnect=auto_reconnect)
+        begin_status = self._read_status(Command.BEGIN_UPLOAD, message_id)
+        if not begin_status.ok:
+            logger.warning(f"BEGIN_UPLOAD rejected: {begin_status}")
+            return begin_status
+
+        # ── UPLOAD_CHUNKs ─────────────────────────────────────
+        for idx, chunk in enumerate(chunks):
+            pkt = bytearray(REPORT_SIZE)
+            pkt[0] = Command.UPLOAD_CHUNK
+            pkt[1] = message_id & 0xFF
+            pkt[2] = (message_id >> 8) & 0xFF
+            pkt[3] = idx & 0xFF
+            pkt[4] = (idx >> 8) & 0xFF
+            pkt[5 : 5 + len(chunk)] = chunk
+            self._write(bytes(pkt))
+
+        # ── COMMIT_UPLOAD ─────────────────────────────────────
+        commit = bytearray(REPORT_SIZE)
+        commit[0] = Command.COMMIT_UPLOAD
+        commit[1] = message_id & 0xFF
+        commit[2] = (message_id >> 8) & 0xFF
+        self._write(bytes(commit))
+
+        final = self._read_status(Command.COMMIT_UPLOAD, message_id)
+        if final.ok:
+            logger.info(f"upload complete: {final}")
+        else:
+            logger.warning(f"upload failed: {final}")
+        return final
+
+    def abort(self, message_id: int) -> UploadStatus:
+        """Abort an in-progress upload."""
+        report = bytearray(REPORT_SIZE)
+        report[0] = Command.ABORT_UPLOAD
+        report[1] = message_id & 0xFF
+        report[2] = (message_id >> 8) & 0xFF
+        self._write(bytes(report))
+        return self._read_status(Command.ABORT_UPLOAD, message_id)
+
+    def ping(self) -> UploadStatus:
+        """Send PING — device responds with 'spark ready'."""
+        return self.upload(AppCommand.PING, "ping")

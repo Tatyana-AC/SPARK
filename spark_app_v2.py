@@ -11,6 +11,7 @@ Hotkeys (global, work from any app):
 import os
 import sys
 import logging
+import threading
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QFrame,
@@ -18,7 +19,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QSizePolicy,
     QSystemTrayIcon, QMenu,
 )
-from PyQt6.QtCore import Qt, QTimer, QPoint
+from PyQt6.QtCore import Qt, QTimer, QPoint, QObject, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPainter, QPainterPath, QCursor, QIcon, QPixmap
 
 sys.path.insert(0, '/Users/tatyanacruz/Documents/Spring 26/SPARK')
@@ -29,6 +30,8 @@ from host_pc.accessibility.tracker import WindowContextTracker
 from host_pc.browser import get_browser_tab
 from host_pc.db import SparkDB
 from host_pc.hotkeys import GlobalHotkeyManager
+from host_pc.raw_hid import SparkHIDClient, AppCommand, SparkProtocolError
+from host_pc.serial_sender import SerialSender
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s  %(name)s  %(levelname)s  %(message)s")
@@ -185,6 +188,12 @@ QLabel#close_btn {{
 QLabel#close_btn:hover {{
     color: #9CA3AF;
 }}
+QLabel#device_dot {{
+    font-size: 10px;
+    font-weight: 700;
+    background: transparent;
+    padding: 2px 6px;
+}}
 QPushButton#poll_toggle {{
     background-color: transparent;
     color: {ACCENT};
@@ -276,6 +285,11 @@ class ActionButton(QPushButton):
     def set_subtitle(self, text: str):
         self._sub_lbl.setText(text)
 
+class HIDSignals(QObject):
+    """Qt signal bridge for HID thread → main thread."""
+    device_connected = pyqtSignal(bool)  # True=connected, False=disconnected
+
+
 # --Sensitive content guard  ─────────────────────────
 class PrivacyGuard:
     def __init__(self):
@@ -342,6 +356,15 @@ class SparkPanel(QWidget):
         self.db = SparkDB(db_path)
         self.tracker = WindowContextTracker(db=self.db)
 
+        # ── HID device ───────────────────────────────────────────
+        self.hid_signals = HIDSignals()
+        self.hid_client  = SparkHIDClient()
+
+        # ── Serial sender (Host → Pico Hub) ──────────────────────
+        self.serial_sender = SerialSender()
+        self.serial_sender.connect()   # best-effort; silently skipped if no Pico
+        self._last_serial_key: str | None = None
+
         self.captured_text: str = ""
         self.processed_text: str = ""
         self.is_polling = False
@@ -351,6 +374,7 @@ class SparkPanel(QWidget):
         self._build_ui()
         self._connect_hotkeys()
         self.hotkeys.start()
+        self._connect_hid()
 
         self.poll_timer = QTimer()
         self.poll_timer.setInterval(self.POLL_INTERVAL)
@@ -390,6 +414,11 @@ class SparkPanel(QWidget):
         title_col.addWidget(s)
         hdr.addLayout(title_col)
         hdr.addStretch()
+
+        self.device_dot = QLabel("● DEVICE")
+        self.device_dot.setObjectName("device_dot")
+        self.device_dot.setStyleSheet(f"color: #374151;")  # grey = disconnected
+        hdr.addWidget(self.device_dot, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         close = QLabel("✕")
         close.setObjectName("close_btn")
@@ -511,6 +540,34 @@ class SparkPanel(QWidget):
         self.hotkeys.signals.toggle_triggered.connect(self.toggle)
 
     # ─────────────────────────────────────────────────────────────
+    # HID device
+    # ─────────────────────────────────────────────────────────────
+
+    def _connect_hid(self):
+        """Start a 2-second connection poll and wire the device_connected signal."""
+        self.hid_signals.device_connected.connect(self._on_hid_connected)
+        self._hid_poll_timer = QTimer()
+        self._hid_poll_timer.setInterval(2000)
+        self._hid_poll_timer.timeout.connect(self._poll_hid_connection)
+        self._hid_poll_timer.start()
+
+    def _poll_hid_connection(self):
+        """Check USB connection and emit signal if state changed."""
+        connected = self.hid_client.is_connected()
+        if connected != getattr(self, "_hid_connected", None):
+            self._hid_connected = connected
+            self.hid_signals.device_connected.emit(connected)
+
+    def _on_hid_connected(self, connected: bool):
+        """Update the device status dot in the header."""
+        if connected:
+            self.device_dot.setStyleSheet(f"color: {GREEN};")
+            self.device_dot.setToolTip("SPARK device connected")
+        else:
+            self.device_dot.setStyleSheet("color: #374151;")
+            self.device_dot.setToolTip("SPARK device disconnected")
+
+    # ─────────────────────────────────────────────────────────────
     # Polling — identical logic to SparkPipeline._on_poll_tick
     # ─────────────────────────────────────────────────────────────
 
@@ -579,6 +636,18 @@ class SparkPanel(QWidget):
             preview = text[:120].replace("\n", " ")
             self._push_capture_line(f"[{info.app_name}] {preview}")
             self.tracker.update(info, text, source, tab=tab)
+
+            # ── Serial → Pico Hub ────────────────────────────────
+            current = self.tracker.get_current()
+            if current:
+                key = current.context_key
+                if key != self._last_serial_key:
+                    self._last_serial_key = key
+                    self.serial_sender.send_window_new(
+                        info.app_name, info.title or "", text
+                    )
+                else:
+                    self.serial_sender.send_window_update(text)
         else:
             self._push_capture_line(f"[{info.app_name}] (no text extracted)")
 
@@ -640,15 +709,31 @@ class SparkPanel(QWidget):
         if not self.processed_text:
             self._set_status("Nothing to release — capture text first", RED)
             return
-        self._set_status("Releasing text…", ORANGE)
-        QTimer.singleShot(200, self._do_release)
+        if not self.hid_client.is_connected():
+            self._set_status("SPARK device not connected", RED)
+            return
+        self._set_status("Sending to device…", ORANGE)
+        self.btn_release.setEnabled(False)
+        text = self.processed_text
+        threading.Thread(target=self._do_release, args=(text,), daemon=True).start()
 
-    def _do_release(self):
-        ok = self.manager.paste_text(self.processed_text)
-        if ok:
-            self._set_status("Text pasted back into application ✓", GREEN)
-        else:
-            self._set_status("Paste failed — make sure a text field is focused", RED)
+    def _do_release(self, text: str):
+        """Upload text to the device (runs in background thread)."""
+        try:
+            status = self.hid_client.upload(AppCommand.SUBMIT_TEXT, text)
+            if status.ok:
+                self.hid_signals.device_connected.emit(True)  # reuse signal to confirm alive
+                QTimer.singleShot(0, lambda: self._set_status(
+                    "Sent to SPARK — device is typing it back ✓", GREEN
+                ))
+            else:
+                QTimer.singleShot(0, lambda: self._set_status(
+                    f"Device error: {status.code.name}", RED
+                ))
+        except SparkProtocolError as exc:
+            QTimer.singleShot(0, lambda: self._set_status(f"HID error: {exc}", RED))
+        finally:
+            QTimer.singleShot(0, lambda: self.btn_release.setEnabled(True))
 
     def _on_summarize(self):
         """Summarize whatever is currently visible in the active window."""
@@ -752,7 +837,10 @@ class SparkPanel(QWidget):
     def closeEvent(self, event):
         self.poll_timer.stop()
         self._blink_timer.stop()
+        self._hid_poll_timer.stop()
         self.hotkeys.stop()
+        self.hid_client.close()
+        self.serial_sender.close()
         self.db.close()
         super().closeEvent(event)
 
