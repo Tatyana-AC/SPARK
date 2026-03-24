@@ -5,7 +5,7 @@
 SPARK is no longer just a desktop capture panel. On the current `sida` branch, it is a distributed three-node system:
 
 - Host PC app: PyQt desktop app that captures desktop context, tracks window state, talks to hardware, and maintains a local history DB.
-- Pico Hub: RP2040/QMK device that exposes both Raw HID and USB CDC serial, bridging context packets toward Jetson and accepting HID uploads from the host.
+- Pico Hub: RP2040/CircuitPython device that exposes custom Raw HID, standard keyboard HID, and USB CDC serial, bridging context packets toward Jetson and accepting HID uploads from the host.
 - Jetson Brain: serial receiver plus SQLite store for session-oriented context and button events.
 
 The current codebase is best understood as a host application plus protocol and hardware integration layers.
@@ -78,13 +78,13 @@ The host node is the user-facing desktop application.
 
 - `pico/main.py`
   - Reference implementation and readable spec for the Pico relay behavior.
-  - Treat this as documentation/prototype code, not the authoritative production firmware.
+  - Treat this as documentation/reference code, not the literal deployed `boot.py` / `code.py` pair.
   - Describes the Pico’s job:
     - relay host CDC serial bytes to Jetson UART
     - inject button-press packets
-    - coexist with Raw HID keyboard signaling on the same physical device
+    - coexist with custom Raw HID control traffic and keyboard HID type-back on the same physical device
 - `ENGINEERING_SPEC.md`
-  - The real source of truth for the distributed architecture and the QMK-based single-Pico design.
+  - The real source of truth for the distributed architecture and the CircuitPython-based single-Pico design.
 
 ### 4. Jetson Layer
 

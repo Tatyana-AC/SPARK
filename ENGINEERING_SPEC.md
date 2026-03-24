@@ -3,7 +3,7 @@
 
 **Version:** 1.1
 **Status:** Active
-**Nodes:** Host PC (macOS/Win) · Pico Hub (RP2040/QMK) · Jetson Brain (NVIDIA)
+**Nodes:** Host PC (macOS/Win) · Pico Hub (RP2040/CircuitPython) · Jetson Brain (NVIDIA)
 
 ---
 
@@ -22,7 +22,7 @@
 
 ## 1. System Overview
 
-SPARK is a distributed assistive input system composed of three physically distinct compute nodes. The Host PC connects to a **single Pico Hub** over USB — the Pico runs QMK firmware and exposes two USB interfaces: a Raw HID interface for keyboard commands and a CDC serial interface for context relay to the Jetson Brain.
+SPARK is a distributed assistive input system composed of three physically distinct compute nodes. The Host PC connects to a **single Pico Hub** over USB — the Pico runs CircuitPython firmware and exposes a USB CDC data channel for context relay, a custom Raw HID interface for command/upload traffic, and a standard keyboard HID interface for text type-back.
 
 ```
                           ┌─────────────────────────────────────────────────────┐
@@ -34,17 +34,18 @@ SPARK is a distributed assistive input system composed of three physically disti
                           │  KeyboardHIDManager                                 │
                           └────────┬────────────────────┬───────────────────────┘
                                    │                    │
-                          USB CDC serial           USB Raw HID
-                          (context relay)        (keyboard cmds 0xA0/0xA1/0xB0)
+                          USB CDC data            USB custom HID
+                          (context relay)      (commands + uploads)
                                    │                    │
                           ┌────────▼────────────────────▼──────────┐
                           │              PICO HUB                   │
-                          │           QMK firmware                  │
+                          │      CircuitPython firmware             │
                           │           VID 0xC4C4  PID 0x5350        │
                           │                                         │
-                          │  Raw HID interface  (keyboard signals)  │
+                          │  Custom HID iface   (host protocol)     │
                           │  CDC serial relay   (context packets)   │
-                          │  Button GPIO IRQ    (GP14–GP17)         │
+                          │  Keyboard HID out   (type-back output)  │
+                          │  Button GPIO scan   (GP14–GP17)         │
                           └─────────────────────┬───────────────────┘
                                                  │
                                             UART (GP0/GP1)
@@ -182,7 +183,7 @@ Offset  Size  struct fmt  C type     Field
 
 ### 3.1 Overview
 
-`KeyboardHIDManager` (`host_pc/hid/keyboard_hid.py`) manages the bidirectional Raw HID channel between the Host and the QMK Pico. It mirrors the structure of `GlobalHotkeyManager` — a signals class plus a manager with `start()` / `stop()` — so it integrates identically into `spark_app.py` and `spark_app_v2.py`.
+`KeyboardHIDManager` (`host_pc/hid/keyboard_hid.py`) manages the bidirectional custom Raw HID channel between the Host and the Pico Hub. It mirrors the structure of `GlobalHotkeyManager` — a signals class plus a manager with `start()` / `stop()` — so it integrates identically into `spark_app.py` and `spark_app_v2.py`.
 
 ```
 KeyboardHIDSignals(QObject)
@@ -198,15 +199,15 @@ KeyboardHIDManager
 
 ### 3.2 Device Identity
 
-All values taken directly from `spark_qmk/keyboards/spark/keyboard.json` and `tools/spark_raw_hid_demo.py`:
+All values below are part of the current Pico USB contract and are mirrored in the host HID clients:
 
 | Constant | Value | Source |
 |---|---|---|
-| `SPARK_VID` | `0xC4C4` | `keyboard.json` → `usb.vid` |
-| `SPARK_PID` | `0x5350` | `keyboard.json` → `usb.pid` |
-| `RAW_USAGE_PAGE` | `0xFF60` | QMK Raw HID spec |
-| `RAW_USAGE_ID` | `0x61` | QMK Raw HID spec |
-| `REPORT_SIZE` | `32` | `spark_raw_hid_demo.py` |
+| `SPARK_VID` | `0xC4C4` | firmware USB identity |
+| `SPARK_PID` | `0x5350` | firmware USB identity |
+| `RAW_USAGE_PAGE` | `0xFF60` | SPARK custom Raw HID contract |
+| `RAW_USAGE_ID` | `0x61` | SPARK custom Raw HID contract |
+| `REPORT_SIZE` | `32` | host/device protocol contract |
 
 ### 3.3 Keyboard → Host Commands (0xA0–0xAF range)
 
@@ -219,7 +220,7 @@ The keyboard sends 32-byte reports with the command byte at position 0, matching
 
 ### 3.4 Host → Keyboard Feedback (0xB0–0xBF range)
 
-`send_status(status_byte)` writes a 32-byte report with `CMD_HOST_STATUS` at byte 0 and the status code at byte 1. The keyboard firmware uses this to drive LED/display feedback.
+`send_status(status_byte)` writes a 32-byte report with `CMD_HOST_STATUS` at byte 0 and the status code at byte 1. The Pico firmware uses this to drive host-visible status feedback.
 
 ```
 Byte 0: 0xB0  CMD_HOST_STATUS
@@ -260,7 +261,7 @@ The 500 ms read timeout ensures `stop()` is acknowledged within ~500 ms without 
 
 ```mermaid
 sequenceDiagram
-    participant KB as QMK Pico<br/>(keyboard)
+    participant KB as CircuitPython Pico<br/>(custom HID)
     participant HID as KeyboardHIDManager<br/>(reader thread)
     participant App as SparkPanel<br/>(Qt main thread)
     participant Acc as AccessibilityManager
@@ -299,12 +300,12 @@ hid>=1.0.4       ✗  (conflicts with hidapi on macOS)
 
 ### 4.1 Hardware Routing
 
-The Pico Hub (single RP2040 running QMK) performs **transparent serial bridging** between two physical channels:
+The Pico Hub (single RP2040 running CircuitPython) performs **transparent serial bridging** between two physical channels:
 
 ```
 Host PC                      Pico RP2040                   Jetson Brain
 ────────                     ──────────                    ────────────
-USB CDC (tty.usbmodem*)  →  sys.stdin.buffer          →  UART0 RX (GP1)
+USB CDC data            →  usb_cdc.data              →  UART0 RX (GP1)
                              UART0 TX (GP0)
 ```
 
@@ -431,7 +432,7 @@ uint8_t crc8(const uint8_t *data, size_t len) {
 sequenceDiagram
     participant Host as Host PC<br/>(SparkPanel)
     participant Serial as SerialSender
-    participant Pico as Pico Hub<br/>(MicroPython)
+    participant Pico as Pico Hub<br/>(CircuitPython)
     participant Jetson as Jetson Brain<br/>(receiver.py)
     participant DB as JetsonDB<br/>(SQLite)
 
@@ -467,7 +468,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    participant KB as QMK Pico<br/>(keyboard)
+    participant KB as CircuitPython Pico<br/>(custom HID)
     participant HID as KeyboardHIDManager<br/>(reader thread)
     participant App as SparkPanel<br/>(Qt main thread)
     participant Acc as AccessibilityManager
@@ -496,7 +497,7 @@ sequenceDiagram
 
 ### 6.3 Pico Hub → Jetson UART Disconnect
 
-The MicroPython Pico has no write-error detection — `uart.write()` is fire-and-forget. Bytes written while the Jetson is not listening are silently dropped. When the Jetson receiver restarts it re-synchronises on the next `MAGIC` sequence.
+The CircuitPython Pico relay has no end-to-end write acknowledgement on the Jetson UART path — `uart.write()` is effectively fire-and-forget. Bytes written while the Jetson is not listening are silently dropped. When the Jetson receiver restarts it re-synchronises on the next `MAGIC` sequence.
 
 ### 6.4 CRC Failure on Jetson
 
@@ -514,45 +515,32 @@ If `JetsonDB.on_window_update()` is called before any `on_window_new()`, `active
 
 ## 7. Build & Flash Reference
 
-### 7.1 Pico Hub Firmware (single RP2040 — QMK)
+### 7.1 Pico Hub Firmware (single RP2040 — CircuitPython)
 
-The single Pico Hub runs QMK firmware. It exposes two USB interfaces to the Host: a Raw HID interface (keyboard commands 0xA0/0xA1/0xB0) and a CDC serial interface (context relay to Jetson). The relay logic in `pico/main.py` documents the serial bridge behaviour that is implemented in QMK C.
+The single Pico Hub runs CircuitPython firmware. In the current design:
 
-**Toolchain setup (macOS, one-time):**
+- `boot.py` sets USB identity to VID `0xC4C4` / PID `0x5350`
+- `boot.py` enables USB CDC data and exposes the HID interfaces required by the Host
+- `code.py` runs the CDC-to-UART relay loop, button scanning, custom Raw HID protocol handling, and keyboard type-back behavior
 
-```bash
-# Install QMK CLI via pipx (avoids Homebrew Python conflicts)
-brew install pipx
-pipx install qmk
-pipx ensurepath
+[`pico/main.py`](pico/main.py) remains the readable reference for the Pico-side relay and button-injection behavior, even though the deployed firmware is a CircuitPython `boot.py` / `code.py` pair.
 
-# Install ARM cross-compiler (requires sudo for .pkg installer)
-brew install --cask gcc-arm-embedded
+**Flash CircuitPython** (Pico must be in bootloader mode — hold BOOTSEL while plugging in):
 
-# Run QMK setup (clones qmk_firmware + submodules)
-qmk setup --yes
-```
+1. Download the Raspberry Pi Pico UF2 from `https://circuitpython.org/board/raspberry_pi_pico/`
+2. Copy the UF2 to the `RPI-RP2` boot drive
+3. Wait for the board to reboot as `CIRCUITPY`
 
-**Build:**
+**Deploy firmware files**:
 
-```bash
-cd spark_qmk
-PATH="/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/bin:$PATH" sh build_spark.sh
-# output: .build/spark_default.uf2
-```
+1. Copy the CircuitPython `boot.py` and `code.py` files to `CIRCUITPY`
+2. Reboot the Pico if needed so the USB configuration in `boot.py` is applied
 
-**Flash** (Pico must be in bootloader mode — hold BOOTSEL while plugging in):
+**Verify**:
 
-```bash
-cp .build/spark_default.uf2 /Volumes/RPI-RP2/
-# Pico reboots automatically; RPI-RP2 drive disappears
-```
-
-**Verify** (device should enumerate as VID `0xC4C4` PID `0x5350`):
-
-```bash
-system_profiler SPUSBDataType | grep -A4 "C4C4"
-```
+- The device should enumerate as VID `0xC4C4` PID `0x5350`
+- The Host should see the expected custom Raw HID interface and a CDC serial device
+- The Pico should continue relaying context packets over UART at `115200`
 
 ### 7.2 Host App Dependencies
 
@@ -586,7 +574,7 @@ python spark_app_v2.py
 | `0x05` | `BUTTON_PRESS` | Hub → Jetson | `uint8 button_id` | `INSERT INTO button_events` → fetch session context for LLM |
 | `0x06` | `LLM_RESULT` | *(reserved)* | `uint16 text_len` + `text` | Jetson LLM result → route to HID output |
 
-### Raw HID Protocol (Host ↔ QMK Pico, 32-byte reports)
+### Raw HID Protocol (Host ↔ Pico custom HID, 32-byte reports)
 
 | Byte[0] | Name | Direction | Byte[1] | Description |
 |---|---|---|---|---|

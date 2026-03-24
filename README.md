@@ -3,7 +3,7 @@
 SPARK is a desktop context-capture app with hardware integration. On the current branch it spans:
 
 - Host app: PyQt desktop UI on macOS/Windows
-- Pico Hub: USB Raw HID + CDC serial bridge
+- Pico Hub: CircuitPython device exposing custom Raw HID, standard keyboard HID, and USB CDC serial relay
 - Jetson receiver: session-aware serial ingest and storage
 
 The main app entrypoint is `spark_app_v2.py`.
@@ -87,6 +87,7 @@ Important: install `hidapi`, not the separate `hid` package.
 
 - `ENGINEERING_SPEC.md`: current architecture and protocol reference
 - `REPO_STRUCTURE.md`: codebase map and ownership notes
+- `pico/README.md`: Pico firmware notes and bring-up
 - `ACCESSIBILITY_PERMISSIONS.md`: macOS accessibility setup
 - `documentation_reference.md`: older host-app notes, useful but partially outdated
 
@@ -94,4 +95,6 @@ Important: install `hidapi`, not the separate `hid` package.
 
 - `spark_app_v2.py` is the active app path.
 - `spark_app.py` is an older UI path and should be treated as secondary.
+- The current Pico firmware target is CircuitPython.
+- `pico/main.py` is a readable behavioral reference for the Pico role, not the literal deployed `boot.py` / `code.py` pair.
 - The top-level `spark.db` file is local runtime state, not project source.
