@@ -174,20 +174,9 @@ class WindowsAccessibilityProvider(AccessibilityProvider):
         Returns:
             Text from focused element, or None if unavailable
         """
-        if not self.pywinauto:
-            return None
-        
         try:
-            # Get active window
-            hwnd = self.win32gui.GetForegroundWindow()
-            if not hwnd:
-                return None
-            
-            # Connect to window
-            app = self.pywinauto(top_level_only=False)
-            window = app.window(handle=hwnd)
-            
-            if not window.exists():
+            window = self._connect_to_active_window()
+            if not window:
                 return None
             
             # Try to get focused control
@@ -225,14 +214,8 @@ class WindowsAccessibilityProvider(AccessibilityProvider):
             return None
         
         try:
-            hwnd = self.win32gui.GetForegroundWindow()
-            if not hwnd:
-                return None
-            
-            app = self.pywinauto(top_level_only=False)
-            window = app.window(handle=hwnd)
-            
-            if not window.exists():
+            window = self._connect_to_active_window()
+            if not window:
                 return None
             
             # Extract text from window hierarchy
@@ -244,6 +227,24 @@ class WindowsAccessibilityProvider(AccessibilityProvider):
         except Exception as e:
             logger.error(f"Failed to get window text: {e}")
             return None
+
+    def _connect_to_active_window(self):
+        """Connect pywinauto to the active window and return its wrapper."""
+        if not self.win32gui or not self.pywinauto:
+            return None
+
+        hwnd = self.win32gui.GetForegroundWindow()
+        if not hwnd:
+            return None
+
+        app = self.pywinauto(backend="uia")
+        app.connect(handle=hwnd)
+
+        window = app.window(handle=hwnd)
+        if not window.exists():
+            return None
+
+        return window
     
     def _extract_window_text_recursive(self, control, text_parts: list, depth: int = 0, max_depth: int = 8) -> None:
         """

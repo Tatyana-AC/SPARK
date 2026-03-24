@@ -1,560 +1,417 @@
-# SPARK — Engineering Specification
-## Host-Side Context Engine & Firmware Integration Layer
+# SPARK Engineering Specification
+## Host Context Engine and CircuitPython Pico Hub
 
-**Version:** 1.1
-**Status:** Active
-**Nodes:** Host PC (macOS/Win) · Pico Hub (RP2040/QMK) · Jetson Brain (NVIDIA)
+**Version:** 1.2  
+**Status:** Active  
+**Nodes:** Host PC (macOS/Windows) -> Pico Hub (RP2040/CircuitPython) -> Jetson Brain (NVIDIA)
 
 ---
 
 ## Table of Contents
 
 1. [System Overview](#1-system-overview)
-2. [Host-Side Engineering — Data Acquisition](#2-host-side-engineering--data-acquisition)
-3. [Keyboard HID Layer](#3-keyboard-hid-layer)
-4. [Firmware Integration — Pico Hub & Jetson Interface](#4-firmware-integration--pico-hub--jetson-interface)
-5. [Integration Protocol — Wire Format & Handshake](#5-integration-protocol--wire-format--handshake)
-6. [Error Handling & Fault Tolerance](#6-error-handling--fault-tolerance)
-7. [Build & Flash Reference](#7-build--flash-reference)
-8. [OpCode Reference Table](#8-opcode-reference-table)
+2. [Host-Side Engineering](#2-host-side-engineering)
+3. [Host HID Upload Layer](#3-host-hid-upload-layer)
+4. [Pico Hub Firmware](#4-pico-hub-firmware)
+5. [Wire Protocols](#5-wire-protocols)
+6. [Error Handling and Fault Tolerance](#6-error-handling-and-fault-tolerance)
+7. [Build and Flash Reference](#7-build-and-flash-reference)
+8. [Reference Tables](#8-reference-tables)
 
 ---
 
 ## 1. System Overview
 
-SPARK is a distributed assistive input system composed of three physically distinct compute nodes. The Host PC connects to a **single Pico Hub** over USB — the Pico runs QMK firmware and exposes two USB interfaces: a Raw HID interface for keyboard commands and a CDC serial interface for context relay to the Jetson Brain.
+SPARK is a distributed assistive input system composed of three physically distinct compute nodes:
 
-```
-                          ┌─────────────────────────────────────────────────────┐
-                          │                    HOST PC                          │
-                          │              macOS / Windows                        │
-                          │                                                     │
-                          │  AccessibilityMgr   WindowContextTracker            │
-                          │  SerialSender       SparkPanel (PyQt6)              │
-                          │  KeyboardHIDManager                                 │
-                          └────────┬────────────────────┬───────────────────────┘
-                                   │                    │
-                          USB CDC serial           USB Raw HID
-                          (context relay)        (keyboard cmds 0xA0/0xA1/0xB0)
-                                   │                    │
-                          ┌────────▼────────────────────▼──────────┐
-                          │              PICO HUB                   │
-                          │           QMK firmware                  │
-                          │           VID 0xC4C4  PID 0x5350        │
-                          │                                         │
-                          │  Raw HID interface  (keyboard signals)  │
-                          │  CDC serial relay   (context packets)   │
-                          │  Button GPIO IRQ    (GP14–GP17)         │
-                          └─────────────────────┬───────────────────┘
-                                                 │
-                                            UART (GP0/GP1)
-                                                 │
-                                    ┌────────────▼────────┐
-                                    │    JETSON BRAIN      │
-                                    │    NVIDIA Jetson     │
-                                    │                      │
-                                    │    PacketParser      │
-                                    │    JetsonDB          │
-                                    │    LLM interface     │
-                                    └──────────────────────┘
-```
+- Host PC: captures active-window context, stores local host history, uploads text to the Pico, and renders the desktop UI.
+- Pico Hub: a single RP2040 running CircuitPython, exposing USB CDC data and custom Raw HID on one device.
+- Jetson Brain: receives the serial stream, parses packets, stores session state, and handles downstream context processing.
+
+The active host-facing contract is:
+
+- `spark_app_v2.py` is the current desktop app path.
+- `host_pc/raw_hid.py` is the active custom HID client.
+- `host_pc/serial_sender.py` is the active CDC sender.
+- `pico/boot.py` and `pico/code.py` are the active Pico firmware files.
+
+Legacy `spark_app.py` and `host_pc/hid/keyboard_hid.py` remain in the repo for reference, but they are not part of the current CircuitPython firmware contract.
+
+### 1.1 Data Paths
+
+- Host -> Pico over USB CDC data:
+  - window context packets (`WINDOW_NEW`, `WINDOW_UPDATE`)
+- Host -> Pico over custom Raw HID:
+  - capability query
+  - upload begin/chunk/commit/abort
+  - ping
+- Pico -> Jetson over UART0:
+  - relayed host context packets
+  - locally injected `BUTTON_PRESS` packets
 
 ---
 
-## 2. Host-Side Engineering — Data Acquisition
+## 2. Host-Side Engineering
 
 ### 2.1 Polling Architecture
 
-The Host runs a deterministic 8 Hz acquisition loop driven by a `QTimer` with a 125 ms period. Each tick must complete within **40 ms** to maintain headroom before the next tick arrives.
+The host runs a deterministic 8 Hz acquisition loop driven by a `QTimer` with a 125 ms period. Each tick should complete within 40 ms to preserve headroom.
 
-```
-125 ms tick budget
-├─ OS Accessibility API call    ≤ 20 ms   (AXUIElement / UIA)
-├─ Privacy guard evaluation     ≤  1 ms   (in-memory set/list lookup)
-├─ Browser tab AppleScript      ≤ 10 ms   (only when active app is a browser)
-├─ Context key comparison       ≤  1 ms
-├─ Serial packet build + write  ≤  3 ms
-└─ Qt UI update                 ≤  5 ms
-                              ────────
-                         Total ≤ 40 ms   (leaves 85 ms idle headroom)
-```
+Nominal tick budget:
 
-If any single call exceeds 40 ms (e.g., AppleScript stall), the next tick is simply delayed — the `QTimer` is non-accumulating. No packets are dropped; the loop self-corrects on the next cycle.
+- OS accessibility query: <= 20 ms
+- privacy guard evaluation: <= 1 ms
+- browser tab enrichment: <= 10 ms
+- context-key comparison: <= 1 ms
+- serial packet build + write: <= 3 ms
+- Qt UI update: <= 5 ms
 
-### 2.2 AccessibilityManager
+### 2.2 Accessibility Extraction
 
-`AccessibilityManager` is a platform-agnostic façade over two OS-specific providers:
+`AccessibilityManager` is a platform facade over:
 
-| Platform | Provider | API |
-|---|---|---|
-| macOS | `MacOSAccessibilityProvider` | `AXUIElement`, `NSWorkspace` via PyObjC |
-| Windows | `WindowsAccessibilityProvider` | UI Automation (stub, future) |
+- `MacOSAccessibilityProvider`
+- `WindowsAccessibilityProvider`
 
-The manager attempts text extraction in priority order:
+Text extraction priority:
 
-```
-1. get_focused_element_text()   → AXValue of focused AX element
-2. get_window_text()            → AXValue of front window
-```
+1. focused element text
+2. front window text
 
-The first non-empty result is used. `TextSource` enum (`FOCUSED_ELEMENT`, `FULL_WINDOW`) is recorded alongside the text for provenance tracking.
+The first non-empty result is used and tracked with `TextSource`.
 
-### 2.3 State Tracking — New Window vs. Existing Window
+### 2.3 Window Tracking
 
-`WindowContextTracker` maintains a `context_key` for the active window. The key is computed as:
+`WindowContextTracker` derives a `context_key`:
 
-```
-context_key = f"{app_name}|{url}"    # browser tab (Safari, Chrome)
-context_key = f"{app_name}|{title}"  # all other applications
-```
+- browser tabs: `"{app_name}|{url}"`
+- other apps: `"{app_name}|{title}"`
 
-On each poll tick `_on_poll_tick()` compares the current `context_key` against `self._last_serial_key`:
+On each poll tick:
 
-```
-┌─────────────────────────────────────────┐
-│            Poll Tick (125 ms)           │
-└────────────────────┬────────────────────┘
-                     │
-           ┌─────────▼──────────┐
-           │  Get active window │
-           │  (AccessibilityMgr)│
-           └─────────┬──────────┘
-                     │
-           ┌─────────▼──────────┐
-           │  Privacy Guard     │◄── blocked? → return (no packet sent)
-           └─────────┬──────────┘
-                     │
-           ┌─────────▼──────────┐
-           │  Extract text      │◄── no text? → return
-           └─────────┬──────────┘
-                     │
-         ┌───────────▼───────────┐
-         │  context_key changed? │
-         └───┬───────────────────┘
-             │                   │
-            YES                  NO
-             │                   │
-    ┌────────▼──────┐   ┌────────▼──────┐
-    │  send 0x01    │   │  send 0x02    │
-    │  WINDOW_NEW   │   │  WINDOW_UPDATE│
-    └───────────────┘   └───────────────┘
-```
+- if the key changed, send `WINDOW_NEW`
+- if the key is unchanged, send `WINDOW_UPDATE`
 
-This ensures the Jetson database receives exactly **one INSERT per window visit** and **N UPDATE rows** during the visit — minimising storage and query complexity.
+This yields exactly one Jetson session insert per contiguous window visit and repeated updates while the window remains active.
 
-### 2.4 Binary Serialisation
+### 2.4 Serial Payload Layouts
 
-`SerialSender` calls builders from `core/protocol.py`. All multi-byte integers are **little-endian**, matching the `struct` format character `<`.
+All multi-byte integers are little-endian.
 
-#### WINDOW_NEW (0x01) payload layout
+`WINDOW_NEW (0x01)` payload:
 
-```
-Offset  Size  struct fmt  C type     Field
-──────  ────  ──────────  ─────────  ─────────────────────────
-0       1     <B          uint8_t    app_name byte length (0–255)
-1       N     Ns          char[]     app_name UTF-8 (no null)
-1+N     1     <B          uint8_t    title byte length (0–255)
-2+N     M     Ms          char[]     title UTF-8 (no null)
-2+N+M   2     <H          uint16_t   text byte length (LE)
-4+N+M   L     Ls          char[]     text UTF-8 (no null)
-```
+- `uint8 app_name_len`
+- `app_name`
+- `uint8 title_len`
+- `title`
+- `uint16 text_len`
+- `text`
 
-#### WINDOW_UPDATE (0x02) payload layout
+`WINDOW_UPDATE (0x02)` payload:
 
-```
-Offset  Size  struct fmt  C type     Field
-──────  ────  ──────────  ─────────  ─────────────────────────
-0       2     <H          uint16_t   text byte length (LE)
-2       L     Ls          char[]     text UTF-8 (no null)
-```
+- `uint16 text_len`
+- `text`
 
-#### BUTTON_PRESS (0x05) payload layout
+`BUTTON_PRESS (0x05)` payload:
 
-```
-Offset  Size  struct fmt  C type     Field
-──────  ────  ──────────  ─────────  ─────────────────────────
-0       1     <B          uint8_t    button_id (0–3)
-```
+- `uint8 button_id`
 
 ---
 
-## 3. Keyboard HID Layer
+## 3. Host HID Upload Layer
 
 ### 3.1 Overview
 
-`KeyboardHIDManager` (`host_pc/hid/keyboard_hid.py`) manages the bidirectional Raw HID channel between the Host and the QMK Pico. It mirrors the structure of `GlobalHotkeyManager` — a signals class plus a manager with `start()` / `stop()` — so it integrates identically into `spark_app.py` and `spark_app_v2.py`.
+The active host-to-device HID contract is `SparkHIDClient` in `host_pc/raw_hid.py`.
 
-```
-KeyboardHIDSignals(QObject)
-  .capture_triggered   pyqtSignal()       ← keyboard key pressed: trigger capture
-  .release_triggered   pyqtSignal()       ← keyboard key pressed: trigger release
-  .connected_changed   pyqtSignal(bool)   ← device plugged / unplugged
+The current `spark_app_v2.py` flow is:
 
-KeyboardHIDManager
-  .start()             open device + start daemon reader thread
-  .stop()              join thread + close device
-  .send_status(byte)   write CMD_HOST_STATUS report to keyboard
-```
+- capture or prepare text on the host
+- upload text to the Pico through custom Raw HID
+- receive a final `STATUS` reply
+- render the released text locally in the SPARK app after the Pico acknowledges it
+
+The older `KeyboardHIDManager` trigger/status flow is legacy only and is not implemented by the current CircuitPython firmware.
 
 ### 3.2 Device Identity
 
-All values taken directly from `spark_qmk/keyboards/spark/keyboard.json` and `tools/spark_raw_hid_demo.py`:
+These values are part of the active USB contract:
 
-| Constant | Value | Source |
+| Constant | Value | Notes |
 |---|---|---|
-| `SPARK_VID` | `0xC4C4` | `keyboard.json` → `usb.vid` |
-| `SPARK_PID` | `0x5350` | `keyboard.json` → `usb.pid` |
-| `RAW_USAGE_PAGE` | `0xFF60` | QMK Raw HID spec |
-| `RAW_USAGE_ID` | `0x61` | QMK Raw HID spec |
-| `REPORT_SIZE` | `32` | `spark_raw_hid_demo.py` |
+| `SPARK_VID` | `0xC4C4` | USB vendor ID |
+| `SPARK_PID` | `0x5350` | USB product ID |
+| `RAW_USAGE_PAGE` | `0xFF60` | custom Raw HID usage page |
+| `RAW_USAGE_ID` | `0x61` | custom Raw HID usage |
+| `REPORT_SIZE` | `32` | fixed HID report size |
+| `CHUNK_PAYLOAD_SIZE` | `27` | upload payload bytes per chunk |
 
-### 3.3 Keyboard → Host Commands (0xA0–0xAF range)
+### 3.3 Custom HID Commands
 
-The keyboard sends 32-byte reports with the command byte at position 0, matching the convention established in `spark_raw_hid_demo.py`.
+The host sends and receives fixed 32-byte reports. Byte 0 is the command byte.
 
-| Byte 0 | Name | Description |
+| Byte[0] | Name | Direction | Description |
+|---|---|---|---|
+| `0x01` | `GET_INFO` | Host <-> Pico | query protocol/version/limits |
+| `0x10` | `BEGIN_UPLOAD` | Host -> Pico | start upload session |
+| `0x11` | `UPLOAD_CHUNK` | Host -> Pico | write one chunk |
+| `0x12` | `COMMIT_UPLOAD` | Host -> Pico | finalize and acknowledge upload |
+| `0x13` | `ABORT_UPLOAD` | Host -> Pico | cancel active upload |
+| `0x7F` | `STATUS` | Pico -> Host | result/status reply |
+
+Application commands carried inside uploads:
+
+| App Command | Value | Meaning |
 |---|---|---|
-| `0xA0` | `CMD_KB_CAPTURE` | Physical key pressed — trigger text capture |
-| `0xA1` | `CMD_KB_RELEASE` | Physical key pressed — trigger text release |
+| `SUBMIT_TEXT` | `0x0001` | acknowledge uploaded text for host-side release output |
+| `PING` | `0x0002` | return readiness detail string |
 
-### 3.4 Host → Keyboard Feedback (0xB0–0xBF range)
+### 3.4 Upload Semantics
 
-`send_status(status_byte)` writes a 32-byte report with `CMD_HOST_STATUS` at byte 0 and the status code at byte 1. The keyboard firmware uses this to drive LED/display feedback.
+`BEGIN_UPLOAD` includes:
 
-```
-Byte 0: 0xB0  CMD_HOST_STATUS
-Byte 1: status code
-          0x01  STATUS_PROCESSING   — capture/release started
-          0x02  STATUS_DONE         — operation completed successfully
-          0x03  STATUS_ERROR        — operation failed
-Bytes 2–31: 0x00 (reserved)
-```
+- `message_id`
+- `app_command`
+- `encoding`
+- `total_len`
+- `crc32`
 
-### 3.5 Connection Lifecycle
+`UPLOAD_CHUNK` includes:
 
-```
-start()
-  │
-  └─ daemon thread: _run()
-       │
-       ├─ _try_open()  ──── fail ──→ sleep 2 s → retry
-       │    └── success
-       │         emit connected_changed(True)
-       │
-       ├─ _read_loop()
-       │    ├─ device.read(32, timeout=500 ms)
-       │    ├─ timeout → loop (checks _running flag)
-       │    └─ data → _dispatch(report)
-       │         ├─ 0xA0 → emit capture_triggered
-       │         ├─ 0xA1 → emit release_triggered
-       │         └─ other → log + ignore
-       │
-       └─ on error/disconnect
-            emit connected_changed(False)
-            close device → retry loop
-```
+- `message_id`
+- `chunk_index`
+- up to 27 bytes of payload
 
-The 500 ms read timeout ensures `stop()` is acknowledged within ~500 ms without busy-waiting.
+`COMMIT_UPLOAD` succeeds only if:
 
-### 3.6 Capture / Release Sequence Diagram
+- the upload session is active
+- the message id matches
+- all chunks were received
+- CRC32 matches
+- the payload decodes as UTF-8
+
+### 3.5 Submit-Text Acknowledgement
+
+For `SUBMIT_TEXT`, the Pico validates the upload and acknowledges it without
+injecting keyboard input back into the host.
+
+`COMMIT_UPLOAD` returns:
+
+- `STATUS.OK`
+- `value0 = accepted_count`
+- `value1 = 0`
+- a short detail string such as `accepted`
+
+For `PING`, the Pico returns `STATUS.OK` with a short detail string such as `spark ready`.
+
+### 3.6 Upload Sequence
 
 ```mermaid
 sequenceDiagram
-    participant KB as QMK Pico<br/>(keyboard)
-    participant HID as KeyboardHIDManager<br/>(reader thread)
-    participant App as SparkPanel<br/>(Qt main thread)
-    participant Acc as AccessibilityManager
+    participant App as "spark_app_v2.py"
+    participant HID as "SparkHIDClient"
+    participant Pico as "Pico custom HID"
 
-    KB->>HID: Raw HID report [0xA0, 0x00, ...]
-    HID->>HID: _dispatch() → cmd=0xA0
-    HID->>App: emit capture_triggered  (Qt signal)
-
-    App->>HID: send_status(0x01)  STATUS_PROCESSING
-    HID->>KB: Raw HID report [0xB0, 0x01, ...]
-
-    App->>Acc: get_selected_text()
-    Acc-->>App: captured text
-
-    App->>HID: send_status(0x02)  STATUS_DONE
-    HID->>KB: Raw HID report [0xB0, 0x02, ...]
-
-    Note over App: processed_text ready<br/>Release button enabled
+    App->>HID: upload(SUBMIT_TEXT, text)
+    HID->>Pico: BEGIN_UPLOAD
+    Pico-->>HID: STATUS OK
+    loop one report per chunk
+        HID->>Pico: UPLOAD_CHUNK
+    end
+    HID->>Pico: COMMIT_UPLOAD
+    Pico->>Pico: verify CRC32 + UTF-8
+    Pico-->>HID: STATUS OK (accepted_count)
+    App->>App: show release output locally
+    Pico->>KB: type filtered text
 ```
 
-### 3.7 Python Dependency
+### 3.7 Host Dependency Note
 
-The Raw HID interface requires the `hidapi` PyPI package (installs as the `hid` module with a bundled native library). **Do not install the separate `hid` package** — it is a different library that requires a system `libhidapi` and will shadow the correct module.
-
-```
-# requirements.txt — correct
-hidapi>=0.14.0   ✓
-
-# do not add
-hid>=1.0.4       ✗  (conflicts with hidapi on macOS)
-```
+The custom HID path depends on the `hidapi` package, which installs as the `hid` Python module. Do not install the unrelated `hid` package alongside it.
 
 ---
 
-## 4. Firmware Integration — Pico Hub & Jetson Interface
+## 4. Pico Hub Firmware
 
-### 4.1 Hardware Routing
+### 4.1 Runtime Model
 
-The Pico Hub (single RP2040 running QMK) performs **transparent serial bridging** between two physical channels:
+The Pico is a single CircuitPython device split into:
 
-```
-Host PC                      Pico RP2040                   Jetson Brain
-────────                     ──────────                    ────────────
-USB CDC (tty.usbmodem*)  →  sys.stdin.buffer          →  UART0 RX (GP1)
-                             UART0 TX (GP0)
-```
+- `boot.py`
+  - sets USB identity
+  - enables USB CDC data
+  - enables one custom Raw HID interface
+- `code.py`
+  - initializes UART0 on `GP0`/`GP1` at `115200`
+  - scans four buttons on `GP14`-`GP17`
+  - relays host CDC data to Jetson UART
+  - handles the V2 custom HID upload protocol
+
+Supporting modules:
+
+- `pico/upload_protocol.py`
+- `pico/serial_bridge.py`
+- `pico/usb_config.py`
+
+`pico/main.py` remains a behavioral reference, not the deployed runtime entrypoint.
+
+### 4.2 Hardware Routing
 
 | Signal | Pico Pin | Direction | Notes |
 |---|---|---|---|
-| USB D+/D- | USB connector | ↔ Host | CDC serial, 115200 baud |
-| UART TX | GP0 | → Jetson | 115200 baud, 8N1 |
-| UART RX | GP1 | ← Jetson | (reserved, future ACK) |
-| Button 0 | GP14 | ← GND via switch | Active-low, pull-up enabled |
-| Button 1 | GP15 | ← GND via switch | Active-low, pull-up enabled |
-| Button 2 | GP16 | ← GND via switch | Active-low, pull-up enabled |
-| Button 3 | GP17 | ← GND via switch | Active-low, pull-up enabled |
+| USB D+/D- | USB connector | -> Host | CDC data + custom HID |
+| UART TX | `GP0` | -> Jetson | `115200`, 8N1 |
+| UART RX | `GP1` | <- Jetson | reserved |
+| Button 0 | `GP14` | -> GND via switch | active-low |
+| Button 1 | `GP15` | -> GND via switch | active-low |
+| Button 2 | `GP16` | -> GND via switch | active-low |
+| Button 3 | `GP17` | -> GND via switch | active-low |
 
-The relay loop runs at ~100 Hz (10 ms sleep), well above the 8 Hz incoming packet rate. USB bytes are forwarded in 64-byte chunks via `select.poll()` with a zero timeout (non-blocking).
+### 4.3 Cooperative Loop
 
-### 4.2 Packet Interleaving — Button Injection
+The deployed runtime uses a short cooperative loop. Each iteration:
 
-The Pico Hub never decodes Host packets. It treats the Host byte stream as opaque and writes it verbatim to UART. Button packets are **injected between Host packets** at naturally occurring boundaries.
+1. drains up to 64 bytes from `usb_cdc.data` to UART
+2. drains button events from `keypad.Keys`
+3. injects `BUTTON_PRESS` packets onto UART
+4. processes the latest custom HID report
+5. advances a bounded amount of keyboard type-back work
+6. sleeps for roughly 2 ms
 
-```
-Loop iteration (10 ms)
-│
-├─ 1. poll USB CDC (non-blocking)
-│     if data available → uart.write(chunk)          ← Host bytes forwarded first
-│
-└─ 2. scan GPIO 14–17 for falling edge
-      if button pressed → uart.write(BUTTON_PRESS)   ← injected after, never during
-```
+This keeps context relay and button handling ahead of typing throughput.
 
-Because all SPARK packets are self-framed (MAGIC + CRC), even if an injection occurs between two back-to-back Host packets, the Jetson `PacketParser` will correctly parse all three packets in sequence.
+### 4.4 Button Injection
 
-### 4.3 Jetson SQL State Machine
+The Pico does not decode host CDC packets. It forwards the host byte stream verbatim to UART and injects framed `BUTTON_PRESS` packets between host packet writes.
 
-`JetsonDB` maintains a single `active_session_id` integer. The state machine has three transitions:
+Because all SPARK serial packets are self-framed with magic bytes, payload length, and CRC, the Jetson parser can recover packet boundaries correctly even when host packets and local button packets are interleaved.
 
-```
-                    ┌─────────────────────────────────────────┐
-                    │          Jetson PacketParser             │
-                    └───────────────┬─────────────────────────┘
-                                    │ on_packet(dict)
-                    ┌───────────────▼────────────────────────┐
-                    │         handle_packet()                 │
-                    └──┬──────────────┬──────────────┬───────┘
-                       │              │               │
-               type=0x01        type=0x02        type=0x05
-                       │              │               │
-           ┌───────────▼──┐  ┌────────▼──────┐  ┌────▼────────────────────┐
-           │   INSERT      │  │    UPDATE     │  │  Query active session   │
-           │   sessions    │  │   sessions    │  │  → pass to LLM context  │
-           │               │  │   SET text=?  │  │                         │
-           │  store new    │  │   WHERE id=   │  │  (future: trigger LLM   │
-           │  row_id as    │  │   active_id   │  │   inference call)       │
-           │  active_id    │  │               │  │                         │
-           └───────────────┘  └───────────────┘  └─────────────────────────┘
-```
+### 4.5 Jetson State Model
 
-#### SQL Schema
+`JetsonDB` maintains a single `active_session_id`.
 
-```sql
-CREATE TABLE sessions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    app_name    TEXT    NOT NULL,
-    title       TEXT    NOT NULL,
-    text        TEXT    NOT NULL DEFAULT '',
-    started_at  REAL    NOT NULL,  -- Unix timestamp
-    updated_at  REAL    NOT NULL   -- Unix timestamp, updated on every 0x02
-);
-
-CREATE TABLE button_events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    button_id   INTEGER NOT NULL,          -- 0–3
-    session_id  INTEGER,                   -- FK → sessions.id (nullable)
-    timestamp   REAL    NOT NULL
-);
-```
+- `WINDOW_NEW` inserts a new session row and sets `active_session_id`
+- `WINDOW_UPDATE` updates the active session text
+- `BUTTON_PRESS` inserts a button-event row, optionally associated with the active session
 
 ---
 
-## 5. Integration Protocol — Wire Format & Handshake
+## 5. Wire Protocols
 
-### 5.1 Packet Frame
+### 5.1 Serial Packet Frame
 
-Every packet on the wire uses this identical frame:
+Every serial packet on the Host -> Pico -> Jetson path uses:
 
-```
- Byte 0    Byte 1    Byte 2    Byte 3    Byte 4    Byte 5..N    Byte N+1
-┌─────────┬─────────┬─────────┬─────────┬─────────┬───────────┬─────────┐
-│  0x53   │  0x50   │  TYPE   │ LEN_LO  │ LEN_HI  │  PAYLOAD  │  CRC8   │
-│  'S'    │  'P'    │ 1 byte  │         │  (LE)   │ LEN bytes │ 1 byte  │
-└─────────┴─────────┴─────────┴─────────┴─────────┴───────────┴─────────┘
-│◄─────── MAGIC ──────────────►│◄────── HEADER ───────────────►│         │
-│◄─────────────────────── CRC covers everything above ─────────►│         │
-```
+- 2-byte magic: `SP`
+- 1-byte packet type
+- 2-byte payload length, little-endian
+- payload bytes
+- 1-byte CRC-8/MAXIM over all preceding bytes
 
-| Field | Size | Type | Description |
-|---|---|---|---|
-| MAGIC | 2 bytes | `uint8_t[2]` | `{0x53, 0x50}` — sync sequence `'SP'` |
-| TYPE | 1 byte | `uint8_t` | OpCode — see §8 |
-| LEN | 2 bytes | `uint16_t` LE | Payload byte count |
-| PAYLOAD | LEN bytes | `uint8_t[]` | OpCode-specific data |
-| CRC8 | 1 byte | `uint8_t` | CRC-8/MAXIM over all preceding bytes |
+Minimum packet size is 6 bytes.
 
-Minimum packet size: **6 bytes** (0-byte payload). Maximum payload: **65535 bytes**.
+### 5.2 CRC
 
-### 5.2 CRC Algorithm
+Serial framing uses CRC-8/MAXIM (Dallas 1-Wire style), polynomial `0x31`, reflected form.
 
-**CRC-8/MAXIM** (Dallas 1-Wire): poly = `0x31`, reflected input and output, init = `0x00`, XorOut = `0x00`.
-
-```c
-uint8_t crc8(const uint8_t *data, size_t len) {
-    uint8_t crc = 0;
-    for (size_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int b = 0; b < 8; b++)
-            crc = (crc & 1) ? (crc >> 1) ^ 0x8C : (crc >> 1);
-    }
-    return crc;
-}
-```
-
-### 5.3 Sequence Diagram — Window Change Event
+### 5.3 Serial Sequence: Window Update
 
 ```mermaid
 sequenceDiagram
-    participant Host as Host PC<br/>(SparkPanel)
-    participant Serial as SerialSender
-    participant Pico as Pico Hub<br/>(MicroPython)
-    participant Jetson as Jetson Brain<br/>(receiver.py)
-    participant DB as JetsonDB<br/>(SQLite)
+    participant Host as "SparkPanel"
+    participant Serial as "SerialSender"
+    participant Pico as "usb_cdc.data -> UART"
+    participant Jetson as "PacketParser"
+    participant DB as "JetsonDB"
 
-    Note over Host: QTimer fires (125 ms)
-    Host->>Host: get_active_window_info()
-    Host->>Host: Privacy guard check
-    Host->>Host: get_focused_element_text()
-    Host->>Host: context_key ≠ _last_serial_key?
-
-    Note over Host,Serial: Context changed → WINDOW_NEW
-    Host->>Serial: send_window_new(app, title, text)
-    Serial->>Serial: build_packet(0x01, payload)
-    Serial->>Pico: [SP][0x01][LEN_LO][LEN_HI][payload...][CRC8]
-
-    Pico->>Pico: poll USB CDC (non-blocking)
-    Pico->>Jetson: uart.write(bytes) — transparent relay
-
-    Jetson->>Jetson: parser.feed(chunk)
-    Jetson->>Jetson: CRC check ✓
-    Jetson->>DB: on_window_new(app, title, text)
-    DB->>DB: INSERT INTO sessions ...
-    DB-->>Jetson: active_session_id = new row_id
-
-    Note over Host,DB: 125 ms later — same window
-    Host->>Serial: send_window_update(text)
-    Serial->>Pico: [SP][0x02][LEN_LO][LEN_HI][text...][CRC8]
+    Host->>Serial: send_window_new(...)
+    Serial->>Pico: framed WINDOW_NEW packet
     Pico->>Jetson: uart.write(bytes)
-    Jetson->>DB: on_window_update(text)
-    DB->>DB: UPDATE sessions SET text=? WHERE id=active_session_id
+    Jetson->>DB: on_window_new(...)
+
+    Host->>Serial: send_window_update(...)
+    Serial->>Pico: framed WINDOW_UPDATE packet
+    Pico->>Jetson: uart.write(bytes)
+    Jetson->>DB: on_window_update(...)
 ```
 
-### 5.4 Sequence Diagram — Keyboard-Initiated Capture
+### 5.4 HID Sequence: Upload and Acknowledge
 
 ```mermaid
 sequenceDiagram
-    participant KB as QMK Pico<br/>(keyboard)
-    participant HID as KeyboardHIDManager<br/>(reader thread)
-    participant App as SparkPanel<br/>(Qt main thread)
-    participant Acc as AccessibilityManager
+    participant App as "spark_app_v2.py"
+    participant HID as "SparkHIDClient"
+    participant Pico as "UploadProtocolHandler"
 
-    KB->>HID: [0xA0, 0x00 × 31]  CMD_KB_CAPTURE
-    HID->>App: emit capture_triggered
-    App->>HID: send_status(0x01)  PROCESSING
-    HID->>KB: [0xB0, 0x01, 0x00 × 30]
-    App->>Acc: get_selected_text()
-    Acc-->>App: text
-    App->>HID: send_status(0x02)  DONE
-    HID->>KB: [0xB0, 0x02, 0x00 × 30]
+    App->>HID: upload(SUBMIT_TEXT, processed_text)
+    HID->>Pico: BEGIN_UPLOAD
+    Pico-->>HID: STATUS OK
+    loop chunks
+        HID->>Pico: UPLOAD_CHUNK
+    end
+    HID->>Pico: COMMIT_UPLOAD
+    Pico->>Pico: verify upload
+    Pico-->>HID: STATUS OK / error
+    App->>App: update release output panel
 ```
 
 ---
 
-## 6. Error Handling & Fault Tolerance
+## 6. Error Handling and Fault Tolerance
 
-### 6.1 Host USB Disconnect (Pico Hub unplugged — CDC interface)
+### 6.1 Host CDC Disconnect
 
-`SerialSender._send()` catches `serial.SerialException` on write and sets `self._serial = None`. The host continues operating normally. No reconnect timer in v1.1; reconnect on app restart.
+`SerialSender` write failures are isolated to the serial path. The host app continues running even if the Pico CDC interface is absent.
 
-### 6.2 Host USB Disconnect (Pico Hub unplugged — HID interface)
+### 6.2 Host HID Disconnect
 
-`KeyboardHIDManager._read_loop()` catches all exceptions and breaks out of the read loop. The outer `_run()` loop emits `connected_changed(False)`, closes the device, waits 2 seconds, and retries `_try_open()`. **Reconnect is fully automatic** — no user action required.
+`SparkHIDClient` opens the HID device lazily. If the Pico is missing, `is_connected()` returns `False` and HID operations fail with `SparkProtocolError`. When the device is plugged back in, later calls can reopen it.
 
-### 6.3 Pico Hub → Jetson UART Disconnect
+### 6.3 Pico to Jetson UART Disconnect
 
-The MicroPython Pico has no write-error detection — `uart.write()` is fire-and-forget. Bytes written while the Jetson is not listening are silently dropped. When the Jetson receiver restarts it re-synchronises on the next `MAGIC` sequence.
+The Pico relay has no end-to-end UART acknowledgement. `uart.write()` is effectively fire-and-forget. If the Jetson is not listening, bytes may be dropped until the receiver resumes and re-synchronizes on the next valid packet frame.
 
 ### 6.4 CRC Failure on Jetson
 
-`PacketParser._dispatch()` discards any packet whose computed CRC does not match and calls `_reset()`. The parser re-enters `_SYNC` state. A single corrupted packet does not affect subsequent packets.
+`PacketParser` discards packets whose CRC does not match and returns to sync state. A single corrupted packet should not poison subsequent packets.
 
-### 6.5 Jetson UART Buffer Full
+### 6.5 No Active Session on Update
 
-The Jetson `serial.read(256)` call has a 1-second timeout. If the read loop stalls, the OS UART FIFO will overflow and drop bytes. The `PacketParser` will detect the framing error via CRC mismatch and re-synchronise. For v2.0, the receiver should run in a dedicated thread with a queue.
-
-### 6.6 No Active Session on UPDATE
-
-If `JetsonDB.on_window_update()` is called before any `on_window_new()`, `active_session_id` is `None`. The method logs a warning and returns without executing the `UPDATE`.
+If the Jetson receives `WINDOW_UPDATE` before `WINDOW_NEW`, `JetsonDB` should log and ignore the update rather than writing inconsistent state.
 
 ---
 
-## 7. Build & Flash Reference
+## 7. Build and Flash Reference
 
-### 7.1 Pico Hub Firmware (single RP2040 — QMK)
+### 7.1 Install CircuitPython
 
-The single Pico Hub runs QMK firmware. It exposes two USB interfaces to the Host: a Raw HID interface (keyboard commands 0xA0/0xA1/0xB0) and a CDC serial interface (context relay to Jetson). The relay logic in `pico/main.py` documents the serial bridge behaviour that is implemented in QMK C.
+1. Hold `BOOTSEL` while plugging the Pico into USB.
+2. Copy the Raspberry Pi Pico CircuitPython UF2 onto the `RPI-RP2` drive.
+3. Wait for the board to reboot as `CIRCUITPY`.
 
-**Toolchain setup (macOS, one-time):**
+### 7.2 Deploy Firmware Files
 
-```bash
-# Install QMK CLI via pipx (avoids Homebrew Python conflicts)
-brew install pipx
-pipx install qmk
-pipx ensurepath
+Copy the following from the repo onto the board:
 
-# Install ARM cross-compiler (requires sudo for .pkg installer)
-brew install --cask gcc-arm-embedded
+- `pico/boot.py` -> `CIRCUITPY/boot.py`
+- `pico/code.py` -> `CIRCUITPY/code.py`
+- `pico/upload_protocol.py`
+- `pico/serial_bridge.py`
+- `pico/usb_config.py`
 
-# Run QMK setup (clones qmk_firmware + submodules)
-qmk setup --yes
-```
+Reboot the Pico after copying `boot.py` so the USB configuration is applied.
 
-**Build:**
+### 7.3 Verify
 
-```bash
-cd spark_qmk
-PATH="/Applications/ArmGNUToolchain/15.2.rel1/arm-none-eabi/bin:$PATH" sh build_spark.sh
-# output: .build/spark_default.uf2
-```
+Expected results:
 
-**Flash** (Pico must be in bootloader mode — hold BOOTSEL while plugging in):
+- board enumerates as VID `0xC4C4` / PID `0x5350`
+- host sees one CDC data interface
+- host sees one custom Raw HID interface on usage page `0xFF60`, usage `0x61`
+- `SparkHIDClient.get_info()` succeeds
+- host context packets still relay to the Jetson at `115200`
 
-```bash
-cp .build/spark_default.uf2 /Volumes/RPI-RP2/
-# Pico reboots automatically; RPI-RP2 drive disappears
-```
-
-**Verify** (device should enumerate as VID `0xC4C4` PID `0x5350`):
-
-```bash
-system_profiler SPUSBDataType | grep -A4 "C4C4"
-```
-
-### 7.2 Host App Dependencies
+### 7.4 Host App Dependencies
 
 ```bash
 cd SPARK
@@ -562,9 +419,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Key dependency note: `hidapi>=0.14.0` provides the `hid` Python module with a bundled native library. Do **not** install the separate `hid` package alongside it — the two conflict on macOS.
+Important packages:
 
-### 7.3 Running the App
+- `hidapi`
+- `pyserial`
+
+### 7.5 Run the Host App
 
 ```bash
 source .venv/bin/activate
@@ -573,27 +433,31 @@ python spark_app_v2.py
 
 ---
 
-## 8. OpCode Reference Table
+## 8. Reference Tables
 
-### Serial Protocol (Host ↔ Hub ↔ Jetson)
+### 8.1 Serial Protocol
 
-| OpCode | Name | Direction | Payload | DB Action on Jetson |
-|---|---|---|---|---|
-| `0x01` | `WINDOW_NEW` | Host → Hub → Jetson | `uint8 app_len` + `app_name` + `uint8 title_len` + `title` + `uint16 text_len` + `text` | `INSERT INTO sessions` → store `active_session_id` |
-| `0x02` | `WINDOW_UPDATE` | Host → Hub → Jetson | `uint16 text_len` + `text` | `UPDATE sessions SET text WHERE id = active_session_id` |
-| `0x03` | `WINDOW_CLOSE` | *(reserved)* | *(TBD)* | Finalise active session |
-| `0x04` | `HOST_PING` | *(reserved)* | none | Heartbeat / keep-alive; no DB write |
-| `0x05` | `BUTTON_PRESS` | Hub → Jetson | `uint8 button_id` | `INSERT INTO button_events` → fetch session context for LLM |
-| `0x06` | `LLM_RESULT` | *(reserved)* | `uint16 text_len` + `text` | Jetson LLM result → route to HID output |
+| OpCode | Name | Direction | Payload |
+|---|---|---|---|
+| `0x01` | `WINDOW_NEW` | Host -> Pico -> Jetson | app/title/text payload |
+| `0x02` | `WINDOW_UPDATE` | Host -> Pico -> Jetson | text payload |
+| `0x05` | `BUTTON_PRESS` | Pico -> Jetson | `uint8 button_id` |
 
-### Raw HID Protocol (Host ↔ QMK Pico, 32-byte reports)
+### 8.2 Custom Raw HID Protocol
 
-| Byte[0] | Name | Direction | Byte[1] | Description |
-|---|---|---|---|---|
-| `0xA0` | `CMD_KB_CAPTURE` | Keyboard → Host | — | Physical key triggered capture |
-| `0xA1` | `CMD_KB_RELEASE` | Keyboard → Host | — | Physical key triggered release |
-| `0xB0` | `CMD_HOST_STATUS` | Host → Keyboard | status code | `0x01` processing · `0x02` done · `0x03` error |
+| Byte[0] | Name | Direction | Notes |
+|---|---|---|---|
+| `0x01` | `GET_INFO` | Host <-> Pico | capability query |
+| `0x10` | `BEGIN_UPLOAD` | Host -> Pico | start upload |
+| `0x11` | `UPLOAD_CHUNK` | Host -> Pico | send chunk |
+| `0x12` | `COMMIT_UPLOAD` | Host -> Pico | finalize upload |
+| `0x13` | `ABORT_UPLOAD` | Host -> Pico | abort upload |
+| `0x7F` | `STATUS` | Pico -> Host | result reply |
 
-> **String encoding:** all `text`, `app_name`, and `title` fields are UTF-8, no null terminator. Length fields are byte counts (not character counts).
-> **Endianness:** all multi-byte integers are **little-endian** (`<` in Python `struct`, `__attribute__((packed))` in C with `uint16_t`).
-> **Unknown OpCodes:** firmware and host implementations must not error on unknown OpCodes — log and discard.
+Legacy `0xA0` / `0xA1` / `0xB0` keyboard-trigger/status reports are not part of the current CircuitPython firmware contract.
+
+### 8.3 Encoding and Endianness
+
+- all strings are UTF-8
+- length fields are byte counts, not character counts
+- all multi-byte integers are little-endian

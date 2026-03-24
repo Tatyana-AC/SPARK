@@ -37,6 +37,16 @@ Poll tick (every 2s)
 | Change capture/release behavior | `spark_app.py` line 415 | `_do_capture()` and `_do_release()` |
 | Change hotkeys | `host_pc/hotkeys.py` | `GlobalHotkeyManager` |
 
+Windows hotkey note:
+- Current Windows defaults are `Win+Alt+C` for capture and `Win+Alt+V` for release.
+- Current Windows toggle default is `Win+Alt+Space`.
+- Avoid `Alt+Space`-based global hotkeys. Windows uses `Alt+Space` to open the active window's context/system menu, so `Win+Alt+Space` is a poor default for toggle behavior.
+- If a local machine still needs `Win+Alt+Space`, the user-verified AutoHotkey workaround is:
+
+```ahk
+#!Space::return
+```
+
 ---
 
 ## File-by-File Summary
@@ -51,7 +61,7 @@ Poll tick (every 2s)
 | `host_pc/browser.py` | AppleScript queries for Safari/Chrome active tab + URL |
 | `host_pc/context.py` | `Context` class — clean LLM-ready object with `context_key` and `to_dict()` |
 | `host_pc/db.py` | SQLite layer — `save_snapshot()`, `get_recent()`, `search()`, auto-migration |
-| `host_pc/hotkeys.py` | Global hotkey listener (Cmd+Ctrl+C / Cmd+Ctrl+R) |
+| `host_pc/hotkeys.py` | Global hotkey listener with platform-specific defaults (macOS: Cmd+Ctrl, Windows: Win+Alt) |
 
 ---
 

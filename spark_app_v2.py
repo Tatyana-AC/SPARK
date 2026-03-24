@@ -1,11 +1,11 @@
-"""
+﻿"""
 SPARK — Full Pipeline Application (v2: SPARK Panel UI)
 
 Capture text from any application, process it, and paste it back.
 
 Hotkeys (global, work from any app):
-    Cmd+Ctrl+C  —  Capture selected text
-    Cmd+Ctrl+R  —  Release (paste processed text back)
+    macOS: Cmd+Ctrl+C / Cmd+Ctrl+R
+    Windows: Win+Alt+C / Win+Alt+V
 """
 
 import os
@@ -29,13 +29,19 @@ from host_pc.accessibility.base import TextSource
 from host_pc.accessibility.tracker import WindowContextTracker
 from host_pc.browser import get_browser_tab
 from host_pc.db import SparkDB
-from host_pc.hotkeys import GlobalHotkeyManager
+from host_pc.hotkeys import GlobalHotkeyManager, get_hotkey_config
 from host_pc.raw_hid import SparkHIDClient, AppCommand, SparkProtocolError
+from host_pc.release_output import format_release_output
 from host_pc.serial_sender import SerialSender
+from host_pc.live_capture import LiveCaptureFeed
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s  %(name)s  %(levelname)s  %(message)s")
 logger = logging.getLogger(__name__)
+
+HOTKEY_CONFIG = get_hotkey_config()
+CAPTURE_HOTKEY_LABEL = HOTKEY_CONFIG["capture_label"]
+RELEASE_HOTKEY_LABEL = HOTKEY_CONFIG["release_label"]
 
 # ── Palette (matches your existing palette) ───────────────────
 BG           = "#111827"
@@ -288,6 +294,9 @@ class ActionButton(QPushButton):
 class HIDSignals(QObject):
     """Qt signal bridge for HID thread → main thread."""
     device_connected = pyqtSignal(bool)  # True=connected, False=disconnected
+    release_succeeded = pyqtSignal(str)
+    release_failed = pyqtSignal(str)
+    release_finished = pyqtSignal()
 
 
 # --Sensitive content guard  ─────────────────────────
@@ -368,7 +377,7 @@ class SparkPanel(QWidget):
         self.captured_text: str = ""
         self.processed_text: str = ""
         self.is_polling = False
-        self._capture_lines: list[str] = []
+        self._capture_feed = LiveCaptureFeed(max_lines=self.MAX_CAPTURE_LINES)
         self._drag_pos: QPoint | None = None
 
         self._build_ui()
@@ -415,7 +424,7 @@ class SparkPanel(QWidget):
         hdr.addLayout(title_col)
         hdr.addStretch()
 
-        self.device_dot = QLabel("● DEVICE")
+        self.device_dot = QLabel("● DEVICE DISCONNECTED")
         self.device_dot.setObjectName("device_dot")
         self.device_dot.setStyleSheet(f"color: #374151;")  # grey = disconnected
         hdr.addWidget(self.device_dot, alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -486,8 +495,29 @@ class SparkPanel(QWidget):
         lay.addWidget(cap_frame)
         lay.addSpacing(10)
 
+        out_hdr = QHBoxLayout()
+        out_sec = QLabel("RELEASE OUTPUT")
+        out_sec.setObjectName("section_label")
+        out_hdr.addWidget(out_sec)
+        out_hdr.addStretch()
+        lay.addLayout(out_hdr)
+        lay.addSpacing(10)
+
+        out_frame = QFrame()
+        out_frame.setObjectName("capture_frame")
+        out_inner = QVBoxLayout(out_frame)
+        out_inner.setContentsMargins(14, 12, 14, 12)
+
+        self.release_output_lbl = QLabel("No released text yet…")
+        self.release_output_lbl.setObjectName("capture_text")
+        self.release_output_lbl.setWordWrap(True)
+        self.release_output_lbl.setMinimumHeight(60)
+        out_inner.addWidget(self.release_output_lbl)
+        lay.addWidget(out_frame)
+        lay.addSpacing(10)
+
         # Status line
-        self.status_lbl = QLabel("Ready — select text in any app, then Cmd+Ctrl+C")
+        self.status_lbl = QLabel(f"Ready - select text in any app, then {CAPTURE_HOTKEY_LABEL}")
         self.status_lbl.setObjectName("status_label")
         self.status_lbl.setWordWrap(True)
         lay.addWidget(self.status_lbl)
@@ -505,8 +535,8 @@ class SparkPanel(QWidget):
         grid = QGridLayout()
         grid.setSpacing(8)
 
-        self.btn_capture  = ActionButton("Capture Text", "Cmd+Ctrl+C — grab selection")
-        self.btn_release  = ActionButton("Release Text", "Cmd+Ctrl+R — paste processed")
+        self.btn_capture  = ActionButton("Capture Text", f"{CAPTURE_HOTKEY_LABEL} - grab selection")
+        self.btn_release  = ActionButton("Release Text", f"{RELEASE_HOTKEY_LABEL} - send to SPARK")
         self.btn_summarize = ActionButton("Summarize Window", "Quick overview of visible text")
         self.btn_history  = ActionButton("Show History", "View previous window contexts")
 
@@ -546,6 +576,9 @@ class SparkPanel(QWidget):
     def _connect_hid(self):
         """Start a 2-second connection poll and wire the device_connected signal."""
         self.hid_signals.device_connected.connect(self._on_hid_connected)
+        self.hid_signals.release_succeeded.connect(self._on_release_succeeded)
+        self.hid_signals.release_failed.connect(self._on_release_failed)
+        self.hid_signals.release_finished.connect(self._on_release_finished)
         self._hid_poll_timer = QTimer()
         self._hid_poll_timer.setInterval(2000)
         self._hid_poll_timer.timeout.connect(self._poll_hid_connection)
@@ -561,11 +594,23 @@ class SparkPanel(QWidget):
     def _on_hid_connected(self, connected: bool):
         """Update the device status dot in the header."""
         if connected:
+            self.device_dot.setText("● DEVICE CONNECTED")
             self.device_dot.setStyleSheet(f"color: {GREEN};")
             self.device_dot.setToolTip("SPARK device connected")
         else:
+            self.device_dot.setText("● DEVICE DISCONNECTED")
             self.device_dot.setStyleSheet("color: #374151;")
             self.device_dot.setToolTip("SPARK device disconnected")
+
+    def _on_release_succeeded(self, text: str):
+        self.release_output_lbl.setText(format_release_output(text) if text else "No released text yet…")
+        self._set_status("Sent to SPARK — output updated ✓", GREEN)
+
+    def _on_release_failed(self, message: str):
+        self._set_status(message, RED)
+
+    def _on_release_finished(self):
+        self.btn_release.setEnabled(True)
 
     # ─────────────────────────────────────────────────────────────
     # Polling — identical logic to SparkPipeline._on_poll_tick
@@ -593,7 +638,7 @@ class SparkPanel(QWidget):
         info = self.manager.get_active_window_info()
         if not info:
             self.ctx_card_active.update_data("—", "No window detected", active=True)
-            self._push_capture_line("No active window detected")
+            self._push_poll_capture_line("No active window detected")
             return
         # Ignore the SPARK panel itself
         if info.pid == os.getpid():
@@ -634,7 +679,7 @@ class SparkPanel(QWidget):
 
         if text and text.strip() and source:
             preview = text[:120].replace("\n", " ")
-            self._push_capture_line(f"[{info.app_name}] {preview}")
+            self._push_poll_capture_line(f"[{info.app_name}] {preview}")
             self.tracker.update(info, text, source, tab=tab)
 
             # ── Serial → Pico Hub ────────────────────────────────
@@ -649,7 +694,7 @@ class SparkPanel(QWidget):
                 else:
                     self.serial_sender.send_window_update(text)
         else:
-            self._push_capture_line(f"[{info.app_name}] (no text extracted)")
+            self._push_poll_capture_line(f"[{info.app_name}] (no text extracted)")
 
         self._refresh_history_cards()
 
@@ -664,12 +709,16 @@ class SparkPanel(QWidget):
             else:
                 card.update_data("—", "", active=False)
 
+    def _push_poll_capture_line(self, line: str):
+        self._capture_feed.push_poll_line(line)
+        self._refresh_capture_label()
+
     def _push_capture_line(self, line: str):
-        """Append a line to the live capture box (max MAX_CAPTURE_LINES)."""
-        self._capture_lines.append(line)
-        if len(self._capture_lines) > self.MAX_CAPTURE_LINES:
-            self._capture_lines = self._capture_lines[-self.MAX_CAPTURE_LINES:]
-        self.capture_lbl.setText("\n".join(self._capture_lines))
+        self._capture_feed.push_event_line(line)
+        self._refresh_capture_label()
+
+    def _refresh_capture_label(self):
+        self.capture_lbl.setText("\n".join(self._capture_feed.lines))
 
     def _blink_live(self):
         self._blink_state = not self._blink_state
@@ -699,7 +748,7 @@ class SparkPanel(QWidget):
             self.btn_release.setEnabled(True)
             self.btn_release.set_subtitle(f"{len(self.processed_text)} chars ready")
             self._set_status(
-                f"Captured {len(text)} chars — Cmd+Ctrl+R to paste back", GREEN
+                f"Captured {len(text)} chars - {RELEASE_HOTKEY_LABEL} to send to SPARK", GREEN
             )
             self._push_capture_line(f"[CAPTURED] {text[:80].replace(chr(10),' ')}…")
         else:
@@ -723,17 +772,13 @@ class SparkPanel(QWidget):
             status = self.hid_client.upload(AppCommand.SUBMIT_TEXT, text)
             if status.ok:
                 self.hid_signals.device_connected.emit(True)  # reuse signal to confirm alive
-                QTimer.singleShot(0, lambda: self._set_status(
-                    "Sent to SPARK — device is typing it back ✓", GREEN
-                ))
+                self.hid_signals.release_succeeded.emit(text)
             else:
-                QTimer.singleShot(0, lambda: self._set_status(
-                    f"Device error: {status.code.name}", RED
-                ))
+                self.hid_signals.release_failed.emit(f"Device error: {status.code.name}")
         except SparkProtocolError as exc:
-            QTimer.singleShot(0, lambda: self._set_status(f"HID error: {exc}", RED))
+            self.hid_signals.release_failed.emit(f"HID error: {exc}")
         finally:
-            QTimer.singleShot(0, lambda: self.btn_release.setEnabled(True))
+            self.hid_signals.release_finished.emit()
 
     def _on_summarize(self):
         """Summarize whatever is currently visible in the active window."""
@@ -889,3 +934,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
