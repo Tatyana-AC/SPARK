@@ -1,11 +1,11 @@
-"""
+﻿"""
 SPARK — Full Pipeline Application
 
 Capture text from any application, process it, and paste it back.
 
 Hotkeys (global, work from any app):
-    Cmd+Ctrl+C  —  Capture selected text
-    Cmd+Ctrl+R  —  Release (paste processed text back)
+    macOS: Cmd+Ctrl+C / Cmd+Ctrl+R
+    Windows: Win+Alt+C / Win+Alt+V
 """
 
 import os
@@ -28,13 +28,17 @@ from host_pc.accessibility.base import TextSource
 from host_pc.accessibility.tracker import WindowContextTracker
 from host_pc.browser import get_browser_tab
 from host_pc.db import SparkDB
-from host_pc.hotkeys import GlobalHotkeyManager
+from host_pc.hotkeys import GlobalHotkeyManager, get_hotkey_config
 from host_pc.hid import KeyboardHIDManager
 from host_pc.hid.keyboard_hid import STATUS_PROCESSING, STATUS_DONE, STATUS_ERROR
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s  %(name)s  %(levelname)s  %(message)s")
 logger = logging.getLogger(__name__)
+
+HOTKEY_CONFIG = get_hotkey_config()
+CAPTURE_HOTKEY_LABEL = HOTKEY_CONFIG["capture_label"]
+RELEASE_HOTKEY_LABEL = HOTKEY_CONFIG["release_label"]
 
 # ── Palette ───────────────────────────────────────────────────
 BG          = "#1a1b26"   # deep navy
@@ -127,7 +131,7 @@ class SparkPipeline(QMainWindow):
         root.addLayout(header)
 
         # Status pill
-        self.status_label = QLabel("Ready — select text in any app, then Cmd+Ctrl+C")
+        self.status_label = QLabel(f"Ready - select text in any app, then {CAPTURE_HOTKEY_LABEL}")
         self.status_label.setFont(self._font(9))
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"""
@@ -324,12 +328,12 @@ class SparkPipeline(QMainWindow):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
 
-        self.capture_btn = QPushButton("Capture   Cmd+Ctrl+C")
+        self.capture_btn = QPushButton(f"Capture   {CAPTURE_HOTKEY_LABEL}")
         self._style_action_button(self.capture_btn, PURPLE, PURPLE_HOVER)
         self.capture_btn.clicked.connect(self._on_capture)
         btn_row.addWidget(self.capture_btn)
 
-        self.release_btn = QPushButton("Release   Cmd+Ctrl+R")
+        self.release_btn = QPushButton(f"Release   {RELEASE_HOTKEY_LABEL}")
         self.release_btn.setEnabled(False)
         self._style_action_button(self.release_btn, GREEN, GREEN_HOVER)
         self.release_btn.clicked.connect(self._on_release)
@@ -484,7 +488,7 @@ class SparkPipeline(QMainWindow):
             self.release_btn.setEnabled(True)
 
             self._set_status(
-                f"Captured {len(text)} chars & processed — Cmd+Ctrl+R to paste back",
+                f"Captured {len(text)} chars - {RELEASE_HOTKEY_LABEL} to paste back",
                 GREEN,
             )
             self.keyboard_hid.send_status(STATUS_DONE)
@@ -608,3 +612,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

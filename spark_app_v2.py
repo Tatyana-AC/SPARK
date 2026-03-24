@@ -1,11 +1,11 @@
-"""
+﻿"""
 SPARK — Full Pipeline Application (v2: SPARK Panel UI)
 
 Capture text from any application, process it, and paste it back.
 
 Hotkeys (global, work from any app):
-    Cmd+Ctrl+C  —  Capture selected text
-    Cmd+Ctrl+R  —  Release (paste processed text back)
+    macOS: Cmd+Ctrl+C / Cmd+Ctrl+R
+    Windows: Win+Alt+C / Win+Alt+V
 """
 
 import os
@@ -29,7 +29,7 @@ from host_pc.accessibility.base import TextSource
 from host_pc.accessibility.tracker import WindowContextTracker
 from host_pc.browser import get_browser_tab
 from host_pc.db import SparkDB
-from host_pc.hotkeys import GlobalHotkeyManager
+from host_pc.hotkeys import GlobalHotkeyManager, get_hotkey_config
 from host_pc.raw_hid import SparkHIDClient, AppCommand, SparkProtocolError
 from host_pc.serial_sender import SerialSender
 from host_pc.live_capture import LiveCaptureFeed
@@ -37,6 +37,10 @@ from host_pc.live_capture import LiveCaptureFeed
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s  %(name)s  %(levelname)s  %(message)s")
 logger = logging.getLogger(__name__)
+
+HOTKEY_CONFIG = get_hotkey_config()
+CAPTURE_HOTKEY_LABEL = HOTKEY_CONFIG["capture_label"]
+RELEASE_HOTKEY_LABEL = HOTKEY_CONFIG["release_label"]
 
 # ── Palette (matches your existing palette) ───────────────────
 BG           = "#111827"
@@ -488,7 +492,7 @@ class SparkPanel(QWidget):
         lay.addSpacing(10)
 
         # Status line
-        self.status_lbl = QLabel("Ready — select text in any app, then Cmd+Ctrl+C")
+        self.status_lbl = QLabel(f"Ready - select text in any app, then {CAPTURE_HOTKEY_LABEL}")
         self.status_lbl.setObjectName("status_label")
         self.status_lbl.setWordWrap(True)
         lay.addWidget(self.status_lbl)
@@ -506,8 +510,8 @@ class SparkPanel(QWidget):
         grid = QGridLayout()
         grid.setSpacing(8)
 
-        self.btn_capture  = ActionButton("Capture Text", "Cmd+Ctrl+C — grab selection")
-        self.btn_release  = ActionButton("Release Text", "Cmd+Ctrl+R — paste processed")
+        self.btn_capture  = ActionButton("Capture Text", f"{CAPTURE_HOTKEY_LABEL} - grab selection")
+        self.btn_release  = ActionButton("Release Text", f"{RELEASE_HOTKEY_LABEL} - paste processed")
         self.btn_summarize = ActionButton("Summarize Window", "Quick overview of visible text")
         self.btn_history  = ActionButton("Show History", "View previous window contexts")
 
@@ -704,7 +708,7 @@ class SparkPanel(QWidget):
             self.btn_release.setEnabled(True)
             self.btn_release.set_subtitle(f"{len(self.processed_text)} chars ready")
             self._set_status(
-                f"Captured {len(text)} chars — Cmd+Ctrl+R to paste back", GREEN
+                f"Captured {len(text)} chars - {RELEASE_HOTKEY_LABEL} to paste back", GREEN
             )
             self._push_capture_line(f"[CAPTURED] {text[:80].replace(chr(10),' ')}…")
         else:
@@ -894,3 +898,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

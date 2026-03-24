@@ -2,164 +2,260 @@
 
 ## What This Repo Is
 
-SPARK is a Python desktop assistant focused on context capture. The app watches the active window, extracts selected or visible text through platform accessibility APIs, enriches browser context when possible, stores recent snapshots in SQLite, and can paste processed text back into the focused app.
+SPARK is no longer just a desktop capture panel. On the current `sida` branch, it is a distributed three-node system:
 
-At a high level, the repo is a small desktop application with one main package (`host_pc`) and two root-level Qt entrypoints.
+- Host PC app: PyQt desktop app that captures desktop context, tracks window state, talks to hardware, and maintains a local history DB.
+- Pico Hub: RP2040/QMK device that exposes both Raw HID and USB CDC serial, bridging context packets toward Jetson and accepting HID uploads from the host.
+- Jetson Brain: serial receiver plus SQLite store for session-oriented context and button events.
+
+The current codebase is best understood as a host application plus protocol and hardware integration layers.
 
 ## Top-Level Layout
 
 ```text
 SPARK/
-|- spark_app_v2.py                   # Current floating panel UI
-|- spark_app.py                      # Older full-window UI
-|- host_pc/                          # Core runtime package
-|  |- accessibility/                 # Cross-platform accessibility layer
-|  |- browser.py                     # Browser tab/title lookup
-|  |- context.py                     # LLM-friendly context model
-|  |- db.py                          # SQLite persistence
-|  `- hotkeys.py                     # Global hotkey bridge
-|- documentation_reference.md        # Best existing architecture reference
-|- diagram.md                        # Mermaid system diagram
-|- ACCESSIBILITY_PERMISSIONS.md      # macOS setup guide
-|- setup_accessibility_macos.py      # Interactive macOS permissions helper
-|- requirements.txt                  # Runtime dependencies
-|- spark.db                          # Local runtime data, ignored in git
-|- spark_desktop.egg-info/           # Generated packaging metadata
-|- .venv/                            # Local virtual environment
-`- __pycache__/                      # Local Python cache
+|- spark_app_v2.py                 # Active host UI and hardware-integrated desktop panel
+|- spark_app.py                    # Older desktop UI path; still wired to keyboard HID manager
+|- host_pc/                        # Host-side runtime package
+|  |- accessibility/               # Cross-platform text capture
+|  |- hid/                         # Keyboard Raw HID manager abstraction
+|  |- browser.py                   # Browser tab metadata
+|  |- context.py                   # LLM-friendly host context object
+|  |- db.py                        # Host-side local SQLite store
+|  |- hotkeys.py                   # Global hotkeys
+|  |- live_capture.py              # Live-capture feed dedupe helper
+|  |- raw_hid.py                   # Raw HID upload client for SPARK device
+|  `- serial_sender.py             # CDC serial sender to Pico Hub / Jetson path
+|- core/                           # Shared wire protocol builder/parser
+|- jetson/                         # Jetson serial receiver and DB layer
+|- pico/                           # Pico relay reference implementation / firmware spec
+|- tests/                          # Focused unit tests
+|- ENGINEERING_SPEC.md             # Best architecture source of truth
+|- documentation_reference.md      # Older host-app-focused notes; partially outdated
+|- diagram.md                      # Earlier system diagram; partially outdated
+|- requirements.txt                # Current Python dependencies
+|- spark.db                        # Host-local runtime state, ignored in git
+`- setup_accessibility_macos.py    # macOS accessibility setup helper
 ```
 
-## Core Runtime Structure
+## Architecture Summary
 
-### 1. UI Layer
+### 1. Host Node
+
+The host node is the user-facing desktop application.
 
 - `spark_app_v2.py`
-  - Main panel-style application.
-  - Builds the floating frameless UI, tray icon, polling loop, history cards, capture/release actions, and a privacy guard.
-  - This is the active GUI entrypoint according to `spark_desktop.egg-info/entry_points.txt`.
+  - Main active entrypoint.
+  - Runs a 125 ms polling loop.
+  - Captures active-window context through `AccessibilityManager`.
+  - Updates local history via `WindowContextTracker` and `SparkDB`.
+  - Maintains a deduped live-capture feed via `LiveCaptureFeed`.
+  - Sends window context over serial to the Pico Hub using `SerialSender`.
+  - Uploads release text to the SPARK device over Raw HID using `SparkHIDClient`.
+  - Shows device connection state in the panel header.
 - `spark_app.py`
-  - Older `QMainWindow` implementation of the same capture/process/release idea.
-  - Still contains a full standalone UI instead of a thin compatibility shim.
+  - Legacy/alternate desktop UI.
+  - Still uses `KeyboardHIDManager` from `host_pc.hid`.
+  - Useful for reference, but `spark_app_v2.py` is the active app path.
 
-### 2. Accessibility Layer
+### 2. Shared Protocol Layer
 
-Everything under `host_pc/accessibility/` is the abstraction boundary between SPARK and OS-specific APIs.
+- `core/protocol.py`
+  - Defines the SPARK wire protocol.
+  - Builds:
+    - `WINDOW_NEW` (`0x01`)
+    - `WINDOW_UPDATE` (`0x02`)
+    - `BUTTON_PRESS` (`0x05`)
+  - Implements packet framing:
+    - magic bytes `SP`
+    - packet type
+    - little-endian payload length
+    - payload
+    - CRC-8/MAXIM
+  - Also contains `PacketParser`, which the Jetson receiver uses to decode the serial stream.
+
+### 3. Pico Hub Layer
+
+- `pico/main.py`
+  - Reference implementation and readable spec for the Pico relay behavior.
+  - Treat this as documentation/prototype code, not the authoritative production firmware.
+  - Describes the Pico’s job:
+    - relay host CDC serial bytes to Jetson UART
+    - inject button-press packets
+    - coexist with Raw HID keyboard signaling on the same physical device
+- `ENGINEERING_SPEC.md`
+  - The real source of truth for the distributed architecture and the QMK-based single-Pico design.
+
+### 4. Jetson Layer
+
+- `jetson/receiver.py`
+  - Serial receiver for the Jetson.
+  - Reads bytes from UART, feeds them into `PacketParser`, and dispatches decoded packets into the Jetson DB layer.
+- `jetson/db_manager.py`
+  - Session-aware SQLite store for the Jetson side.
+  - Maintains:
+    - `sessions`
+    - `button_events`
+  - Uses one session row per contiguous window visit, with updates rewriting the active session’s text instead of inserting new rows on every poll.
+
+## Host Package Map
+
+### Accessibility and Context Capture
+
+Files under `host_pc/accessibility/` are still the base of the host app:
 
 - `base.py`
-  - Shared dataclasses and interfaces:
+  - Shared dataclasses and protocol:
     - `WindowInfo`
     - `TextContext`
     - `WindowContextSnapshot`
     - `TextSource`
     - `AccessibilityProvider`
 - `manager.py`
-  - Chooses the provider based on `sys.platform`.
-  - Exposes unified methods like:
-    - `get_context()`
-    - `get_active_window_info()`
-    - `get_selected_text()`
-    - `get_focused_element_text()`
-    - `get_window_text()`
-    - `paste_text()`
+  - Cross-platform facade over macOS and Windows providers.
 - `macos_provider.py`
-  - Uses PyObjC/ApplicationServices accessibility APIs.
-  - Handles active app lookup, focused element text, window-wide text extraction, clipboard-based capture, paste, and permission checks.
+  - Real macOS accessibility implementation via PyObjC / AX APIs.
 - `windows_provider.py`
-  - Uses Win32/UI Automation style integrations.
-  - Handles active window detection, clipboard capture, focused/window text extraction, paste, and capability checks.
+  - Windows accessibility implementation path.
 - `tracker.py`
-  - Maintains current context plus the previous two window snapshots.
-  - Persists snapshots on context change.
-  - Prunes old database rows after the configured threshold.
+  - Tracks current and previous windows.
+  - Persists host snapshots into `spark.db`.
+  - Provides the `context_key` logic used to detect window changes.
 
-### 3. Context Enrichment
+### Host-Side Supporting Modules
 
 - `browser.py`
-  - Adds browser-aware metadata.
-  - Supports Safari and Chromium-family names through AppleScript calls.
-  - Returns `BrowserTabInfo` with tab title and URL when available.
+  - Browser tab enrichment for supported desktop browsers.
 - `context.py`
-  - Defines a clean `Context` object for LLM or downstream prompt construction.
-  - Mirrors the live snapshot data in a serialization-friendly form.
-
-### 4. Persistence
-
+  - LLM-ready host context object.
 - `db.py`
-  - Owns the SQLite schema and all DB access.
-  - Creates:
-    - `window_snapshots`
-    - `preferences`
-  - Supports:
-    - snapshot insert
-    - recent-history queries
-    - text/title/URL search
-    - simple preference storage
-    - oldest-row pruning
+  - Host-side local SQLite store for snapshots and preferences.
+- `hotkeys.py`
+  - Global hotkey listener.
+  - Current Windows defaults: `Win+Alt+C` for capture, `Win+Alt+V` for release, and `Win+Alt+Space` for window toggle.
+  - Avoid `Alt+Space`-based bindings on Windows because `Alt+Space` opens the active window system menu.
+  - If a local Windows setup must suppress that effect, the current documented workaround is an AutoHotkey rule: `#!Space::return`.
+- `live_capture.py`
+  - Small helper extracted from V2 to manage live-capture display lines.
+  - Important behavior: dedupes repeated poll entries, but still allows explicit event entries like `[CAPTURED] ...`.
 
-## How The App Fits Together
+### Hardware / Device Communication
 
-The runtime flow is:
+- `raw_hid.py`
+  - Synchronous Raw HID client used by `spark_app_v2.py`.
+  - Talks directly to the SPARK device for:
+    - capability query
+    - upload begin/chunk/commit
+    - text submission
+- `serial_sender.py`
+  - Sends protocol packets to the Pico CDC serial interface.
+  - Used by V2 to emit `WINDOW_NEW` on context change and `WINDOW_UPDATE` while the same context remains active.
+- `hid/keyboard_hid.py`
+  - Higher-level keyboard HID manager abstraction.
+  - Mirrors the old hotkey-manager pattern with Qt signals and a reconnecting background thread.
+  - Currently used by `spark_app.py`, not by `spark_app_v2.py`.
 
-1. The Qt app starts in `spark_app_v2.py`.
+## Current Runtime Flow
+
+The main V2 app flow is now:
+
+1. `spark_app_v2.py` starts the Qt panel.
 2. It creates:
    - `AccessibilityManager`
    - `GlobalHotkeyManager`
    - `SparkDB`
    - `WindowContextTracker`
-3. Polling asks the accessibility manager for the active window.
-4. If the active app is a supported browser, `browser.py` adds tab metadata.
-5. The app tries text extraction in this order:
-   - focused element
-   - full window
-6. `tracker.py` updates live/previous context and persists snapshots.
-7. `db.py` stores history in `spark.db`.
-8. Capture/release actions use clipboard + simulated paste to round-trip text back into the host application.
+   - `SparkHIDClient`
+   - `SerialSender`
+   - `LiveCaptureFeed`
+3. Every 125 ms:
+   - read active window info
+   - apply privacy guard
+   - optionally enrich browser metadata
+   - extract focused-element or full-window text
+   - update host tracker/history
+   - append deduped live-capture output
+   - send `WINDOW_NEW` or `WINDOW_UPDATE` over serial toward the Pico/Jetson path
+4. On `Capture Text`:
+   - selected text is copied from the active app
+   - stored as `captured_text`
+   - mirrored into `processed_text`
+   - release becomes enabled
+   - `[CAPTURED] ...` is appended to live capture
+5. On `Release Text`:
+   - the host uploads `processed_text` to the SPARK device through Raw HID
+   - the device is expected to type it back
 
-## Source Of Truth By Concern
+## Important File Ownership
 
-- Best current architecture note: `documentation_reference.md`
-- Visual system diagram: `diagram.md`
-- Live desktop panel behavior: `spark_app_v2.py`
-- Legacy UI behavior: `spark_app.py`
-- Platform abstraction: `host_pc/accessibility/manager.py`
-- OS-specific implementation details:
-  - `host_pc/accessibility/macos_provider.py`
-  - `host_pc/accessibility/windows_provider.py`
-- History and retention logic: `host_pc/accessibility/tracker.py`
-- DB schema and query surface: `host_pc/db.py`
-- Hotkeys: `host_pc/hotkeys.py`
+- Main current app: `spark_app_v2.py`
+- Legacy app path: `spark_app.py`
+- Host context capture and persistence:
+  - `host_pc/accessibility/`
+  - `host_pc/db.py`
+  - `host_pc/context.py`
+- Host hardware communication:
+  - `host_pc/raw_hid.py`
+  - `host_pc/serial_sender.py`
+  - `host_pc/hid/keyboard_hid.py`
+- Shared protocol contract: `core/protocol.py`
+- Jetson receiver/storage:
+  - `jetson/receiver.py`
+  - `jetson/db_manager.py`
+- Pico relay reference: `pico/main.py`
+- Architecture spec: `ENGINEERING_SPEC.md`
 
-## Repo Characteristics
+## Tests and Verification
 
-- Small codebase: most logic is concentrated in a handful of Python files.
-- Thin package structure: `host_pc` is the only real module hierarchy.
-- Root-heavy app design: the two largest application files live at repo root instead of under a package.
-- Minimal formal project scaffolding in the tracked files:
-  - no tests
-  - no CI config
-  - no tracked `pyproject.toml` or `setup.py`
-- Generated metadata exists in `spark_desktop.egg-info/`, which means packaging happened outside the currently tracked source manifest.
+The repo now has at least one tracked test target:
+
+- `tests/test_live_capture.py`
+  - Verifies deduped poll-line behavior and explicit capture-event visibility in `host_pc/live_capture.py`.
+
+There is still no broad test suite, CI config, or packaging source manifest checked in.
+
+## Current Understanding of What Is Active vs. Stale
+
+### Active / trustworthy
+
+- `ENGINEERING_SPEC.md`
+- `spark_app_v2.py`
+- `core/protocol.py`
+- `host_pc/raw_hid.py`
+- `host_pc/serial_sender.py`
+- `jetson/receiver.py`
+- `jetson/db_manager.py`
+- `host_pc/live_capture.py`
+
+### Older or only partially current
+
+- `documentation_reference.md`
+  - Focused on the older host-only app architecture.
+  - Poll interval, flush threshold, and extension points are not aligned with the current rebased branch.
+- `diagram.md`
+  - Earlier architecture direction; not the best representation of the current single-Pico hub model.
+- `spark_desktop.egg-info/PKG-INFO`
+  - Generated metadata and likely stale relative to the tracked source.
+- `README.md`
+  - Minimal and not useful as onboarding.
+- `host_pc/raw_hid_example.py`
+  - Appears out of sync with the current `host_pc/raw_hid.py` API surface because it references listener/event APIs that are not present in the current client implementation.
 
 ## Important Observations
 
-- `README.md` is currently just a title, so most usable documentation lives elsewhere.
-- `documentation_reference.md` is the most practical onboarding document in the repo today.
-- `spark.db` is intentionally ignored and should be treated as local runtime state, not source.
-- Both app entrypoints still contain a hard-coded macOS `sys.path.insert(...)` to a developer machine path. That is a portability smell and a sign the repo still has local-dev assumptions baked in.
-- `spark_desktop.egg-info/PKG-INFO` describes `spark_app.py` as forwarding to v2, but the tracked `spark_app.py` still contains a full older implementation. That suggests the generated egg-info may be stale relative to the checked-in source.
+- This branch introduced a significant architecture expansion: the repo now spans desktop UI, shared protocol code, firmware-facing relay behavior, and a Jetson backend.
+- `spark_app_v2.py` does not currently use `host_pc.hid.keyboard_hid.KeyboardHIDManager`; it uses `SparkHIDClient` directly for release uploads.
+- `spark_app.py` still uses `KeyboardHIDManager`, so the two host UIs now represent two different hardware-integration approaches.
+- The hard-coded macOS `sys.path.insert(...)` remains in both app entrypoints and is still a portability smell.
+- The current `requirements.txt` reflects the newer hardware path and now includes both `hidapi` and `pyserial`.
 
 ## Practical Mental Model
 
-If you need to understand SPARK quickly, think of it as:
+Think of the current project as four slices:
 
-- a PyQt desktop shell at the top,
-- a cross-platform accessibility adapter in the middle,
-- a small SQLite memory layer underneath,
-- and a browser/LLM-friendly context layer beside it.
+- Desktop host app: capture context, render UI, handle user actions.
+- Device bridge: talk to the Pico over Raw HID and CDC serial.
+- Shared protocol: define and parse packets consistently across nodes.
+- Jetson receiver: persist and react to window sessions and button events.
 
-Most future work will likely fall into one of these buckets:
-
-- UI and interaction changes in `spark_app_v2.py`
-- capture correctness in `host_pc/accessibility/`
-- retention/search behavior in `host_pc/db.py` and `host_pc/accessibility/tracker.py`
-- smarter downstream reasoning or prompt-building in `host_pc/context.py`
+If you are changing behavior, first decide which slice owns it. That is the fastest way to stay oriented in this repo.
