@@ -87,6 +87,7 @@ Important: install `hidapi`, not the separate `hid` package.
 
 - `ENGINEERING_SPEC.md`: current architecture and protocol reference
 - `REPO_STRUCTURE.md`: codebase map and ownership notes
+- `docs/BRANCH_HANDOFF_2026-03-24.md`: summary of branch changes since Tatyana's last handoff
 - `pico/README.md`: Pico firmware notes and bring-up
 - `ACCESSIBILITY_PERMISSIONS.md`: macOS accessibility setup
 - `documentation_reference.md`: older host-app notes, useful but partially outdated
