@@ -32,6 +32,7 @@ from host_pc.db import SparkDB
 from host_pc.hotkeys import GlobalHotkeyManager
 from host_pc.raw_hid import SparkHIDClient, AppCommand, SparkProtocolError
 from host_pc.serial_sender import SerialSender
+from host_pc.live_capture import LiveCaptureFeed
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s  %(name)s  %(levelname)s  %(message)s")
@@ -368,7 +369,7 @@ class SparkPanel(QWidget):
         self.captured_text: str = ""
         self.processed_text: str = ""
         self.is_polling = False
-        self._capture_lines: list[str] = []
+        self._capture_feed = LiveCaptureFeed(max_lines=self.MAX_CAPTURE_LINES)
         self._drag_pos: QPoint | None = None
 
         self._build_ui()
@@ -593,7 +594,7 @@ class SparkPanel(QWidget):
         info = self.manager.get_active_window_info()
         if not info:
             self.ctx_card_active.update_data("—", "No window detected", active=True)
-            self._push_capture_line("No active window detected")
+            self._push_poll_capture_line("No active window detected")
             return
         # Ignore the SPARK panel itself
         if info.pid == os.getpid():
@@ -634,7 +635,7 @@ class SparkPanel(QWidget):
 
         if text and text.strip() and source:
             preview = text[:120].replace("\n", " ")
-            self._push_capture_line(f"[{info.app_name}] {preview}")
+            self._push_poll_capture_line(f"[{info.app_name}] {preview}")
             self.tracker.update(info, text, source, tab=tab)
 
             # ── Serial → Pico Hub ────────────────────────────────
@@ -649,7 +650,7 @@ class SparkPanel(QWidget):
                 else:
                     self.serial_sender.send_window_update(text)
         else:
-            self._push_capture_line(f"[{info.app_name}] (no text extracted)")
+            self._push_poll_capture_line(f"[{info.app_name}] (no text extracted)")
 
         self._refresh_history_cards()
 
@@ -664,12 +665,16 @@ class SparkPanel(QWidget):
             else:
                 card.update_data("—", "", active=False)
 
+    def _push_poll_capture_line(self, line: str):
+        self._capture_feed.push_poll_line(line)
+        self._refresh_capture_label()
+
     def _push_capture_line(self, line: str):
-        """Append a line to the live capture box (max MAX_CAPTURE_LINES)."""
-        self._capture_lines.append(line)
-        if len(self._capture_lines) > self.MAX_CAPTURE_LINES:
-            self._capture_lines = self._capture_lines[-self.MAX_CAPTURE_LINES:]
-        self.capture_lbl.setText("\n".join(self._capture_lines))
+        self._capture_feed.push_event_line(line)
+        self._refresh_capture_label()
+
+    def _refresh_capture_label(self):
+        self.capture_lbl.setText("\n".join(self._capture_feed.lines))
 
     def _blink_live(self):
         self._blink_state = not self._blink_state
