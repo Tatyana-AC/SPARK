@@ -12,12 +12,14 @@ import os
 import sys
 import logging
 import threading
+from datetime import datetime
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QFrame,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QGridLayout, QSizePolicy,
     QSystemTrayIcon, QMenu,
+    QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint, QObject, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPainter, QPainterPath, QCursor, QIcon, QPixmap
@@ -328,6 +330,141 @@ class PrivacyGuard:
             return False
             
         return True
+
+
+class DatabaseViewerWindow(QWidget):
+    """Read-only live view of the local SQLite snapshot table."""
+
+    REFRESH_INTERVAL_MS = 250
+    COLUMN_HEADERS = [
+        "ID",
+        "App",
+        "Window",
+        "Last Seen",
+        "Preview",
+        "Fingerprint",
+    ]
+
+    def __init__(self, db: SparkDB, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.setWindowTitle("SPARK Database Viewer")
+        self.resize(1480, 760)
+        self.setStyleSheet(
+            f"""
+            QWidget {{
+                background-color: {BG};
+                color: {TEXT};
+                font-family: 'SF Pro Text', -apple-system, 'Helvetica Neue', sans-serif;
+            }}
+            QLabel#db_title {{
+                font-size: 18px;
+                font-weight: 700;
+            }}
+            QLabel#db_subtitle {{
+                color: {TEXT_DIM};
+                font-size: 11px;
+            }}
+            QTableWidget {{
+                background-color: {SURFACE};
+                alternate-background-color: {SURFACE_ALT};
+                border: 1px solid {BORDER};
+                border-radius: 10px;
+                gridline-color: {BORDER};
+            }}
+            QHeaderView::section {{
+                background-color: {SURFACE_ALT};
+                color: {TEXT_MID};
+                border: none;
+                border-bottom: 1px solid {BORDER};
+                padding: 6px;
+                font-size: 11px;
+                font-weight: 700;
+            }}
+            """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Database Viewer")
+        title.setObjectName("db_title")
+        layout.addWidget(title)
+
+        self.subtitle_lbl = QLabel("Live snapshot rows from spark.db • newest last_seen first")
+        self.subtitle_lbl.setObjectName("db_subtitle")
+        layout.addWidget(self.subtitle_lbl)
+
+        self.table = QTableWidget(0, len(self.COLUMN_HEADERS))
+        self.table.setHorizontalHeaderLabels(self.COLUMN_HEADERS)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.setWordWrap(True)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(56)
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(2, 420)
+        self.table.setColumnWidth(5, 150)
+        layout.addWidget(self.table)
+
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setInterval(self.REFRESH_INTERVAL_MS)
+        self.refresh_timer.timeout.connect(self.refresh)
+
+    def showEvent(self, event):
+        self.refresh()
+        self.refresh_timer.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self.refresh_timer.stop()
+        super().hideEvent(event)
+
+    def closeEvent(self, event):
+        self.refresh_timer.stop()
+        super().closeEvent(event)
+
+    def refresh(self):
+        rows = self.db.get_debug_rows()
+        self.table.setRowCount(len(rows))
+
+        for row_idx, row in enumerate(rows):
+            values = [
+                str(row["id"]),
+                row["app_name"] or "",
+                row["window_title"] or "",
+                self._format_ts(row["last_seen"]),
+                row["text_preview"] or "",
+                (row["content_fingerprint"] or "")[:16],
+            ]
+            for col_idx, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                if col_idx in (0, 3, 5):
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                    )
+                self.table.setItem(row_idx, col_idx, item)
+
+        self.table.resizeRowsToContents()
+        self.subtitle_lbl.setText(
+            f"Live snapshot rows from spark.db • newest last_seen first • {len(rows)} visible"
+        )
+
+    @staticmethod
+    def _format_ts(value) -> str:
+        if not value:
+            return ""
+        return datetime.fromtimestamp(float(value)).strftime("%H:%M:%S")
+
 # ── Main panel ────────────────────────────────────────────────
 
 class SparkPanel(QWidget):
@@ -364,6 +501,7 @@ class SparkPanel(QWidget):
         db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spark.db")
         self.db = SparkDB(db_path)
         self.tracker = WindowContextTracker(db=self.db)
+        self.db_viewer = DatabaseViewerWindow(self.db)
 
         # ── HID device ───────────────────────────────────────────
         self.hid_signals = HIDSignals()
@@ -539,6 +677,7 @@ class SparkPanel(QWidget):
         self.btn_release  = ActionButton("Release Text", f"{RELEASE_HOTKEY_LABEL} - send to SPARK")
         self.btn_summarize = ActionButton("Summarize Window", "Quick overview of visible text")
         self.btn_history  = ActionButton("Show History", "View previous window contexts")
+        self.btn_database = ActionButton("Show Database", "Debug live snapshot rows")
 
         self.btn_release.setEnabled(False)
 
@@ -546,11 +685,13 @@ class SparkPanel(QWidget):
         self.btn_release.clicked.connect(self._on_release)
         self.btn_summarize.clicked.connect(self._on_summarize)
         self.btn_history.clicked.connect(self._on_show_history)
+        self.btn_database.clicked.connect(self._on_show_database)
 
         grid.addWidget(self.btn_capture,  0, 0)
         grid.addWidget(self.btn_release,  0, 1)
         grid.addWidget(self.btn_summarize, 1, 0)
         grid.addWidget(self.btn_history,  1, 1)
+        grid.addWidget(self.btn_database, 2, 0, 1, 2)
         lay.addLayout(grid)
 
         outer.addWidget(inner)
@@ -639,6 +780,8 @@ class SparkPanel(QWidget):
         if not info:
             self.ctx_card_active.update_data("—", "No window detected", active=True)
             self._push_poll_capture_line("No active window detected")
+            if self.db_viewer.isVisible():
+                self.db_viewer.refresh()
             return
         # Ignore the SPARK panel itself
         if info.pid == os.getpid():
@@ -648,6 +791,8 @@ class SparkPanel(QWidget):
             self.ctx_card_active.update_data("PROTECTED", "Privacy Filter Active", active=True)
             self._set_status("🛡️ Privacy Guard: Content Hidden", RED)
             # We stop here so no text is extracted or saved to DB
+            if self.db_viewer.isVisible():
+                self.db_viewer.refresh()
             return
         # ---------------------
 
@@ -655,6 +800,8 @@ class SparkPanel(QWidget):
         detail = f"{tab.tab_title}" if (tab and tab.tab_title) else info.title
         if tab and not self.privacy_guard.is_safe(info.bundle_id, tab.tab_title):
             self.ctx_card_active.update_data(info.app_name, "Protected URL", active=True)
+            if self.db_viewer.isVisible():
+                self.db_viewer.refresh()
             return
         self.ctx_card_active.update_data(info.app_name, detail, active=True)
 
@@ -697,6 +844,8 @@ class SparkPanel(QWidget):
             self._push_poll_capture_line(f"[{info.app_name}] (no text extracted)")
 
         self._refresh_history_cards()
+        if self.db_viewer.isVisible():
+            self.db_viewer.refresh()
 
     def _refresh_history_cards(self):
         previous = self.tracker.get_all_previous()
@@ -811,6 +960,14 @@ class SparkPanel(QWidget):
             self._push_capture_line(line)
         self._set_status(f"Showing {len(previous)} history entries", GREEN)
 
+    def _on_show_database(self):
+        """Open the live database viewer window."""
+        self.db_viewer.show()
+        self.db_viewer.raise_()
+        self.db_viewer.activateWindow()
+        self.db_viewer.refresh()
+        self._set_status("Database viewer opened", GREEN)
+
     # ─────────────────────────────────────────────────────────────
     # Helpers
     # ─────────────────────────────────────────────────────────────
@@ -883,6 +1040,7 @@ class SparkPanel(QWidget):
         self.poll_timer.stop()
         self._blink_timer.stop()
         self._hid_poll_timer.stop()
+        self.db_viewer.close()
         self.hotkeys.stop()
         self.hid_client.close()
         self.serial_sender.close()

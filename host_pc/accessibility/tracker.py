@@ -4,16 +4,17 @@ Multi-window context tracker.
 Tracks the current window and the last 2 previously focused windows,
 storing text snapshots so actions can reference context across windows.
 
-Includes unique switch counting — after FLUSH_THRESHOLD unique context
+Includes unique switch counting: after FLUSH_THRESHOLD unique context
 changes, distill_and_flush() is called (placeholder for LLM integration).
 """
 
 import logging
 import time
 from collections import deque
-from typing import Optional, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
 
-from .base import WindowInfo, WindowContextSnapshot, TextSource
+from .base import TextSource, WindowContextSnapshot, WindowInfo
+from ..snapshot_policy import is_relevant_snapshot
 
 if TYPE_CHECKING:
     from ..browser import BrowserTabInfo
@@ -31,8 +32,9 @@ class WindowContextTracker:
     previous windows. Each poll tick should call update() with
     the latest window info and extracted text.
 
-    If a SparkDB instance is provided, snapshots are persisted
-    to the database whenever the user switches away from a window.
+    If a SparkDB instance is provided, the current snapshot is persisted
+    immediately and then updated in place while the same context stays active.
+    A new row is inserted only when the context key changes.
 
     Unique switch counting: a switch is only counted when the
     context_key (app+url for browsers, app+title for others) changes.
@@ -44,10 +46,10 @@ class WindowContextTracker:
 
     def __init__(self, db: Optional["SparkDB"] = None):
         self._current: Optional[WindowContextSnapshot] = None
+        self._current_snapshot_id: Optional[int] = None
         self._previous: deque[WindowContextSnapshot] = deque(maxlen=self.MAX_PREVIOUS)
         self._db = db
 
-        # Unique switch tracking
         self._unique_switch_count: int = 0
         self._last_context_key: Optional[str] = None
 
@@ -62,14 +64,8 @@ class WindowContextTracker:
         Update tracker with the latest poll data.
 
         If the context_key changed, the old snapshot is pushed into history
-        (and persisted to DB if available), and a new snapshot becomes current.
-        If the context_key is the same, the current snapshot's text is refreshed.
-
-        Args:
-            window_info: Active window metadata.
-            text: Extracted text content.
-            source: How the text was extracted.
-            tab: Browser tab info (title + URL), or None for non-browsers.
+        and a new persisted snapshot becomes current. If the context_key is
+        the same, the current snapshot's text is refreshed in place.
         """
         tab_title = tab.tab_title if tab else None
         url = tab.url if tab else None
@@ -83,59 +79,107 @@ class WindowContextTracker:
         )
 
         if self._current is None:
-            # First ever update
             self._current = new_snapshot
+            self._current_snapshot_id = self._activate_current_snapshot()
             self._last_context_key = new_snapshot.context_key
-            self._unique_switch_count = 1
-            logger.info(f"Context tracking started — key: {new_snapshot.context_key}")
+            self._unique_switch_count = 1 if self._current_snapshot_id is not None else 0
+            logger.info("Context tracking started: key=%s", new_snapshot.context_key)
             return
 
         same_context = new_snapshot.context_key == self._current.context_key
 
         if same_context:
-            # Same context — refresh text in place
             self._current.text = text
             self._current.source = source
             self._current.tab_title = tab_title
             self._current.url = url
             self._current.timestamp = time.time()
-        else:
-            # Context changed — persist old snapshot then push into history
-            if self._db:
-                try:
-                    self._db.save_snapshot(self._current)
-                except Exception as e:
-                    logger.error(f"Failed to save snapshot to DB: {e}")
-            self._previous.appendleft(self._current)
-            self._current = new_snapshot
+            self._current_snapshot_id = self._sync_current_snapshot()
+            return
 
-            # Count unique switch
-            self._last_context_key = new_snapshot.context_key
+        previous_snapshot = self._current
+        if is_relevant_snapshot(previous_snapshot):
+            self._previous.appendleft(previous_snapshot)
+        self._current = new_snapshot
+        self._current_snapshot_id = self._activate_current_snapshot()
+
+        self._last_context_key = new_snapshot.context_key
+        if self._current_snapshot_id is not None:
             self._unique_switch_count += 1
             logger.info(
-                f"Unique switch #{self._unique_switch_count}: "
-                f"{new_snapshot.context_key}"
+                "Unique switch #%s: %s",
+                self._unique_switch_count,
+                new_snapshot.context_key,
             )
-            cursor = self._db._conn.execute("SELECT COUNT(*) FROM window_snapshots")
-            total_rows = cursor.fetchone()[0]
 
+            total_rows = self._snapshot_count()
             if total_rows > self.FLUSH_THRESHOLD:
                 self.distill_and_flush(total_rows)
 
-    def distill_and_flush(self, total_rows:int ) -> None:
+    def _activate_current_snapshot(self) -> Optional[int]:
+        if not self._db or not self._current or not is_relevant_snapshot(self._current):
+            return None
+        try:
+            existing_id = self._db.find_snapshot_id_by_fingerprint(self._current)
+            if existing_id is not None:
+                self._db.update_snapshot(existing_id, self._current)
+                return existing_id
+            return self._db.save_snapshot(self._current)
+        except Exception as exc:
+            logger.error("Failed to activate snapshot in DB: %s", exc)
+            return None
+
+    def _sync_current_snapshot(self) -> Optional[int]:
+        if not self._db or not self._current:
+            return None
+        if not is_relevant_snapshot(self._current):
+            return None
+
+        try:
+            if self._current_snapshot_id is None:
+                existing_id = self._db.find_snapshot_id_by_fingerprint(self._current)
+                if existing_id is not None:
+                    self._db.update_snapshot(existing_id, self._current)
+                    return existing_id
+                return self._db.save_snapshot(self._current)
+
+            matching_id = self._db.find_snapshot_id_by_fingerprint(
+                self._current,
+                exclude_id=self._current_snapshot_id,
+            )
+            if matching_id is not None:
+                self._db.update_snapshot(matching_id, self._current)
+                return matching_id
+
+            self._db.update_snapshot(self._current_snapshot_id, self._current)
+            return self._current_snapshot_id
+        except Exception as exc:
+            logger.error("Failed to persist current snapshot to DB: %s", exc)
+            return self._current_snapshot_id
+
+    def _snapshot_count(self) -> int:
+        if not self._db:
+            return 0
+        cursor = self._db._conn.execute("SELECT COUNT(*) FROM window_snapshots")
+        return int(cursor.fetchone()[0])
+
+    def distill_and_flush(self, total_rows: int) -> None:
         """
-        Placeholder — called after FLUSH_THRESHOLD unique switches.
+        Placeholder called after FLUSH_THRESHOLD unique switches.
 
         Override or extend this method to send accumulated context
         to a local LLM for distillation / summarization.
         """
         if self._db:
-            to_delete = total_rows - self.FLUSH_THRESHOLD 
+            to_delete = total_rows - self.FLUSH_THRESHOLD
             if to_delete > 0:
                 self._db.delete_n_oldest_snapshots(to_delete)
-                logger.info(f"Database Maintenance: Pruned {to_delete} records. Total size is now {self.FLUSH_THRESHOLD}.")
+                logger.info(
+                    "Database maintenance pruned %s records. Total size is now %s.",
+                    to_delete,
+                    self.FLUSH_THRESHOLD,
+                )
 
-        # Reset the session counter since maintenance just ran
         self._unique_switch_count = 0
 
     def get_current(self) -> Optional[WindowContextSnapshot]:
@@ -184,6 +228,7 @@ class WindowContextTracker:
     def clear(self) -> None:
         """Reset all tracked context."""
         self._current = None
+        self._current_snapshot_id = None
         self._previous.clear()
         self._unique_switch_count = 0
         self._last_context_key = None
