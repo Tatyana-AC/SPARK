@@ -46,12 +46,14 @@ class DeployToPicoTests(unittest.TestCase):
 
     def test_find_local_adafruit_hid_uses_imported_package_when_present(self):
         with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir) / "repo"
+            (repo_root / "pico").mkdir(parents=True)
             package_dir = Path(temp_dir) / "site-packages" / "adafruit_hid"
             package_dir.mkdir(parents=True)
             (package_dir / "__init__.py").write_text("# test\n", encoding="utf-8")
             fake_spec = mock.Mock(origin=str(package_dir / "__init__.py"))
             with mock.patch("importlib.util.find_spec", return_value=fake_spec):
-                resolved = deploy_to_pico.find_local_adafruit_hid(Path.cwd(), None)
+                resolved = deploy_to_pico.find_local_adafruit_hid(repo_root, None)
             self.assertEqual(package_dir, resolved)
 
     def test_select_bundle_asset_url_picks_bundle_py_zip(self):

@@ -1,5 +1,4 @@
-import zlib
-from enum import IntEnum
+import binascii
 
 
 REPORT_SIZE = 32
@@ -7,11 +6,11 @@ CHUNK_PAYLOAD_SIZE = 27
 PROTOCOL_VERSION = 0x0002
 MAX_UPLOAD_BYTES = 4096
 MAX_CHUNK_COUNT = (MAX_UPLOAD_BYTES + CHUNK_PAYLOAD_SIZE - 1) // CHUNK_PAYLOAD_SIZE
-CAPABILITY_BEST_EFFORT_TYPEBACK = 0x01
+CAPABILITY_FLAGS = 0x00
 ENCODING_UTF8 = 0x01
 
 
-class Command(IntEnum):
+class Command:
     GET_INFO = 0x01
     BEGIN_UPLOAD = 0x10
     UPLOAD_CHUNK = 0x11
@@ -20,7 +19,7 @@ class Command(IntEnum):
     STATUS = 0x7F
 
 
-class StatusCode(IntEnum):
+class StatusCode:
     OK = 0x00
     BUSY = 0x01
     INVALID_STATE = 0x02
@@ -33,13 +32,23 @@ class StatusCode(IntEnum):
     INTERNAL_ERROR = 0x09
 
 
-class AppCommand(IntEnum):
+class AppCommand:
     SUBMIT_TEXT = 0x0001
     PING = 0x0002
     FEATURE_1 = 0x0101
     FEATURE_2 = 0x0102
     FEATURE_3 = 0x0103
     FEATURE_4 = 0x0104
+
+
+VALID_APP_COMMANDS = {
+    AppCommand.SUBMIT_TEXT,
+    AppCommand.PING,
+    AppCommand.FEATURE_1,
+    AppCommand.FEATURE_2,
+    AppCommand.FEATURE_3,
+    AppCommand.FEATURE_4,
+}
 
 
 class UploadProtocolHandler:
@@ -87,10 +96,10 @@ class UploadProtocolHandler:
             raise ValueError("unsupported app command")
 
         return {
-            "typed_text": text,
-            "typable_count": len(text),
+            "accepted_text": text,
+            "accepted_count": len(text),
             "skipped_count": 0,
-            "detail": "ok",
+            "detail": "accepted",
         }
 
     def has_pending_typeback(self):
@@ -102,6 +111,9 @@ class UploadProtocolHandler:
         return self._pending_typeback.pop(0)
 
     def handle_report(self, report):
+        if len(report) == REPORT_SIZE + 1:
+            report = report[1:]
+
         if len(report) != REPORT_SIZE:
             raise ValueError(f"expected {REPORT_SIZE}-byte report")
 
@@ -125,7 +137,7 @@ class UploadProtocolHandler:
         report[3] = CHUNK_PAYLOAD_SIZE
         self._write_u32(report, 4, MAX_UPLOAD_BYTES)
         self._write_u16(report, 8, MAX_CHUNK_COUNT)
-        report[10] = CAPABILITY_BEST_EFFORT_TYPEBACK
+        report[10] = CAPABILITY_FLAGS
         report[11] = 1 if self._active else 0
         self._write_u16(report, 12, self._message_id if self._active else 0)
         return bytes(report)
@@ -143,9 +155,7 @@ class UploadProtocolHandler:
             return self._status(Command.BEGIN_UPLOAD, message_id, StatusCode.INVALID_LENGTH, detail="encoding")
         if total_len > MAX_UPLOAD_BYTES:
             return self._status(Command.BEGIN_UPLOAD, message_id, StatusCode.TOO_LARGE, detail="too large")
-        try:
-            app_command = AppCommand(app_command)
-        except ValueError:
+        if app_command not in VALID_APP_COMMANDS:
             return self._status(Command.BEGIN_UPLOAD, message_id, StatusCode.UNSUPPORTED_COMMAND, detail="app cmd")
 
         self._active = True
@@ -180,10 +190,11 @@ class UploadProtocolHandler:
         if not self._active or message_id != self._message_id:
             return self._status(Command.COMMIT_UPLOAD, message_id, StatusCode.INVALID_STATE, detail="inactive")
         if self._received and not all(self._received):
+            self._reset_upload()
             return self._status(Command.COMMIT_UPLOAD, message_id, StatusCode.INCOMPLETE_UPLOAD, detail="missing")
 
         payload = bytes(self._buffer)
-        crc32 = zlib.crc32(payload) & 0xFFFFFFFF
+        crc32 = binascii.crc32(payload) & 0xFFFFFFFF
         if crc32 != self._expected_crc32:
             self._reset_upload()
             return self._status(Command.COMMIT_UPLOAD, message_id, StatusCode.CRC_MISMATCH, detail="crc")
@@ -196,8 +207,8 @@ class UploadProtocolHandler:
 
         if self._app_command == AppCommand.PING:
             prepared = {
-                "typed_text": "",
-                "typable_count": 0,
+                "accepted_text": "",
+                "accepted_count": 0,
                 "skipped_count": 0,
                 "detail": "spark ready",
             }
@@ -211,19 +222,17 @@ class UploadProtocolHandler:
                 self._reset_upload()
                 return self._status(Command.COMMIT_UPLOAD, message_id, StatusCode.INTERNAL_ERROR, detail="prepare")
 
-        typed_text = prepared.get("typed_text", "")
-        typable_count = int(prepared.get("typable_count", len(typed_text)))
+        accepted_text = prepared.get("accepted_text", "")
+        accepted_count = int(prepared.get("accepted_count", len(accepted_text)))
         skipped_count = int(prepared.get("skipped_count", 0))
         detail = prepared.get("detail", "ok")
-        if typed_text:
-            self._pending_typeback.append(typed_text)
 
         self._reset_upload()
         return self._status(
             Command.COMMIT_UPLOAD,
             message_id,
             StatusCode.OK,
-            value0=typable_count,
+            value0=accepted_count,
             value1=skipped_count,
             detail=detail,
         )

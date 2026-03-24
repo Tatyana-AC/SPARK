@@ -18,13 +18,11 @@ class UploadProtocolTests(unittest.TestCase):
 
         def prepare_text(app_command, text):
             self.prepared.append((app_command, text))
-            filtered = "".join(ch for ch in text if ord(ch) < 128)
-            skipped = len(text) - len(filtered)
             return {
-                "typed_text": filtered,
-                "typable_count": len(filtered),
-                "skipped_count": skipped,
-                "detail": "best-effort",
+                "accepted_text": text,
+                "accepted_count": len(text),
+                "skipped_count": 0,
+                "detail": "accepted",
             }
 
         self.handler = UploadProtocolHandler(text_preparer=prepare_text)
@@ -99,6 +97,7 @@ class UploadProtocolTests(unittest.TestCase):
         self.assertEqual(reply[3], 27)
         self.assertEqual(self._u32(reply, 4), 4096)
         self.assertEqual(self._u16(reply, 8), 152)
+        self.assertEqual(reply[10], 0)
         self.assertEqual(reply[11], 0)
         self.assertEqual(self._u16(reply, 12), 0)
 
@@ -130,6 +129,7 @@ class UploadProtocolTests(unittest.TestCase):
         self.assertEqual(self._u32(reply, 6), len(payload))
         self.assertEqual(self._u32(reply, 10), 0)
         self.assertEqual(self.prepared, [(self.AppCommand.SUBMIT_TEXT, payload.decode("utf-8"))])
+        self.assertFalse(self.handler.has_pending_typeback())
 
     def test_upload_chunk_rejects_invalid_index(self):
         self.handler.handle_report(self._begin_report(message_id=4, payload=b"abc"))
@@ -147,6 +147,21 @@ class UploadProtocolTests(unittest.TestCase):
         reply = self.handler.handle_report(self._commit_report(message_id=6))
 
         self.assertEqual(reply[4], self.StatusCode.INCOMPLETE_UPLOAD)
+
+    def test_incomplete_commit_resets_upload_state(self):
+        payload = b"a" * 40
+
+        self.handler.handle_report(self._begin_report(message_id=26, payload=payload))
+        self.handler.handle_report(self._chunk_report(message_id=26, index=0, chunk=payload[:27]))
+
+        reply = self.handler.handle_report(self._commit_report(message_id=26))
+        info = self.handler.handle_report(bytes([self.Command.GET_INFO]) + bytes(31))
+        next_begin = self.handler.handle_report(self._begin_report(message_id=27, payload=b"ok"))
+
+        self.assertEqual(reply[4], self.StatusCode.INCOMPLETE_UPLOAD)
+        self.assertEqual(info[11], 0)
+        self.assertEqual(self._u16(info, 12), 0)
+        self.assertEqual(next_begin[4], self.StatusCode.OK)
 
     def test_commit_rejects_crc_mismatch(self):
         payload = b"hello world"
@@ -178,6 +193,21 @@ class UploadProtocolTests(unittest.TestCase):
         self.assertEqual(info[11], 0)
         self.assertEqual(self._u16(info, 12), 0)
 
+    def test_submit_text_accepts_unicode_without_skipping(self):
+        payload = "hello ✓ 世界".encode("utf-8")
+
+        self.handler.handle_report(self._begin_report(message_id=20, payload=payload))
+        self.handler.handle_report(self._chunk_report(message_id=20, index=0, chunk=payload[:27]))
+        if len(payload) > 27:
+            self.handler.handle_report(self._chunk_report(message_id=20, index=1, chunk=payload[27:54]))
+
+        reply = self.handler.handle_report(self._commit_report(message_id=20))
+
+        self.assertEqual(reply[4], self.StatusCode.OK)
+        self.assertEqual(self._u32(reply, 6), len("hello ✓ 世界"))
+        self.assertEqual(self._u32(reply, 10), 0)
+        self.assertEqual(self._detail(reply), "accepted")
+
     def test_ping_returns_ready_detail_without_queueing_typeback(self):
         self.handler.handle_report(self._begin_report(message_id=21, app_command=int(self.AppCommand.PING), payload=b"ping"))
         self.handler.handle_report(self._chunk_report(message_id=21, index=0, chunk=b"ping"))
@@ -187,6 +217,11 @@ class UploadProtocolTests(unittest.TestCase):
         self.assertEqual(reply[4], self.StatusCode.OK)
         self.assertEqual(self._detail(reply), "spark ready")
         self.assertEqual(self.prepared, [])
+
+    def test_handle_report_accepts_optional_leading_report_id_byte(self):
+        reply = self.handler.handle_report(bytes([0x04, self.Command.GET_INFO]) + bytes(31))
+
+        self.assertEqual(reply[0], self.Command.GET_INFO)
 
 
 if __name__ == "__main__":

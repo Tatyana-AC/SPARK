@@ -25,7 +25,7 @@
 SPARK is a distributed assistive input system composed of three physically distinct compute nodes:
 
 - Host PC: captures active-window context, stores local host history, uploads text to the Pico, and renders the desktop UI.
-- Pico Hub: a single RP2040 running CircuitPython, exposing USB CDC data, custom Raw HID, and keyboard HID on one device.
+- Pico Hub: a single RP2040 running CircuitPython, exposing USB CDC data and custom Raw HID on one device.
 - Jetson Brain: receives the serial stream, parses packets, stores session state, and handles downstream context processing.
 
 The active host-facing contract is:
@@ -45,8 +45,6 @@ Legacy `spark_app.py` and `host_pc/hid/keyboard_hid.py` remain in the repo for r
   - capability query
   - upload begin/chunk/commit/abort
   - ping
-- Pico -> Host over standard keyboard HID:
-  - text type-back
 - Pico -> Jetson over UART0:
   - relayed host context packets
   - locally injected `BUTTON_PRESS` packets
@@ -131,7 +129,7 @@ The current `spark_app_v2.py` flow is:
 - capture or prepare text on the host
 - upload text to the Pico through custom Raw HID
 - receive a final `STATUS` reply
-- let the Pico type the accepted text back through keyboard HID
+- render the released text locally in the SPARK app after the Pico acknowledges it
 
 The older `KeyboardHIDManager` trigger/status flow is legacy only and is not implemented by the current CircuitPython firmware.
 
@@ -157,7 +155,7 @@ The host sends and receives fixed 32-byte reports. Byte 0 is the command byte.
 | `0x01` | `GET_INFO` | Host <-> Pico | query protocol/version/limits |
 | `0x10` | `BEGIN_UPLOAD` | Host -> Pico | start upload session |
 | `0x11` | `UPLOAD_CHUNK` | Host -> Pico | write one chunk |
-| `0x12` | `COMMIT_UPLOAD` | Host -> Pico | finalize and queue type-back |
+| `0x12` | `COMMIT_UPLOAD` | Host -> Pico | finalize and acknowledge upload |
 | `0x13` | `ABORT_UPLOAD` | Host -> Pico | cancel active upload |
 | `0x7F` | `STATUS` | Pico -> Host | result/status reply |
 
@@ -165,7 +163,7 @@ Application commands carried inside uploads:
 
 | App Command | Value | Meaning |
 |---|---|---|
-| `SUBMIT_TEXT` | `0x0001` | type back filtered text |
+| `SUBMIT_TEXT` | `0x0001` | acknowledge uploaded text for host-side release output |
 | `PING` | `0x0002` | return readiness detail string |
 
 ### 3.4 Upload Semantics
@@ -192,23 +190,19 @@ Application commands carried inside uploads:
 - CRC32 matches
 - the payload decodes as UTF-8
 
-### 3.5 Best-Effort Type-Back
+### 3.5 Submit-Text Acknowledgement
 
-For `SUBMIT_TEXT`, the Pico applies best-effort filtering:
-
-- typable ASCII characters are accepted
-- `\n`, `\r`, and `\t` are accepted
-- unsupported characters are skipped
-- the upload still succeeds if at least protocol validation passes
+For `SUBMIT_TEXT`, the Pico validates the upload and acknowledges it without
+injecting keyboard input back into the host.
 
 `COMMIT_UPLOAD` returns:
 
 - `STATUS.OK`
-- `value0 = typable_count`
-- `value1 = skipped_count`
-- a short detail string such as `best-effort`
+- `value0 = accepted_count`
+- `value1 = 0`
+- a short detail string such as `accepted`
 
-For `PING`, the Pico returns `STATUS.OK` with a short detail string such as `spark ready` and does not queue keyboard output.
+For `PING`, the Pico returns `STATUS.OK` with a short detail string such as `spark ready`.
 
 ### 3.6 Upload Sequence
 
@@ -217,7 +211,6 @@ sequenceDiagram
     participant App as "spark_app_v2.py"
     participant HID as "SparkHIDClient"
     participant Pico as "Pico custom HID"
-    participant KB as "Pico keyboard HID"
 
     App->>HID: upload(SUBMIT_TEXT, text)
     HID->>Pico: BEGIN_UPLOAD
@@ -227,8 +220,8 @@ sequenceDiagram
     end
     HID->>Pico: COMMIT_UPLOAD
     Pico->>Pico: verify CRC32 + UTF-8
-    Pico->>Pico: filter supported chars
-    Pico-->>HID: STATUS OK (typed_count, skipped_count)
+    Pico-->>HID: STATUS OK (accepted_count)
+    App->>App: show release output locally
     Pico->>KB: type filtered text
 ```
 
@@ -248,19 +241,16 @@ The Pico is a single CircuitPython device split into:
   - sets USB identity
   - enables USB CDC data
   - enables one custom Raw HID interface
-  - enables one keyboard HID interface
 - `code.py`
   - initializes UART0 on `GP0`/`GP1` at `115200`
   - scans four buttons on `GP14`-`GP17`
   - relays host CDC data to Jetson UART
   - handles the V2 custom HID upload protocol
-  - advances queued keyboard type-back incrementally
 
 Supporting modules:
 
 - `pico/upload_protocol.py`
 - `pico/serial_bridge.py`
-- `pico/typeback.py`
 - `pico/usb_config.py`
 
 `pico/main.py` remains a behavioral reference, not the deployed runtime entrypoint.
@@ -269,7 +259,7 @@ Supporting modules:
 
 | Signal | Pico Pin | Direction | Notes |
 |---|---|---|---|
-| USB D+/D- | USB connector | -> Host | CDC data + custom HID + keyboard HID |
+| USB D+/D- | USB connector | -> Host | CDC data + custom HID |
 | UART TX | `GP0` | -> Jetson | `115200`, 8N1 |
 | UART RX | `GP1` | <- Jetson | reserved |
 | Button 0 | `GP14` | -> GND via switch | active-low |
@@ -345,14 +335,13 @@ sequenceDiagram
     Jetson->>DB: on_window_update(...)
 ```
 
-### 5.4 HID Sequence: Upload and Type-Back
+### 5.4 HID Sequence: Upload and Acknowledge
 
 ```mermaid
 sequenceDiagram
     participant App as "spark_app_v2.py"
     participant HID as "SparkHIDClient"
     participant Pico as "UploadProtocolHandler"
-    participant KB as "Keyboard HID"
 
     App->>HID: upload(SUBMIT_TEXT, processed_text)
     HID->>Pico: BEGIN_UPLOAD
@@ -361,9 +350,9 @@ sequenceDiagram
         HID->>Pico: UPLOAD_CHUNK
     end
     HID->>Pico: COMMIT_UPLOAD
-    Pico->>Pico: verify + filter
+    Pico->>Pico: verify upload
     Pico-->>HID: STATUS OK / error
-    Pico->>KB: type filtered text
+    App->>App: update release output panel
 ```
 
 ---
@@ -408,10 +397,7 @@ Copy the following from the repo onto the board:
 - `pico/code.py` -> `CIRCUITPY/code.py`
 - `pico/upload_protocol.py`
 - `pico/serial_bridge.py`
-- `pico/typeback.py`
 - `pico/usb_config.py`
-
-Install the Adafruit HID library bundle into `CIRCUITPY/lib`.
 
 Reboot the Pico after copying `boot.py` so the USB configuration is applied.
 
@@ -422,7 +408,6 @@ Expected results:
 - board enumerates as VID `0xC4C4` / PID `0x5350`
 - host sees one CDC data interface
 - host sees one custom Raw HID interface on usage page `0xFF60`, usage `0x61`
-- host sees one keyboard HID interface
 - `SparkHIDClient.get_info()` succeeds
 - host context packets still relay to the Jetson at `115200`
 

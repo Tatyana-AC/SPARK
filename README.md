@@ -3,7 +3,7 @@
 SPARK is a desktop context-capture app with hardware integration. On the current branch it spans:
 
 - Host app: PyQt desktop UI on macOS/Windows
-- Pico Hub: CircuitPython device exposing custom Raw HID, standard keyboard HID, and USB CDC serial relay
+- Pico Hub: CircuitPython device exposing custom Raw HID and USB CDC serial relay
 - Jetson receiver: session-aware serial ingest and storage
 
 The main app entrypoint is `spark_app_v2.py`.

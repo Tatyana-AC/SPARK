@@ -17,7 +17,6 @@ If `adafruit_hid` is not already available locally, the deploy script will cache
 3. Confirm the host sees:
    - one USB CDC data interface
    - one custom Raw HID interface on usage page `0xFF60`, usage `0x61`
-   - one standard keyboard HID interface
 
 ## Raw HID upload path
 
@@ -39,8 +38,9 @@ print(client.upload(AppCommand.SUBMIT_TEXT, "hello ✓ 世界"))
    - `is_connected()` is `True`
    - `get_info()` returns protocol version `0x0002`
    - `ping()` returns `STATUS.OK` with a detail string including `spark ready`
-   - `"hello"` types back as `hello`
-   - `"hello ✓ 世界"` returns `STATUS.OK`, types the supported characters, and reports a non-zero skipped count
+   - `"hello"` returns `STATUS.OK`
+   - `"hello ✓ 世界"` returns `STATUS.OK`
+   - `SUBMIT_TEXT` does not inject keyboard input back into the host
 
 ## CDC to UART relay
 
@@ -55,11 +55,11 @@ print(client.upload(AppCommand.SUBMIT_TEXT, "hello ✓ 世界"))
 2. Verify one `BUTTON_PRESS (0x05)` packet arrives per physical press.
 3. Verify the button id matches the button index.
 
-## Concurrency check
+## App output check
 
-1. Trigger a longer text upload from the host.
-2. While the Pico is typing, keep changing windows and press at least one button.
+1. Run `spark_app_v2.py`.
+2. Capture text, then use `Release Text`.
 3. Verify:
-   - keyboard type-back continues
-   - CDC relay still reaches the Jetson
-   - button events are still injected with bounded latency
+   - the host app status changes to indicate the device accepted the upload
+   - the new release-output panel in the SPARK UI shows the released text
+   - no keyboard text is injected into the currently focused external app

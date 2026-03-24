@@ -16,4 +16,4 @@ supervisor.set_usb_identification(
 )
 
 usb_cdc.enable(console=False, data=True)
-usb_hid.enable((build_custom_hid_device(usb_hid), usb_hid.Device.KEYBOARD))
+usb_hid.enable((build_custom_hid_device(usb_hid),))

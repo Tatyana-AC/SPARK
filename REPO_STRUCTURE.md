@@ -5,7 +5,7 @@
 SPARK is no longer just a desktop capture panel. On the current `sida` branch, it is a distributed three-node system:
 
 - Host PC app: PyQt desktop app that captures desktop context, tracks window state, talks to hardware, and maintains a local history DB.
-- Pico Hub: RP2040/CircuitPython device that exposes custom Raw HID, standard keyboard HID, and USB CDC serial, bridging context packets toward Jetson and accepting HID uploads from the host.
+- Pico Hub: RP2040/CircuitPython device that exposes custom Raw HID and USB CDC serial, bridging context packets toward Jetson and accepting HID uploads from the host.
 - Jetson Brain: serial receiver plus SQLite store for session-oriented context and button events.
 
 The current codebase is best understood as a host application plus protocol and hardware integration layers.
@@ -52,6 +52,7 @@ The host node is the user-facing desktop application.
   - Maintains a deduped live-capture feed via `LiveCaptureFeed`.
   - Sends window context over serial to the Pico Hub using `SerialSender`.
   - Uploads release text to the SPARK device over Raw HID using `SparkHIDClient`.
+  - Shows accepted release output locally in the UI after device acknowledgment.
   - Shows device connection state in the panel header.
 - `spark_app.py`
   - Legacy/alternate desktop UI.
@@ -81,23 +82,20 @@ The host node is the user-facing desktop application.
   - Sets the SPARK USB identity and enables:
     - one USB CDC data interface
     - one custom Raw HID interface
-    - one keyboard HID interface
 - `pico/code.py`
   - Active CircuitPython runtime loop.
-  - Bridges CDC data to Jetson UART, injects `BUTTON_PRESS`, handles Raw HID uploads, and advances queued keyboard type-back.
+  - Bridges CDC data to Jetson UART, injects `BUTTON_PRESS`, and handles Raw HID uploads.
 - `pico/upload_protocol.py`
   - Pure-Python implementation of the V2 upload protocol state machine.
 - `pico/serial_bridge.py`
   - CDC-to-UART relay helper and `BUTTON_PRESS` packet builder.
-- `pico/typeback.py`
-  - Best-effort text filtering and queued keyboard output helper.
 - `pico/main.py`
   - Reference implementation and readable spec for the Pico relay behavior.
   - Treat this as documentation/reference code, not the literal deployed `boot.py` / `code.py` pair.
   - Describes the Pico’s job:
     - relay host CDC serial bytes to Jetson UART
     - inject button-press packets
-    - coexist with custom Raw HID control traffic and keyboard HID type-back on the same physical device
+    - coexist with custom Raw HID control traffic on the same physical device
 - `ENGINEERING_SPEC.md`
   - The real source of truth for the distributed architecture and the CircuitPython-based single-Pico design.
 
@@ -199,7 +197,7 @@ The main V2 app flow is now:
    - `[CAPTURED] ...` is appended to live capture
 5. On `Release Text`:
    - the host uploads `processed_text` to the SPARK device through Raw HID
-   - the device is expected to type it back
+   - the host updates the release-output panel after the device acknowledges the upload
 
 ## Important File Ownership
 

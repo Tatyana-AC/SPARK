@@ -11,10 +11,11 @@ Typical flow:
         info   = client.get_info()
         status = client.upload(AppCommand.SUBMIT_TEXT, "hello world")
         if status.ok:
-            print("device will type the text back")
+            print("device accepted the upload")
 """
 
 import logging
+import time
 import zlib
 from dataclasses import dataclass
 from enum import IntEnum
@@ -27,8 +28,10 @@ SPARK_VID          = 0xC4C4
 SPARK_PID          = 0x5350
 RAW_USAGE_PAGE     = 0xFF60   # SPARK custom Raw HID usage page
 RAW_USAGE_ID       = 0x61
+RAW_REPORT_ID      = 0x04
 REPORT_SIZE        = 32
 CHUNK_PAYLOAD_SIZE = 27
+INTER_REPORT_GAP_S = 0.01
 
 
 # ── Protocol enums ─────────────────────────────────────────────
@@ -56,7 +59,7 @@ class StatusCode(IntEnum):
 
 
 class AppCommand(IntEnum):
-    SUBMIT_TEXT = 0x0001   # device types back the uploaded text
+    SUBMIT_TEXT = 0x0001   # device validates and acknowledges uploaded text
     PING        = 0x0002   # device responds with "spark ready"
     FEATURE_1   = 0x0101
     FEATURE_2   = 0x0102
@@ -173,8 +176,7 @@ class SparkHIDClient:
 
     def _write(self, report: bytes) -> None:
         self._open()
-        # Some platforms need a leading zero-byte report ID
-        payload = bytes([0]) + report
+        payload = bytes([RAW_REPORT_ID]) + report
         written = self._device.write(payload)
         if written not in (len(payload), len(report)):
             raise SparkProtocolError(
@@ -183,12 +185,12 @@ class SparkHIDClient:
 
     def _read(self, timeout_ms: int = 2000) -> bytes:
         self._open()
-        data = self._device.read(REPORT_SIZE, timeout_ms)
+        data = self._device.read(REPORT_SIZE + 1, timeout_ms)
         if not data:
             raise SparkProtocolError("Timed out waiting for device response")
         report = bytes(data)
         # Strip leading report-ID byte if present
-        if len(report) == REPORT_SIZE + 1 and report[0] == 0:
+        if len(report) == REPORT_SIZE + 1 and report[0] == RAW_REPORT_ID:
             report = report[1:]
         if len(report) != REPORT_SIZE:
             raise SparkProtocolError(
@@ -199,6 +201,9 @@ class SparkHIDClient:
     def _next_message_id(self) -> int:
         self._message_id = (self._message_id % 0xFFFF) + 1
         return self._message_id
+
+    def _report_gap(self) -> None:
+        time.sleep(INTER_REPORT_GAP_S)
 
     # ── Protocol helpers ───────────────────────────────────────
 
@@ -329,6 +334,7 @@ class SparkHIDClient:
             pkt[4] = (idx >> 8) & 0xFF
             pkt[5 : 5 + len(chunk)] = chunk
             self._write(bytes(pkt))
+            self._report_gap()
 
         # ── COMMIT_UPLOAD ─────────────────────────────────────
         commit = bytearray(REPORT_SIZE)

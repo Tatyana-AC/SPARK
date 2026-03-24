@@ -8,11 +8,10 @@ Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` p
 
 The current Pico Hub firmware in this folder is split into:
 
-- `boot.py`: configure USB identity (`VID 0xC4C4` / `PID 0x5350`), enable USB CDC data, and expose the HID interfaces used by the host.
-- `code.py`: relay Host CDC bytes to Jetson UART, inject `BUTTON_PRESS` packets on local button events, handle custom Raw HID traffic, and type submitted text back over standard keyboard HID.
+- `boot.py`: configure USB identity (`VID 0xC4C4` / `PID 0x5350`), enable USB CDC data, and expose the custom HID interface used by the host.
+- `code.py`: relay Host CDC bytes to Jetson UART, inject `BUTTON_PRESS` packets on local button events, and handle custom Raw HID traffic.
 - `upload_protocol.py`: V2 upload state machine shared between tests and the device runtime.
 - `serial_bridge.py`: CDC relay and `BUTTON_PRESS` packet builder.
-- `typeback.py`: best-effort text filtering and queued keyboard output helper.
 - `usb_config.py`: shared USB constants and the custom HID descriptor.
 
 ## Install CircuitPython on a Raspberry Pi Pico
@@ -59,9 +58,7 @@ That script will:
 
 - detect the mounted `CIRCUITPY` volume on Windows or macOS
 - copy the SPARK firmware files to the root of the board
-- install `adafruit_hid` into `CIRCUITPY/lib`
-- cache `adafruit_hid` under [`pico/vendor/adafruit_hid`](C:/SPARK/pico/vendor/adafruit_hid) if it is not available locally
-- download the latest Adafruit CircuitPython source bundle automatically to populate that cache when needed
+- install any firmware support files needed by the current Pico runtime
 
 Useful flags:
 
@@ -78,15 +75,14 @@ Manual path if needed:
 3. Copy these helper modules to the root of `CIRCUITPY`:
    - [`upload_protocol.py`](C:/SPARK/pico/upload_protocol.py)
    - [`serial_bridge.py`](C:/SPARK/pico/serial_bridge.py)
-   - [`typeback.py`](C:/SPARK/pico/typeback.py)
    - [`usb_config.py`](C:/SPARK/pico/usb_config.py)
-4. Install `adafruit_hid` into `CIRCUITPY/lib`.
-5. Reboot the Pico so the USB configuration in `boot.py` is applied.
+4. Reboot the Pico so the USB configuration in `boot.py` is applied.
 
 The active firmware contract is V2 upload-only:
 
 - supported custom HID commands: `GET_INFO`, `BEGIN_UPLOAD`, `UPLOAD_CHUNK`, `COMMIT_UPLOAD`, `ABORT_UPLOAD`, `STATUS`
 - supported app commands: `SUBMIT_TEXT`, `PING`
-- unsupported characters are skipped during type-back with best-effort reporting
+- `SUBMIT_TEXT` validates and acknowledges UTF-8 text uploads; it does not inject keyboard events
+- the host app shows released text locally after the Pico acknowledges the upload
 
 Legacy `0xA0` / `0xA1` / `0xB0` keyboard-trigger/status reports are not part of the current CircuitPython firmware.
