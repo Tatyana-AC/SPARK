@@ -97,4 +97,5 @@ Important: install `hidapi`, not the separate `hid` package.
 - `spark_app.py` is an older UI path and should be treated as secondary.
 - The current Pico firmware target is CircuitPython.
 - `pico/main.py` is a readable behavioral reference for the Pico role, not the literal deployed `boot.py` / `code.py` pair.
+- `python pico/deploy_to_pico.py` is the cross-platform helper to push the Pico firmware and `adafruit_hid` onto a mounted `CIRCUITPY` board.
 - The top-level `spark.db` file is local runtime state, not project source.

@@ -56,7 +56,7 @@ The host node is the user-facing desktop application.
 - `spark_app.py`
   - Legacy/alternate desktop UI.
   - Still uses `KeyboardHIDManager` from `host_pc.hid`.
-  - Useful for reference, but `spark_app_v2.py` is the active app path.
+  - Useful for reference, but `spark_app_v2.py` is the active app path and the only firmware-compatibility target.
 
 ### 2. Shared Protocol Layer
 
@@ -76,6 +76,21 @@ The host node is the user-facing desktop application.
 
 ### 3. Pico Hub Layer
 
+- `pico/boot.py`
+  - CircuitPython USB bootstrap.
+  - Sets the SPARK USB identity and enables:
+    - one USB CDC data interface
+    - one custom Raw HID interface
+    - one keyboard HID interface
+- `pico/code.py`
+  - Active CircuitPython runtime loop.
+  - Bridges CDC data to Jetson UART, injects `BUTTON_PRESS`, handles Raw HID uploads, and advances queued keyboard type-back.
+- `pico/upload_protocol.py`
+  - Pure-Python implementation of the V2 upload protocol state machine.
+- `pico/serial_bridge.py`
+  - CDC-to-UART relay helper and `BUTTON_PRESS` packet builder.
+- `pico/typeback.py`
+  - Best-effort text filtering and queued keyboard output helper.
 - `pico/main.py`
   - Reference implementation and readable spec for the Pico relay behavior.
   - Treat this as documentation/reference code, not the literal deployed `boot.py` / `code.py` pair.
@@ -152,8 +167,8 @@ Files under `host_pc/accessibility/` are still the base of the host app:
   - Used by V2 to emit `WINDOW_NEW` on context change and `WINDOW_UPDATE` while the same context remains active.
 - `hid/keyboard_hid.py`
   - Higher-level keyboard HID manager abstraction.
-  - Mirrors the old hotkey-manager pattern with Qt signals and a reconnecting background thread.
-  - Currently used by `spark_app.py`, not by `spark_app_v2.py`.
+  - Legacy path used by `spark_app.py`.
+  - Not part of the active `spark_app_v2.py` to CircuitPython firmware contract.
 
 ## Current Runtime Flow
 
@@ -244,8 +259,8 @@ There is still no broad test suite, CI config, or packaging source manifest chec
 ## Important Observations
 
 - This branch introduced a significant architecture expansion: the repo now spans desktop UI, shared protocol code, firmware-facing relay behavior, and a Jetson backend.
-- `spark_app_v2.py` does not currently use `host_pc.hid.keyboard_hid.KeyboardHIDManager`; it uses `SparkHIDClient` directly for release uploads.
-- `spark_app.py` still uses `KeyboardHIDManager`, so the two host UIs now represent two different hardware-integration approaches.
+- `spark_app_v2.py` talks to the Pico through `SparkHIDClient` and `SerialSender`; that is the current compatibility target for the firmware.
+- `spark_app.py` still uses `KeyboardHIDManager`, but that path is legacy and should not be treated as the current Pico contract.
 - The hard-coded macOS `sys.path.insert(...)` remains in both app entrypoints and is still a portability smell.
 - The current `requirements.txt` reflects the newer hardware path and now includes both `hidapi` and `pyserial`.
 

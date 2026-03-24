@@ -1,9 +1,9 @@
 """
 SPARK Raw HID upload client.
 
-Sends chunked UTF-8 text to the SPARK device (RP2040/QMK) over the Raw HID
-upload protocol v0x0002. Reports are 32 bytes; each chunk carries 27 bytes of
-payload.
+Sends chunked UTF-8 text to the SPARK Pico Hub (RP2040/CircuitPython) over the
+Raw HID upload protocol v0x0002. Reports are 32 bytes; each chunk carries
+27 bytes of payload.
 
 Typical flow:
     client = SparkHIDClient()
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ── USB / HID constants ────────────────────────────────────────
 SPARK_VID          = 0xC4C4
 SPARK_PID          = 0x5350
-RAW_USAGE_PAGE     = 0xFF60   # QMK Raw HID usage page
+RAW_USAGE_PAGE     = 0xFF60   # SPARK custom Raw HID usage page
 RAW_USAGE_ID       = 0x61
 REPORT_SIZE        = 32
 CHUNK_PAYLOAD_SIZE = 27

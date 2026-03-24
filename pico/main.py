@@ -11,15 +11,16 @@ behavior and protocol handling.
 Role: sit between the Host PC (USB CDC) and the Jetson Brain (UART),
 forwarding all Host context packets transparently while injecting
 BUTTON_PRESS (0x05) packets whenever a physical button is pressed.
-Keyboard capture/release signals (0xA0 / 0xA1) are handled separately
-via the custom Raw HID interface of the same CircuitPython device.
-Submitted release text is typed back to the Host through a standard
-keyboard HID interface exposed by that device.
+Host uploads are handled separately via the custom Raw HID interface of
+the same CircuitPython device. `SUBMIT_TEXT` uploads are queued for
+best-effort type-back through the device's standard keyboard HID
+interface. `PING` uploads respond with a short status string and do not
+type anything.
 
 Wiring (single Pico Hub)
 ------------------------
   USB  <-> Host PC  - CDC serial   (context relay, /dev/tty.usbmodem*)
-                    - Custom HID   (commands 0xA0/0xA1/0xB0 + uploads)
+                    - Custom HID   (GET_INFO/BEGIN_UPLOAD/.../STATUS)
                     - Keyboard HID (type-back output)
   GP0 (TX) -> Jetson RX   (UART0, 115200 baud)
   GP1 (RX) <- Jetson TX   (reserved, future ACK)
