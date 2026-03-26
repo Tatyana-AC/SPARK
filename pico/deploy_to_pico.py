@@ -13,11 +13,12 @@ from pathlib import Path
 
 FIRMWARE_FILES = (
     "boot.py",
-    "code.py",
+    "jetson_transport.py",
     "upload_protocol.py",
     "serial_bridge.py",
     "typeback.py",
     "usb_config.py",
+    "code.py",
 )
 
 GITHUB_LATEST_BUNDLE_API = (

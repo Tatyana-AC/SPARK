@@ -45,6 +45,12 @@ Legacy `spark_app.py` and `host_pc/hid/keyboard_hid.py` remain in the repo for r
   - capability query
   - upload begin/chunk/commit/abort
   - ping
+  - response-info / response-chunk reads
+- Pico -> Jetson over UART0 for summarize:
+  - `FEATURE_1` request payload plus `EOT`
+  - Jetson `ACK`
+  - streamed UTF-8 response bytes
+  - final `EOT`
 - Pico -> Jetson over UART0:
   - relayed host context packets
   - locally injected `BUTTON_PRESS` packets
@@ -131,6 +137,14 @@ The current `spark_app_v2.py` flow is:
 - receive a final `STATUS` reply
 - render the released text locally in the SPARK app after the Pico acknowledges it
 
+The current `Summarize Window` flow is:
+
+- build a structured summarize request from the active window on the host
+- upload that request to the Pico through custom Raw HID with `FEATURE_1`
+- forward the accepted request to Jetson over UART with `EOT` framing
+- stream the Jetson response back into the Pico response buffer
+- poll that response buffer from the host and render partial updates in `RELEASE OUTPUT`
+
 The older `KeyboardHIDManager` trigger/status flow is legacy only and is not implemented by the current CircuitPython firmware.
 
 ### 3.2 Device Identity
@@ -153,6 +167,8 @@ The host sends and receives fixed 32-byte reports. Byte 0 is the command byte.
 | Byte[0] | Name | Direction | Description |
 |---|---|---|---|
 | `0x01` | `GET_INFO` | Host <-> Pico | query protocol/version/limits |
+| `0x20` | `GET_RESPONSE_INFO` | Host <-> Pico | query buffered response length/chunk count/flags |
+| `0x21` | `GET_RESPONSE_CHUNK` | Host <-> Pico | read one buffered response chunk |
 | `0x10` | `BEGIN_UPLOAD` | Host -> Pico | start upload session |
 | `0x11` | `UPLOAD_CHUNK` | Host -> Pico | write one chunk |
 | `0x12` | `COMMIT_UPLOAD` | Host -> Pico | finalize and acknowledge upload |
@@ -165,6 +181,7 @@ Application commands carried inside uploads:
 |---|---|---|
 | `SUBMIT_TEXT` | `0x0001` | acknowledge uploaded text for host-side release output |
 | `PING` | `0x0002` | return readiness detail string |
+| `FEATURE_1` | `0x0101` | host-to-Pico round-trip text used by `Summarize Window` |
 
 ### 3.4 Upload Semantics
 
@@ -204,7 +221,25 @@ injecting keyboard input back into the host.
 
 For `PING`, the Pico returns `STATUS.OK` with a short detail string such as `spark ready`.
 
-### 3.6 Upload Sequence
+### 3.6 Device Response Buffer
+
+After a successful upload, the Pico can store a UTF-8 response buffer that the host reads back through:
+
+- `GET_RESPONSE_INFO`
+- `GET_RESPONSE_CHUNK`
+
+The currently verified device-side behavior is:
+
+- `SUBMIT_TEXT`: Pico stores an echo-form response string
+- `FEATURE_1`: Pico forwards the request to Jetson, buffers streamed response bytes, and marks completion on Jetson `EOT`
+- `PING`: still returns readiness through `STATUS`
+
+`GET_RESPONSE_INFO` also carries response-state flags:
+
+- bit 0: response complete
+- bit 1: downstream request active
+
+### 3.7 Upload Sequence
 
 ```mermaid
 sequenceDiagram
@@ -222,7 +257,6 @@ sequenceDiagram
     Pico->>Pico: verify CRC32 + UTF-8
     Pico-->>HID: STATUS OK (accepted_count)
     App->>App: show release output locally
-    Pico->>KB: type filtered text
 ```
 
 ### 3.7 Host Dependency Note
@@ -244,11 +278,14 @@ The Pico is a single CircuitPython device split into:
 - `code.py`
   - initializes UART0 on `GP0`/`GP1` at `115200`
   - scans four buttons on `GP14`-`GP17`
-  - relays host CDC data to Jetson UART
+  - relays host CDC data to Jetson UART when idle
+  - forwards `FEATURE_1` summarize requests to Jetson UART
+  - buffers streamed Jetson response bytes for host HID polling
   - handles the V2 custom HID upload protocol
 
 Supporting modules:
 
+- `pico/jetson_transport.py`
 - `pico/upload_protocol.py`
 - `pico/serial_bridge.py`
 - `pico/usb_config.py`
@@ -261,7 +298,7 @@ Supporting modules:
 |---|---|---|---|
 | USB D+/D- | USB connector | -> Host | CDC data + custom HID |
 | UART TX | `GP0` | -> Jetson | `115200`, 8N1 |
-| UART RX | `GP1` | <- Jetson | reserved |
+| UART RX | `GP1` | <- Jetson | summarize response bytes |
 | Button 0 | `GP14` | -> GND via switch | active-low |
 | Button 1 | `GP15` | -> GND via switch | active-low |
 | Button 2 | `GP16` | -> GND via switch | active-low |
@@ -271,14 +308,14 @@ Supporting modules:
 
 The deployed runtime uses a short cooperative loop. Each iteration:
 
-1. drains up to 64 bytes from `usb_cdc.data` to UART
-2. drains button events from `keypad.Keys`
-3. injects `BUTTON_PRESS` packets onto UART
-4. processes the latest custom HID report
-5. advances a bounded amount of keyboard type-back work
-6. sleeps for roughly 2 ms
+1. relays CDC host packets to UART when no summarize request is active
+2. drains button events from `keypad.Keys` when no summarize request is active
+3. polls the Jetson UART summarize transport
+4. updates the host-readable Raw HID response buffer state
+5. processes the latest custom HID report
+5. sleeps for roughly 2 ms
 
-This keeps context relay and button handling ahead of typing throughput.
+This keeps summarize transport and HID acknowledgements responsive without any keyboard type-back path in the active runtime.
 
 ### 4.4 Button Injection
 
@@ -395,6 +432,7 @@ Copy the following from the repo onto the board:
 
 - `pico/boot.py` -> `CIRCUITPY/boot.py`
 - `pico/code.py` -> `CIRCUITPY/code.py`
+- `pico/jetson_transport.py`
 - `pico/upload_protocol.py`
 - `pico/serial_bridge.py`
 - `pico/usb_config.py`
@@ -409,7 +447,7 @@ Expected results:
 - host sees one CDC data interface
 - host sees one custom Raw HID interface on usage page `0xFF60`, usage `0x61`
 - `SparkHIDClient.get_info()` succeeds
-- host context packets still relay to the Jetson at `115200`
+- `FEATURE_1` summarize requests reach Jetson and return buffered streamed text
 
 ### 7.4 Host App Dependencies
 
@@ -448,6 +486,8 @@ python spark_app_v2.py
 | Byte[0] | Name | Direction | Notes |
 |---|---|---|---|
 | `0x01` | `GET_INFO` | Host <-> Pico | capability query |
+| `0x20` | `GET_RESPONSE_INFO` | Host <-> Pico | buffered response metadata |
+| `0x21` | `GET_RESPONSE_CHUNK` | Host <-> Pico | buffered response data |
 | `0x10` | `BEGIN_UPLOAD` | Host -> Pico | start upload |
 | `0x11` | `UPLOAD_CHUNK` | Host -> Pico | send chunk |
 | `0x12` | `COMMIT_UPLOAD` | Host -> Pico | finalize upload |

@@ -26,13 +26,21 @@ class SerialBridge:
         self._uart = uart
 
     def relay_once(self, max_chunk_size=64):
-        if getattr(self._cdc_data, "in_waiting", 0) <= 0:
-            return 0
-        chunk = self._cdc_data.read(max_chunk_size)
-        if not chunk:
-            return 0
-        self._uart.write(chunk)
-        return len(chunk)
+        total = 0
+
+        if getattr(self._cdc_data, "in_waiting", 0) > 0:
+            chunk = self._cdc_data.read(max_chunk_size)
+            if chunk:
+                self._uart.write(chunk)
+                total += len(chunk)
+
+        if getattr(self._uart, "in_waiting", 0) > 0:
+            chunk = self._uart.read(max_chunk_size)
+            if chunk:
+                self._cdc_data.write(chunk)
+                total += len(chunk)
+
+        return total
 
     def inject_button_press(self, button_id):
         packet = build_button_press_packet(button_id)

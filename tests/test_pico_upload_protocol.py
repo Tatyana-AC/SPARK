@@ -223,6 +223,45 @@ class UploadProtocolTests(unittest.TestCase):
 
         self.assertEqual(reply[0], self.Command.GET_INFO)
 
+    def test_commit_stores_response_text_for_followup_reads(self):
+        payload = b"hello pico"
+
+        self.handler.handle_report(self._begin_report(message_id=30, payload=payload))
+        self.handler.handle_report(self._chunk_report(message_id=30, index=0, chunk=payload))
+        commit = self.handler.handle_report(self._commit_report(message_id=30))
+
+        info_report = bytearray(32)
+        info_report[0] = self.Command.GET_RESPONSE_INFO
+        info = self.handler.handle_report(bytes(info_report))
+
+        chunk_report = bytearray(32)
+        chunk_report[0] = self.Command.GET_RESPONSE_CHUNK
+        chunk = self.handler.handle_report(bytes(chunk_report))
+
+        self.assertEqual(commit[4], self.StatusCode.OK)
+        self.assertEqual(info[0], self.Command.GET_RESPONSE_INFO)
+        self.assertEqual(self._u32(info, 1), len("hello pico"))
+        self.assertEqual(self._u16(info, 5), 1)
+        self.assertEqual(chunk[0], self.Command.GET_RESPONSE_CHUNK)
+        self.assertEqual(chunk[1], 0)
+        self.assertEqual(chunk[2:12], b"hello pico")
+
+    def test_get_response_info_reports_length_chunk_count_and_flags(self):
+        self.handler.update_response_state(
+            b"hello jetson",
+            complete=False,
+            active=True,
+        )
+
+        info_report = bytearray(32)
+        info_report[0] = self.Command.GET_RESPONSE_INFO
+        info = self.handler.handle_report(bytes(info_report))
+
+        self.assertEqual(info[0], self.Command.GET_RESPONSE_INFO)
+        self.assertEqual(self._u32(info, 1), len("hello jetson"))
+        self.assertEqual(self._u16(info, 5), 1)
+        self.assertEqual(info[7], 0b10)
+
 
 if __name__ == "__main__":
     unittest.main()

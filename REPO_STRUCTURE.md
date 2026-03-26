@@ -31,8 +31,8 @@ SPARK/
 |- pico/                           # Pico relay reference implementation / firmware spec
 |- tests/                          # Focused unit tests
 |- ENGINEERING_SPEC.md             # Best architecture source of truth
-|- documentation_reference.md      # Older host-app-focused notes; partially outdated
-|- diagram.md                      # Earlier system diagram; partially outdated
+|- documentation_reference.md      # Current developer lookup for host behavior and extension points
+|- diagram.md                      # Current three-node architecture diagram
 |- requirements.txt                # Current Python dependencies
 |- spark.db                        # Host-local runtime state, ignored in git
 `- setup_accessibility_macos.py    # macOS accessibility setup helper
@@ -50,10 +50,11 @@ The host node is the user-facing desktop application.
   - Captures active-window context through `AccessibilityManager`.
   - Updates local history via `WindowContextTracker` and `SparkDB`.
   - Maintains a deduped live-capture feed via `LiveCaptureFeed`.
-  - Sends window context over serial to the Pico Hub using `SerialSender`.
+  - Sends host context packets over serial to the Pico Hub using `SerialSender`.
   - Uploads release text to the SPARK device over Raw HID using `SparkHIDClient`.
   - Shows accepted release output locally in the UI after device acknowledgment.
   - Shows device connection state in the panel header.
+  - Sends `Summarize Window` requests over Raw HID and streams Jetson responses into `RELEASE OUTPUT`.
 - `spark_app.py`
   - Legacy/alternate desktop UI.
   - Still uses `KeyboardHIDManager` from `host_pc.hid`.
@@ -84,9 +85,11 @@ The host node is the user-facing desktop application.
     - one custom Raw HID interface
 - `pico/code.py`
   - Active CircuitPython runtime loop.
-  - Bridges CDC data to Jetson UART, injects `BUTTON_PRESS`, and handles Raw HID uploads.
+  - Relays CDC host packets when idle, forwards `FEATURE_1` summarize requests to Jetson UART, and exposes the streamed Jetson response back over Raw HID.
+- `pico/jetson_transport.py`
+  - Transport-only Pico helper for `payload + EOT`, ACK suppression, response buffering, and completion state.
 - `pico/upload_protocol.py`
-  - Pure-Python implementation of the V2 upload protocol state machine.
+  - Pure-Python implementation of the V2 upload protocol state machine and host-readable response buffer metadata.
 - `pico/serial_bridge.py`
   - CDC-to-UART relay helper and `BUTTON_PRESS` packet builder.
 - `pico/main.py`
@@ -198,6 +201,11 @@ The main V2 app flow is now:
 5. On `Release Text`:
    - the host uploads `processed_text` to the SPARK device through Raw HID
    - the host updates the release-output panel after the device acknowledges the upload
+6. On `Summarize Window`:
+   - the host builds a structured summarize request from the current active window
+   - the host sends it to the Pico through Raw HID `FEATURE_1`
+   - the Pico forwards that request to Jetson over UART and buffers the streamed response
+   - the host polls the Pico response buffer and updates the release-output panel incrementally
 
 ## Important File Ownership
 
@@ -220,18 +228,31 @@ The main V2 app flow is now:
 
 ## Tests and Verification
 
-The repo now has at least one tracked test target:
+The repo now has a focused unit test suite covering the active host/device contract:
 
+- `tests/test_host_raw_hid_client.py`
+- `tests/test_pico_upload_protocol.py`
+- `tests/test_pico_usb_config.py`
+- `tests/test_pico_deploy_to_pico.py`
+- `tests/test_pico_serial_bridge.py`
+- `tests/test_pico_typeback.py`
 - `tests/test_live_capture.py`
-  - Verifies deduped poll-line behavior and explicit capture-event visibility in `host_pc/live_capture.py`.
+- `tests/test_windows_provider.py`
+- `tests/test_hotkeys.py`
+- `tests/test_release_output.py`
+- `tests/test_tracker_persistence.py`
+- `tests/test_db_debug_view.py`
 
-There is still no broad test suite, CI config, or packaging source manifest checked in.
+There is still no CI configuration checked in, but the repo is no longer in a "single test file" state.
 
 ## Current Understanding of What Is Active vs. Stale
 
 ### Active / trustworthy
 
+- `README.md`
 - `ENGINEERING_SPEC.md`
+- `diagram.md`
+- `documentation_reference.md`
 - `spark_app_v2.py`
 - `core/protocol.py`
 - `host_pc/raw_hid.py`
@@ -242,15 +263,8 @@ There is still no broad test suite, CI config, or packaging source manifest chec
 
 ### Older or only partially current
 
-- `documentation_reference.md`
-  - Focused on the older host-only app architecture.
-  - Poll interval, flush threshold, and extension points are not aligned with the current rebased branch.
-- `diagram.md`
-  - Earlier architecture direction; not the best representation of the current single-Pico hub model.
 - `spark_desktop.egg-info/PKG-INFO`
   - Generated metadata and likely stale relative to the tracked source.
-- `README.md`
-  - Minimal and not useful as onboarding.
 - `host_pc/raw_hid_example.py`
   - Appears out of sync with the current `host_pc/raw_hid.py` API surface because it references listener/event APIs that are not present in the current client implementation.
 
@@ -261,6 +275,7 @@ There is still no broad test suite, CI config, or packaging source manifest chec
 - `spark_app.py` still uses `KeyboardHIDManager`, but that path is legacy and should not be treated as the current Pico contract.
 - The hard-coded macOS `sys.path.insert(...)` remains in both app entrypoints and is still a portability smell.
 - The current `requirements.txt` reflects the newer hardware path and now includes both `hidapi` and `pyserial`.
+- The currently verified summarize path is Raw HID host<->Pico plus UART Pico<->Jetson. USB CDC is not part of the active summarize request/response flow.
 
 ## Practical Mental Model
 

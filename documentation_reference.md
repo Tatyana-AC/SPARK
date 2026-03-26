@@ -1,69 +1,133 @@
-# SPARK — Documentation Reference
+# SPARK Documentation Reference
+
+This file is a developer lookup for the active SPARK runtime on the current branch.
+It is centered on `spark_app_v2.py`, the CircuitPython Pico Hub flow, and the current
+host-side persistence model. Legacy files such as `spark_app.py` are called out
+explicitly when they matter.
 
 ## Core Data Flow
 
-```
-Poll tick (every 2s)
+```text
+Poll tick (every 125 ms in spark_app_v2.py)
   |
-  +-- AccessibilityManager --> WindowInfo (app name, title, pid)
-  +-- get_browser_tab()    --> BrowserTabInfo (tab title, URL)  [Safari/Chrome only]
-  +-- get_focused_element_text() or get_window_text() --> extracted text
+  +-- AccessibilityManager.get_active_window_info()
+  +-- PrivacyGuard.is_safe(...)
+  +-- get_browser_tab(app_name) when the app is a supported browser
+  +-- get_focused_element_text() or get_window_text()
   |
-  +-- tracker.update(info, text, source, tab)
-       |
-       +-- Same context_key? --> refresh text in place
-       +-- Different context_key? --> save old to DB, push to history, increment counter
-                                       +-- Counter hits 50? --> distill_and_flush()
+  +-- WindowContextTracker.update(info, text, source, tab)
+  |     |
+  |     +-- Same context_key? --> update current snapshot row in place
+  |     +-- Different context_key? --> move prior snapshot into history,
+  |                                    persist the new current snapshot,
+  |                                    increment unique switch count
+  |                                    and prune old rows when the DB grows past 20 snapshots
+  |
+  +-- LiveCaptureFeed.push_poll_line(...)
+  +-- SerialSender.send_window_new(...) or send_window_update(...)
 ```
 
----
+The host app's "Release Text" path is separate from the polling path:
 
-## Where to Edit What
+```text
+Capture Text
+  -> AccessibilityManager.get_selected_text()
+  -> captured_text / processed_text on the host
+  -> Release Text
+  -> SparkHIDClient.upload(AppCommand.SUBMIT_TEXT, processed_text)
+  -> Pico STATUS reply
+  -> local RELEASE OUTPUT panel update
+```
+
+The active release flow does not inject keyboard input back into the focused external app.
+
+The current `Summarize Window` path is separate:
+
+```text
+Summarize Window
+  -> AccessibilityManager.get_window_text()
+  -> build_summary_request(...)
+  -> SparkHIDClient.stream_round_trip_text(AppCommand.FEATURE_1, request)
+  -> Pico forwards request to Jetson UART
+  -> Jetson wraps the prompt and streams a response back
+  -> Pico response buffer updates over Raw HID
+  -> local RELEASE OUTPUT panel update
+```
+
+The visible app also has two debug summarize actions:
+
+```text
+Test Context
+  -> build_test_summary_request()
+  -> SparkHIDClient.stream_round_trip_text(AppCommand.FEATURE_1, request)
+  -> local RELEASE OUTPUT panel update
+
+Custom Context
+  -> CustomContextDialog
+  -> build_summary_request(...)
+  -> SparkHIDClient.stream_round_trip_text(AppCommand.FEATURE_1, request)
+  -> local RELEASE OUTPUT panel update
+```
+
+Operational note:
+
+- Before launching another SPARK app manually during debugging, close any older `spark_app_v2.py` processes first.
+- Duplicate host app processes can contend for the same Pico Raw HID session and show up as `BUSY`, `read error`, or device-response timeouts during summarize requests.
+- If a summarize request fails with a Raw HID timeout or the Pico appears connected but does not answer `GET_INFO`, do a physical Pico reset before trying software-side fixes. Soft reloads can recover some wedged runtime states, but they are not reliable enough to be the first recovery step.
+
+## Where To Edit What
 
 | You want to... | Edit this file | Look at... |
 |---|---|---|
-| Change poll speed | `spark_app.py` line 73 | `POLL_INTERVAL = 2000` |
-| Change what text gets extracted | `host_pc/accessibility/macos_provider.py` | `get_focused_element_text()` (line 173), `get_window_text()` (line 241) |
-| Add another browser (Firefox, Arc, etc) | `host_pc/browser.py` | `BROWSER_APPS` set + add AppleScript in `get_browser_tab()` |
-| Change what counts as a "unique switch" | `host_pc/accessibility/base.py` lines 65-74 | `context_key` property on `WindowContextSnapshot` |
-| Change flush threshold (currently 50) | `host_pc/accessibility/tracker.py` line 43 | `FLUSH_THRESHOLD = 50` |
-| Add real LLM logic on flush | `host_pc/accessibility/tracker.py` line 123 | `distill_and_flush()` — currently just logs |
-| Change what gets saved to the DB | `host_pc/db.py` | `save_snapshot()` (line 62), schema in `_create_tables()` (line 29) |
-| Change how history shows in the UI | `spark_app.py` line 392 | `_refresh_history_ui()` |
-| Change what shows in LIVE CONTEXT | `spark_app.py` line 352 | `_on_poll_tick()` |
-| Build an LLM prompt from context | `host_pc/context.py` | `Context.to_dict()` — serialize for prompt building |
-| Get context programmatically | `host_pc/accessibility/tracker.py` line 140 | `tracker.get_current_context()` returns a `Context` object |
-| Query past window history | `host_pc/db.py` | `db.get_recent(n)` or `db.search("keyword")` |
-| Change capture/release behavior | `spark_app.py` line 415 | `_do_capture()` and `_do_release()` |
-| Change hotkeys | `host_pc/hotkeys.py` | `GlobalHotkeyManager` |
+| Change poll speed | `spark_app_v2.py` | `SparkPanel.POLL_INTERVAL = 125` |
+| Change privacy filtering | `spark_app_v2.py` | `PrivacyGuard` and `_on_poll_tick()` |
+| Change text extraction order | `spark_app_v2.py` and `host_pc/accessibility/` | `_on_poll_tick()`, `get_focused_element_text()`, `get_window_text()` |
+| Add another browser integration | `host_pc/browser.py` | `BROWSER_APPS` and `get_browser_tab()` |
+| Change what counts as a unique context | `host_pc/accessibility/base.py` | `WindowContextSnapshot.context_key` |
+| Change snapshot retention / pruning | `host_pc/accessibility/tracker.py` | `FLUSH_THRESHOLD = 20` and `distill_and_flush()` |
+| Change what is stored in the host DB | `host_pc/db.py` | `_create_tables()`, `save_snapshot()`, `update_snapshot()` |
+| Change release output formatting | `host_pc/release_output.py` | `format_release_output()` |
+| Change Raw HID upload / response-read behavior | `host_pc/raw_hid.py` | `SparkHIDClient.upload()`, `get_response_info()`, `fetch_response()`, `stream_round_trip_text()` |
+| Change summarize request payload shape | `host_pc/summarize_stream.py` | `build_summary_request()` |
+| Change the fixed test summarize payload | `host_pc/summarize_stream.py` | `build_test_summary_request()` |
+| Change serial packet behavior | `host_pc/serial_sender.py` and `core/protocol.py` | `send_window_new()`, `send_window_update()`, packet builders |
+| Change the Pico upload state machine | `pico/upload_protocol.py` | `UploadProtocolHandler` |
+| Change the Pico UART summarize transport | `pico/jetson_transport.py` and `pico/code.py` | `JetsonTransport.start_request()`, `JetsonTransport.poll()` |
+| Change Pico USB identity or HID descriptor | `pico/usb_config.py` and `pico/boot.py` | USB constants and `usb_hid.enable(...)` |
+| Change deploy-to-board behavior | `pico/deploy_to_pico.py` | `FIRMWARE_FILES`, `run_deploy()` |
+| Change hotkeys | `host_pc/hotkeys.py` | `get_hotkey_config()` and `GlobalHotkeyManager` |
 
 Windows hotkey note:
-- Current Windows defaults are `Win+Alt+C` for capture and `Win+Alt+V` for release.
-- Current Windows toggle default is `Win+Alt+Space`.
-- Avoid `Alt+Space`-based global hotkeys. Windows uses `Alt+Space` to open the active window's context/system menu, so `Win+Alt+Space` is a poor default for toggle behavior.
-- If a local machine still needs `Win+Alt+Space`, the user-verified AutoHotkey workaround is:
+- Current Windows defaults are `Win+Alt+C` for capture, `Win+Alt+V` for release, and `Win+Alt+Space` for toggle.
+- `Win+Alt+Space` can still surface the standard Windows system menu because of the underlying `Alt+Space` behavior.
+- If a local machine must suppress that behavior, the current documented AutoHotkey workaround is `#!Space::return`.
 
-```ahk
-#!Space::return
-```
-
----
-
-## File-by-File Summary
+## File-By-File Summary
 
 | File | Purpose |
 |---|---|
-| `spark_app.py` | Main GUI — poll loop, UI cards, hotkey wiring, capture/release |
-| `host_pc/accessibility/base.py` | Data models: `WindowInfo`, `TextSource`, `WindowContextSnapshot`, `context_key` |
-| `host_pc/accessibility/manager.py` | Cross-platform wrapper — detects OS, delegates to provider |
-| `host_pc/accessibility/macos_provider.py` | macOS AX APIs — text extraction, clipboard, paste |
-| `host_pc/accessibility/tracker.py` | Window history (current + 2 previous), unique switch counter, `distill_and_flush()` |
-| `host_pc/browser.py` | AppleScript queries for Safari/Chrome active tab + URL |
-| `host_pc/context.py` | `Context` class — clean LLM-ready object with `context_key` and `to_dict()` |
-| `host_pc/db.py` | SQLite layer — `save_snapshot()`, `get_recent()`, `search()`, auto-migration |
-| `host_pc/hotkeys.py` | Global hotkey listener with platform-specific defaults (macOS: Cmd+Ctrl, Windows: Win+Alt) |
-
----
+| `spark_app_v2.py` | Active PyQt host panel, poll loop, privacy guard, live capture, release flow, and database viewer |
+| `spark_app.py` | Older UI path that still uses the legacy keyboard-HID manager |
+| `host_pc/accessibility/base.py` | Shared dataclasses and `context_key` logic |
+| `host_pc/accessibility/manager.py` | Cross-platform facade over macOS and Windows accessibility providers |
+| `host_pc/accessibility/macos_provider.py` | macOS AX-based extraction and selection capture |
+| `host_pc/accessibility/windows_provider.py` | Windows accessibility and text capture path |
+| `host_pc/accessibility/tracker.py` | Current snapshot, previous-window history, DB sync, and pruning threshold |
+| `host_pc/browser.py` | Browser tab title/URL enrichment for supported desktop browsers |
+| `host_pc/context.py` | LLM-ready context object built from current snapshots |
+| `host_pc/db.py` | Host SQLite schema, migrations, search, debug rows, and preferences |
+| `host_pc/live_capture.py` | Live-capture line retention and poll-line dedupe |
+| `host_pc/raw_hid.py` | Active host Raw HID upload client, response reader, and summarize stream poller |
+| `host_pc/release_output.py` | Formatting for the local RELEASE OUTPUT panel |
+| `host_pc/summarize_stream.py` | Structured summarize-request payload builder |
+| `host_pc/serial_sender.py` | Host CDC writer for `WINDOW_NEW` / `WINDOW_UPDATE` packets |
+| `core/protocol.py` | Shared packet framing, CRC, builders, and streaming parser |
+| `jetson/receiver.py` | Jetson-side UART receiver and packet dispatch loop |
+| `jetson/db_manager.py` | Session-aware Jetson SQLite store |
+| `pico/boot.py` | Pico USB identity and interface configuration |
+| `pico/code.py` | Active Pico runtime loop for CDC relay, button injection, and HID handling |
+| `pico/main.py` | Readable reference implementation, not the deployed entrypoint |
+| `pico/deploy_to_pico.py` | Cross-platform deploy helper for a mounted `CIRCUITPY` board |
 
 ## Key Data Models
 
@@ -72,10 +136,11 @@ Windows hotkey note:
 ```python
 @dataclass
 class WindowInfo:
-    title: str          # Window title
-    app_name: str       # e.g. "Safari", "VS Code"
-    process_name: str   # Process identifier
-    pid: int            # Process ID
+    title: str
+    app_name: str
+    process_name: str
+    pid: int
+    bundle_id: Optional[str] = None
     bounds: Optional[Dict[str, int]] = None
 ```
 
@@ -85,22 +150,17 @@ class WindowInfo:
 @dataclass
 class WindowContextSnapshot:
     window_info: WindowInfo
-    text: str                        # Full extracted text content
-    source: TextSource               # FOCUSED_ELEMENT or FULL_WINDOW
-    tab_title: Optional[str] = None  # Browser tab title (None for non-browsers)
-    url: Optional[str] = None        # Browser tab URL (None for non-browsers)
-    timestamp: float                 # Unix timestamp
+    text: str
+    source: TextSource
+    tab_title: Optional[str] = None
+    url: Optional[str] = None
+    timestamp: float = field(default_factory=time.time)
 
-    context_key: str  # property — "app_name|url" for browsers, "app_name|title" for others
-```
-
-### BrowserTabInfo (`host_pc/browser.py`)
-
-```python
-@dataclass
-class BrowserTabInfo:
-    tab_title: str  # Active tab's title
-    url: str        # Active tab's URL
+    @property
+    def context_key(self) -> str:
+        if self.url:
+            return f"{self.window_info.app_name}|{self.url}"
+        return f"{self.window_info.app_name}|{self.window_info.title}"
 ```
 
 ### Context (`host_pc/context.py`)
@@ -110,18 +170,13 @@ class BrowserTabInfo:
 class Context:
     app_name: str
     window_title: str
-    tab_title: Optional[str]   # None for non-browsers
-    url: Optional[str]         # None for non-browsers
-    text: str                  # Extracted text content
-    source: str                # "focused_element" / "full_window"
+    tab_title: Optional[str]
+    url: Optional[str]
+    text: str
+    source: str
     timestamp: float
     pid: int
-
-    context_key: str   # property — unique identity for switch detection
-    to_dict() -> dict  # Serialize for LLM prompt building
 ```
-
----
 
 ## Database Schema (`spark.db`)
 
@@ -129,68 +184,64 @@ Table: `window_snapshots`
 
 | Column | Type | Description |
 |---|---|---|
-| id | INTEGER | Primary key, autoincrement |
-| app_name | TEXT | e.g. "Safari", "VS Code" |
-| window_title | TEXT | Window title at time of capture |
-| process_name | TEXT | Process name |
-| pid | INTEGER | Process ID |
-| text | TEXT | Full extracted text content |
-| source | TEXT | TextSource value (focused_element, full_window) |
-| tab_title | TEXT | Browser tab title (NULL for non-browsers) |
-| url | TEXT | Browser tab URL (NULL for non-browsers) |
-| timestamp | REAL | Unix timestamp |
+| `id` | INTEGER | Primary key |
+| `app_name` | TEXT | Active application name |
+| `window_title` | TEXT | Window title when captured |
+| `process_name` | TEXT | Process identifier |
+| `pid` | INTEGER | Process ID |
+| `text` | TEXT | Extracted text |
+| `source` | TEXT | `selected`, `focused_element`, or `full_window` |
+| `tab_title` | TEXT | Browser tab title when available |
+| `url` | TEXT | Browser URL when available |
+| `content_fingerprint` | TEXT | Deduplication key for semantically identical snapshots |
+| `first_seen` | REAL | First time this snapshot was stored |
+| `last_seen` | REAL | Most recent refresh time for this snapshot |
+| `timestamp` | REAL | Compatibility timestamp still written on update |
 
-### Querying the Database
+Table: `preferences`
 
-```python
-from host_pc.db import SparkDB
+| Column | Type | Description |
+|---|---|---|
+| `key` | TEXT | Preference key |
+| `value` | TEXT | Stored value |
 
-db = SparkDB("spark.db")
+Useful host DB methods:
 
-# Get the 20 most recent snapshots
-for snap in db.get_recent(20):
-    print(snap.window_info.app_name, snap.url, len(snap.text))
+- `SparkDB.get_recent(limit)`
+- `SparkDB.search(query)`
+- `SparkDB.get_debug_rows(limit)`
+- `SparkDB.set_pref(key, value)`
+- `SparkDB.get_pref(key)`
 
-# Search by keyword in text, title, or URL
-for snap in db.search("github"):
-    print(snap.window_info.app_name, snap.url)
+## LLM Integration Notes
 
-db.close()
-```
+Two places are obvious extension points today:
 
-Or from the terminal:
+1. `WindowContextTracker.distill_and_flush(total_rows)`:
+   The current implementation prunes the oldest host snapshots once the database grows past `FLUSH_THRESHOLD = 20`. It is a placeholder for a future summarization or distillation step.
+2. `SparkPanel._on_summarize()` in `spark_app_v2.py`:
+   The current button sends a structured summarize request to the Pico over Raw HID. The Pico forwards that request to Jetson and the host streams the Jetson response into `RELEASE OUTPUT`.
+3. `SparkPanel._on_test_context()` and `SparkPanel._on_custom_context()` in `spark_app_v2.py`:
+   These bypass accessibility extraction and send fixed or user-edited fake contexts through the same Jetson summarize pipeline.
 
-```bash
-sqlite3 spark.db "SELECT app_name, window_title, url, length(text), datetime(timestamp, 'unixepoch', 'localtime') FROM window_snapshots ORDER BY timestamp DESC;"
-```
-
----
-
-## LLM Integration Extension Point
-
-When ready to wire in a local LLM, the main touchpoint is `distill_and_flush()` in `host_pc/accessibility/tracker.py` (line 123). At that point you can:
-
-1. Call `self._db.get_recent(50)` to grab the last 50 snapshots
-2. Build `Context` objects via `tracker.get_current_context()`
-3. Use `Context.to_dict()` to serialize for prompt construction
-4. Send to your LLM
-
-```python
-def distill_and_flush(self) -> None:
-    recent = self._db.get_recent(self.FLUSH_THRESHOLD)
-    contexts = [snap_to_context(s) for s in recent]
-    # Build prompt, send to LLM, etc.
-    self._unique_switch_count = 0
-```
-
----
+If a real model is added, those two places are the most direct integration points.
 
 ## Unique Switch Logic
 
-A switch is **unique** when the `context_key` changes:
+A switch is counted when `WindowContextSnapshot.context_key` changes:
 
-- **Browsers**: `"Safari|https://example.com"` — switching tabs counts as unique even if the pid/window didn't change
-- **Non-browsers**: `"VS Code|main.py — SPARK"` — switching windows/files counts
-- **Same tab / same window re-focus**: NOT unique (same key, counter doesn't increment)
+- Browsers: `"app_name|url"`
+- Non-browsers: `"app_name|window_title"`
 
-The counter resets to 0 after `distill_and_flush()` fires at 50 unique switches.
+The tracker keeps:
+
+- one current snapshot
+- up to two previous snapshots in memory
+- a persisted host DB of snapshots, pruned back to 20 rows when it grows beyond the threshold
+
+## Legacy Notes
+
+- `spark_app.py` and `host_pc/hid/keyboard_hid.py` are legacy paths kept for reference.
+- `host_pc/raw_hid_example.py` does not reflect the current `SparkHIDClient` API.
+- `pico/deploy_to_pico.py` still copies `pico/typeback.py`, but the active `pico/code.py` runtime does not import it.
+- The currently verified summarize path is Raw HID host<->Pico plus UART Pico<->Jetson.

@@ -6,6 +6,7 @@ from core.protocol import build_button_press
 class FakeCDC:
     def __init__(self, payload=b""):
         self._payload = bytearray(payload)
+        self.writes = []
 
     @property
     def in_waiting(self):
@@ -16,14 +17,28 @@ class FakeCDC:
         del self._payload[:count]
         return data
 
+    def write(self, data):
+        self.writes.append(bytes(data))
+        return len(data)
+
 
 class FakeUART:
-    def __init__(self):
+    def __init__(self, payload=b""):
         self.writes = []
+        self._payload = bytearray(payload)
+
+    @property
+    def in_waiting(self):
+        return len(self._payload)
 
     def write(self, data):
         self.writes.append(bytes(data))
         return len(data)
+
+    def read(self, count):
+        data = bytes(self._payload[:count])
+        del self._payload[:count]
+        return data
 
 
 class SerialBridgeTests(unittest.TestCase):
@@ -44,6 +59,18 @@ class SerialBridgeTests(unittest.TestCase):
         self.assertEqual(written, 8)
         self.assertEqual(uart.writes, [b"abcdefgh"])
         self.assertEqual(cdc.in_waiting, 18)
+
+    def test_relay_once_forwards_uart_bytes_back_to_cdc(self):
+        from pico.serial_bridge import SerialBridge
+
+        cdc = FakeCDC()
+        uart = FakeUART(b"summary")
+        bridge = SerialBridge(cdc, uart)
+
+        written = bridge.relay_once(max_chunk_size=8)
+
+        self.assertEqual(written, 7)
+        self.assertEqual(cdc.writes, [b"summary"])
 
     def test_inject_button_press_writes_framed_packet_to_uart(self):
         from pico.serial_bridge import SerialBridge

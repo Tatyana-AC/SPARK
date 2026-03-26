@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QSizePolicy,
     QSystemTrayIcon, QMenu,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
+    QDialog, QDialogButtonBox, QLineEdit, QTextEdit,
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint, QObject, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPainter, QPainterPath, QCursor, QIcon, QPixmap
@@ -36,6 +37,8 @@ from host_pc.raw_hid import SparkHIDClient, AppCommand, SparkProtocolError
 from host_pc.release_output import format_release_output
 from host_pc.serial_sender import SerialSender
 from host_pc.live_capture import LiveCaptureFeed
+from host_pc.summarize_stream import build_summary_request, build_test_summary_request
+from host_pc.single_instance import SingleInstanceGuard
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s  %(name)s  %(levelname)s  %(message)s")
@@ -143,6 +146,14 @@ QLabel#capture_text {{
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
     font-size: 11px;
     background: transparent;
+    padding: 4px;
+}}
+QTextEdit#release_output_text {{
+    color: #22C55E;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 11px;
+    background: transparent;
+    border: none;
     padding: 4px;
 }}
 QLabel#live_dot {{
@@ -299,6 +310,86 @@ class HIDSignals(QObject):
     release_succeeded = pyqtSignal(str)
     release_failed = pyqtSignal(str)
     release_finished = pyqtSignal()
+    summarize_progress = pyqtSignal(str)
+    summarize_succeeded = pyqtSignal(str)
+    summarize_failed = pyqtSignal(str)
+    summarize_finished = pyqtSignal()
+
+
+class CustomContextDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Custom Context")
+        self.setModal(True)
+        self.resize(520, 420)
+        self.setStyleSheet(
+            f"""
+            QDialog {{
+                background-color: {BG};
+                color: {TEXT};
+            }}
+            QLabel {{
+                color: {TEXT_MID};
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QLineEdit, QTextEdit {{
+                background-color: {SURFACE};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 8px;
+                padding: 8px;
+            }}
+            QPushButton {{
+                background-color: {SURFACE};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 8px;
+                padding: 8px 14px;
+            }}
+            QPushButton:hover {{
+                background-color: #1E293B;
+                border: 1px solid {BORDER_LIT};
+            }}
+            """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        app_label = QLabel("App Name")
+        layout.addWidget(app_label)
+        self.app_name_edit = QLineEdit("Cursor")
+        layout.addWidget(self.app_name_edit)
+
+        title_label = QLabel("Window Title")
+        layout.addWidget(title_label)
+        self.window_title_edit = QLineEdit("Transport debug session")
+        layout.addWidget(self.window_title_edit)
+
+        text_label = QLabel("Visible Text")
+        layout.addWidget(text_label)
+        self.window_text_edit = QTextEdit()
+        self.window_text_edit.setPlainText(
+            "The user is testing a custom SPARK context payload from the visible app. "
+            "The goal is to stream the Jetson-generated result into RELEASE OUTPUT."
+        )
+        layout.addWidget(self.window_text_edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_values(self):
+        return (
+            self.app_name_edit.text(),
+            self.window_title_edit.text(),
+            self.window_text_edit.toPlainText(),
+        )
 
 
 # --Sensitive content guard  ─────────────────────────
@@ -646,10 +737,12 @@ class SparkPanel(QWidget):
         out_inner = QVBoxLayout(out_frame)
         out_inner.setContentsMargins(14, 12, 14, 12)
 
-        self.release_output_lbl = QLabel("No released text yet…")
-        self.release_output_lbl.setObjectName("capture_text")
-        self.release_output_lbl.setWordWrap(True)
-        self.release_output_lbl.setMinimumHeight(60)
+        self.release_output_lbl = QTextEdit("No released text yet…")
+        self.release_output_lbl.setObjectName("release_output_text")
+        self.release_output_lbl.setReadOnly(True)
+        self.release_output_lbl.setFrameStyle(QFrame.Shape.NoFrame)
+        self.release_output_lbl.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.release_output_lbl.setFixedHeight(120)
         out_inner.addWidget(self.release_output_lbl)
         lay.addWidget(out_frame)
         lay.addSpacing(10)
@@ -676,6 +769,8 @@ class SparkPanel(QWidget):
         self.btn_capture  = ActionButton("Capture Text", f"{CAPTURE_HOTKEY_LABEL} - grab selection")
         self.btn_release  = ActionButton("Release Text", f"{RELEASE_HOTKEY_LABEL} - send to SPARK")
         self.btn_summarize = ActionButton("Summarize Window", "Quick overview of visible text")
+        self.btn_test_context = ActionButton("Test Context", "Send a fixed fake app context")
+        self.btn_custom_context = ActionButton("Custom Context", "Edit and send a fake app context")
         self.btn_history  = ActionButton("Show History", "View previous window contexts")
         self.btn_database = ActionButton("Show Database", "Debug live snapshot rows")
 
@@ -684,14 +779,18 @@ class SparkPanel(QWidget):
         self.btn_capture.clicked.connect(self._on_capture)
         self.btn_release.clicked.connect(self._on_release)
         self.btn_summarize.clicked.connect(self._on_summarize)
+        self.btn_test_context.clicked.connect(self._on_test_context)
+        self.btn_custom_context.clicked.connect(self._on_custom_context)
         self.btn_history.clicked.connect(self._on_show_history)
         self.btn_database.clicked.connect(self._on_show_database)
 
         grid.addWidget(self.btn_capture,  0, 0)
         grid.addWidget(self.btn_release,  0, 1)
         grid.addWidget(self.btn_summarize, 1, 0)
-        grid.addWidget(self.btn_history,  1, 1)
-        grid.addWidget(self.btn_database, 2, 0, 1, 2)
+        grid.addWidget(self.btn_test_context, 1, 1)
+        grid.addWidget(self.btn_custom_context, 2, 0)
+        grid.addWidget(self.btn_history,  2, 1)
+        grid.addWidget(self.btn_database, 3, 0, 1, 2)
         lay.addLayout(grid)
 
         outer.addWidget(inner)
@@ -720,6 +819,10 @@ class SparkPanel(QWidget):
         self.hid_signals.release_succeeded.connect(self._on_release_succeeded)
         self.hid_signals.release_failed.connect(self._on_release_failed)
         self.hid_signals.release_finished.connect(self._on_release_finished)
+        self.hid_signals.summarize_progress.connect(self._on_summarize_progress)
+        self.hid_signals.summarize_succeeded.connect(self._on_summarize_succeeded)
+        self.hid_signals.summarize_failed.connect(self._on_summarize_failed)
+        self.hid_signals.summarize_finished.connect(self._on_summarize_finished)
         self._hid_poll_timer = QTimer()
         self._hid_poll_timer.setInterval(2000)
         self._hid_poll_timer.timeout.connect(self._poll_hid_connection)
@@ -744,7 +847,7 @@ class SparkPanel(QWidget):
             self.device_dot.setToolTip("SPARK device disconnected")
 
     def _on_release_succeeded(self, text: str):
-        self.release_output_lbl.setText(format_release_output(text) if text else "No released text yet…")
+        self.release_output_lbl.setPlainText(format_release_output(text) if text else "No released text yet…")
         self._set_status("Sent to SPARK — output updated ✓", GREEN)
 
     def _on_release_failed(self, message: str):
@@ -752,6 +855,25 @@ class SparkPanel(QWidget):
 
     def _on_release_finished(self):
         self.btn_release.setEnabled(True)
+
+    def _set_summary_buttons_enabled(self, enabled: bool):
+        self.btn_summarize.setEnabled(enabled)
+        self.btn_test_context.setEnabled(enabled)
+        self.btn_custom_context.setEnabled(enabled)
+
+    def _on_summarize_succeeded(self, text: str):
+        self.release_output_lbl.setPlainText(text if text else "No summary returned.")
+        self._set_status("Jetson summary complete — output updated", GREEN)
+
+    def _on_summarize_progress(self, text: str):
+        self.release_output_lbl.setPlainText(text)
+        self._set_status("Streaming summary from Jetson…", ORANGE)
+
+    def _on_summarize_failed(self, message: str):
+        self._set_status(message, RED)
+
+    def _on_summarize_finished(self):
+        self._set_summary_buttons_enabled(True)
 
     # ─────────────────────────────────────────────────────────────
     # Polling — identical logic to SparkPipeline._on_poll_tick
@@ -940,14 +1062,66 @@ class SparkPanel(QWidget):
             if not text.strip():
                 self._set_status("No text found in active window", RED)
                 return
-            # TODO: Replace preview with an actual LLM summarization call.
-            # Run it in a thread to avoid blocking the Qt event loop, e.g.:
-            #   threading.Thread(target=self._summarize_async, args=(text,)).start()
-            preview = text[:200].replace("\n", " ")
-            self._push_capture_line(f"[SUMMARY] {preview}…")
-            self._set_status("Summary captured to Live Capture", GREEN)
+            if not self.hid_client.is_connected():
+                self._set_status("SPARK device not connected", RED)
+                return
+
+            request = build_summary_request(info.app_name, info.title or "", text)
+            self._start_summary_request(
+                request=request,
+                capture_label=f"[SUMMARY REQUEST] {info.app_name} — {(info.title or '')[:60]}",
+                status_text="Sending summary request to Jetson…",
+            )
         except Exception as e:
+            self._set_summary_buttons_enabled(True)
             self._set_status(f"Summarize failed: {e}", RED)
+
+    def _on_test_context(self):
+        request = build_test_summary_request()
+        self._start_summary_request(
+            request=request,
+            capture_label="[TEST CONTEXT] Fixed sample context",
+            status_text="Sending fixed test context to Jetson…",
+        )
+
+    def _on_custom_context(self):
+        dialog = CustomContextDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        app_name, window_title, window_text = dialog.get_values()
+        request = build_summary_request(app_name, window_title, window_text)
+        self._start_summary_request(
+            request=request,
+            capture_label=f"[CUSTOM CONTEXT] {app_name or '(unknown app)'} — {(window_title or '')[:60]}",
+            status_text="Sending custom context to Jetson…",
+        )
+
+    def _start_summary_request(self, request: str, capture_label: str, status_text: str):
+        if not self.hid_client.is_connected():
+            self._set_status("SPARK device not connected", RED)
+            return
+
+        self._set_summary_buttons_enabled(False)
+        self.release_output_lbl.setPlainText("")
+        self._push_capture_line(capture_label)
+        self._set_status(status_text, ORANGE)
+        threading.Thread(target=self._do_summarize_round_trip, args=(request,), daemon=True).start()
+
+    def _do_summarize_round_trip(self, prompt: str):
+        try:
+            response = self.hid_client.stream_round_trip_text(
+                AppCommand.FEATURE_1,
+                prompt,
+                on_update=self.hid_signals.summarize_progress.emit,
+            )
+            self.hid_signals.summarize_succeeded.emit(response)
+        except SparkProtocolError as exc:
+            self.hid_signals.summarize_failed.emit(f"HID error: {exc}")
+        except Exception as exc:
+            self.hid_signals.summarize_failed.emit(f"Summarize failed: {exc}")
+        finally:
+            self.hid_signals.summarize_finished.emit()
 
     def _on_show_history(self):
         """Flash history into the capture box."""
@@ -1062,13 +1236,19 @@ def _make_tray_icon() -> QIcon:
     p.end()
     return QIcon(px)
 
-
 def main():
+    instance_guard = SingleInstanceGuard.for_app("spark_app_v2")
+    if not instance_guard.acquire():
+        logger.error("Another spark_app_v2.py instance is already running; refusing to start a duplicate")
+        return 1
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setQuitOnLastWindowClosed(False)
+    app.aboutToQuit.connect(instance_guard.release)
 
     panel = SparkPanel()
+    panel._instance_guard = instance_guard
 
     # ── System tray ──────────────────────────────────────────
     tray = QSystemTrayIcon(_make_tray_icon(), app)
@@ -1087,9 +1267,9 @@ def main():
     tray.show()
 
     panel.show()
-    sys.exit(app.exec())
+    return app.exec()
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
 

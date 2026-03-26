@@ -1,7 +1,9 @@
 import io
 import json
+import shutil
 import tempfile
 import unittest
+import uuid
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -10,6 +12,12 @@ from pico import deploy_to_pico
 
 
 class DeployToPicoTests(unittest.TestCase):
+    def _workspace_tempdir(self, name: str) -> Path:
+        root = Path(__file__).resolve().parents[1] / ".tmp" / f"{name}-{uuid.uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=False)
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        return root
+
     def test_firmware_files_are_flattened_from_repo(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repo_root = Path(temp_dir)
@@ -23,6 +31,34 @@ class DeployToPicoTests(unittest.TestCase):
                 expected.append(path)
 
             self.assertEqual(deploy_to_pico.firmware_sources(repo_root), expected)
+
+    def test_firmware_sources_copy_code_py_last_for_safe_autoreload(self):
+        repo_root = self._workspace_tempdir("deploy-order-sources")
+        pico_dir = repo_root / "pico"
+        pico_dir.mkdir()
+
+        for name in deploy_to_pico.FIRMWARE_FILES:
+            (pico_dir / name).write_text(name, encoding="utf-8")
+
+        sources = deploy_to_pico.firmware_sources(repo_root)
+
+        self.assertEqual(sources[-1].name, "code.py")
+
+    def test_copy_firmware_files_writes_code_py_last(self):
+        root = self._workspace_tempdir("deploy-order-copy")
+        repo_root = root / "repo"
+        pico_dir = repo_root / "pico"
+        pico_dir.mkdir(parents=True)
+        target_root = root / "target"
+        target_root.mkdir()
+
+        for name in deploy_to_pico.FIRMWARE_FILES:
+            (pico_dir / name).write_text(name, encoding="utf-8")
+
+        copies = deploy_to_pico.copy_firmware_files(target_root, repo=repo_root, dry_run=False)
+
+        self.assertEqual(copies[-1][0].name, "code.py")
+        self.assertEqual(copies[-1][1].name, "code.py")
 
     def test_find_local_adafruit_hid_prefers_explicit_library_source(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -147,6 +183,12 @@ class DeployToPicoTests(unittest.TestCase):
             self.assertTrue((cached_package / "__init__.py").exists())
             self.assertTrue((cached_package / "keyboard.py").exists())
             self.assertTrue((target / "lib" / "adafruit_hid" / "__init__.py").exists())
+
+    def test_runtime_code_enables_circuitpython_autoreload(self):
+        code_py = Path(deploy_to_pico.__file__).resolve().with_name("code.py")
+        code_text = code_py.read_text(encoding="utf-8")
+
+        self.assertIn("supervisor.runtime.autoreload = True", code_text)
 
 
 if __name__ == "__main__":

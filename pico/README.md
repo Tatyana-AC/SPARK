@@ -9,7 +9,8 @@ Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` p
 The current Pico Hub firmware in this folder is split into:
 
 - `boot.py`: configure USB identity (`VID 0xC4C4` / `PID 0x5350`), enable USB CDC data, and expose the custom HID interface used by the host.
-- `code.py`: relay Host CDC bytes to Jetson UART, inject `BUTTON_PRESS` packets on local button events, and handle custom Raw HID traffic.
+- `code.py`: relay Host CDC bytes to Jetson UART when idle, forward `FEATURE_1` summarize requests to Jetson, buffer streamed Jetson responses, and handle custom Raw HID traffic.
+- `jetson_transport.py`: transport-only UART helper for summarize requests and streamed Jetson responses.
 - `upload_protocol.py`: V2 upload state machine shared between tests and the device runtime.
 - `serial_bridge.py`: CDC relay and `BUTTON_PRESS` packet builder.
 - `usb_config.py`: shared USB constants and the custom HID descriptor.
@@ -73,16 +74,27 @@ Manual path if needed:
 1. Copy [`boot.py`](C:/SPARK/pico/boot.py) to the root of `CIRCUITPY` as `boot.py`.
 2. Copy [`code.py`](C:/SPARK/pico/code.py) to the root of `CIRCUITPY` as `code.py`.
 3. Copy these helper modules to the root of `CIRCUITPY`:
+   - [`jetson_transport.py`](C:/SPARK/pico/jetson_transport.py)
    - [`upload_protocol.py`](C:/SPARK/pico/upload_protocol.py)
    - [`serial_bridge.py`](C:/SPARK/pico/serial_bridge.py)
    - [`usb_config.py`](C:/SPARK/pico/usb_config.py)
 4. Reboot the Pico so the USB configuration in `boot.py` is applied.
 
+Runtime reload behavior:
+
+- Changes to `code.py` and the helper modules copied alongside it can auto-reload under CircuitPython after the files are written.
+- The deploy helper copies `code.py` last so the runtime restarts after the updated support files are already in place.
+- On Windows, give CircuitPython a few seconds after deployment before probing the new runtime. The board can briefly continue serving the previous code during file-write completion.
+- Changes to `boot.py` still require a full board reboot / reconnect because USB configuration is established during boot.
+
 The active firmware contract is V2 upload-only:
 
-- supported custom HID commands: `GET_INFO`, `BEGIN_UPLOAD`, `UPLOAD_CHUNK`, `COMMIT_UPLOAD`, `ABORT_UPLOAD`, `STATUS`
-- supported app commands: `SUBMIT_TEXT`, `PING`
+- supported custom HID commands: `GET_INFO`, `GET_RESPONSE_INFO`, `GET_RESPONSE_CHUNK`, `BEGIN_UPLOAD`, `UPLOAD_CHUNK`, `COMMIT_UPLOAD`, `ABORT_UPLOAD`, `STATUS`
+- supported app commands: `SUBMIT_TEXT`, `PING`, `FEATURE_1`
 - `SUBMIT_TEXT` validates and acknowledges UTF-8 text uploads; it does not inject keyboard events
+- successful uploads can leave a device-side response buffer that the host reads back over Raw HID
 - the host app shows released text locally after the Pico acknowledges the upload
+- `FEATURE_1` forwards a structured summarize request to Jetson over UART and buffers the streamed Jetson response for host polling
+- `Summarize Window` is now verified as a Jetson-backed streamed path
 
 Legacy `0xA0` / `0xA1` / `0xB0` keyboard-trigger/status reports are not part of the current CircuitPython firmware.

@@ -8,10 +8,14 @@ MAX_UPLOAD_BYTES = 4096
 MAX_CHUNK_COUNT = (MAX_UPLOAD_BYTES + CHUNK_PAYLOAD_SIZE - 1) // CHUNK_PAYLOAD_SIZE
 CAPABILITY_FLAGS = 0x00
 ENCODING_UTF8 = 0x01
+RESPONSE_FLAG_COMPLETE = 0x01
+RESPONSE_FLAG_ACTIVE = 0x02
 
 
 class Command:
     GET_INFO = 0x01
+    GET_RESPONSE_INFO = 0x20
+    GET_RESPONSE_CHUNK = 0x21
     BEGIN_UPLOAD = 0x10
     UPLOAD_CHUNK = 0x11
     COMMIT_UPLOAD = 0x12
@@ -55,6 +59,9 @@ class UploadProtocolHandler:
     def __init__(self, text_preparer=None):
         self._text_preparer = text_preparer or self._default_prepare_text
         self._pending_typeback = []
+        self._response_bytes = b""
+        self._response_complete = False
+        self._response_active = False
         self._reset_upload()
 
     @staticmethod
@@ -120,6 +127,10 @@ class UploadProtocolHandler:
         command = report[0]
         if command == Command.GET_INFO:
             return self._handle_get_info()
+        if command == Command.GET_RESPONSE_INFO:
+            return self._handle_get_response_info()
+        if command == Command.GET_RESPONSE_CHUNK:
+            return self._handle_get_response_chunk(report)
         if command == Command.BEGIN_UPLOAD:
             return self._handle_begin(report)
         if command == Command.UPLOAD_CHUNK:
@@ -167,6 +178,34 @@ class UploadProtocolHandler:
         self._buffer = bytearray(total_len)
         self._received = [False] * self._chunk_count
         return self._status(Command.BEGIN_UPLOAD, message_id, StatusCode.OK)
+
+    def _handle_get_response_info(self):
+        report = bytearray(REPORT_SIZE)
+        report[0] = Command.GET_RESPONSE_INFO
+        self._write_u32(report, 1, len(self._response_bytes))
+        chunk_count = (len(self._response_bytes) + CHUNK_PAYLOAD_SIZE - 1) // CHUNK_PAYLOAD_SIZE if self._response_bytes else 0
+        self._write_u16(report, 5, chunk_count)
+        flags = 0
+        if self._response_complete:
+            flags |= RESPONSE_FLAG_COMPLETE
+        if self._response_active:
+            flags |= RESPONSE_FLAG_ACTIVE
+        report[7] = flags
+        return bytes(report)
+
+    def _handle_get_response_chunk(self, report):
+        index = self._u16(report, 1)
+        chunk_count = (len(self._response_bytes) + CHUNK_PAYLOAD_SIZE - 1) // CHUNK_PAYLOAD_SIZE if self._response_bytes else 0
+        if index >= chunk_count:
+            return self._status(Command.GET_RESPONSE_CHUNK, 0, StatusCode.INVALID_INDEX, detail="index")
+
+        start = index * CHUNK_PAYLOAD_SIZE
+        end = min(start + CHUNK_PAYLOAD_SIZE, len(self._response_bytes))
+        reply = bytearray(REPORT_SIZE)
+        reply[0] = Command.GET_RESPONSE_CHUNK
+        reply[1] = index & 0xFF
+        reply[2:2 + (end - start)] = self._response_bytes[start:end]
+        return bytes(reply)
 
     def _handle_chunk(self, report):
         message_id = self._u16(report, 1)
@@ -223,9 +262,30 @@ class UploadProtocolHandler:
                 return self._status(Command.COMMIT_UPLOAD, message_id, StatusCode.INTERNAL_ERROR, detail="prepare")
 
         accepted_text = prepared.get("accepted_text", "")
+        response_text = prepared.get("response_text", accepted_text)
         accepted_count = int(prepared.get("accepted_count", len(accepted_text)))
         skipped_count = int(prepared.get("skipped_count", 0))
         detail = prepared.get("detail", "ok")
+        status_code = int(prepared.get("status_code", StatusCode.OK))
+        response_complete = bool(prepared.get("response_complete", True))
+        response_active = bool(prepared.get("response_active", False))
+
+        if status_code != StatusCode.OK:
+            self._reset_upload()
+            return self._status(
+                Command.COMMIT_UPLOAD,
+                message_id,
+                status_code,
+                value0=accepted_count,
+                value1=skipped_count,
+                detail=detail,
+            )
+
+        self.update_response_state(
+            response_text.encode("utf-8"),
+            complete=response_complete,
+            active=response_active,
+        )
 
         self._reset_upload()
         return self._status(
@@ -236,6 +296,11 @@ class UploadProtocolHandler:
             value1=skipped_count,
             detail=detail,
         )
+
+    def update_response_state(self, response_bytes, complete=False, active=False):
+        self._response_bytes = bytes(response_bytes)
+        self._response_complete = bool(complete)
+        self._response_active = bool(active)
 
     def _handle_abort(self, report):
         message_id = self._u16(report, 1)

@@ -1,63 +1,53 @@
-graph TD
-    %% Define Styles
-    classDef laptop fill:#e3f2fd,stroke:#1565c0,stroke-width:2px;
-    classDef jetson fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
-    classDef hardware fill:#fff3e0,stroke:#e65100,stroke-width:2px;
-    classDef database fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px;
+# SPARK System Diagram
 
-    %% Zone 1: The User's Laptop
-    subgraph Zone 1: User's Laptop (The Host)
-        App[Active Application <br> Chrome, Word, Slack]
-        Manager[Accessibility Manager <br> manager.py]
-        WinProv[Windows/Mac Provider <br> windows_provider.py]
-        Paste[Clipboard Injector <br> pyautogui / pyperclip]
+This is the current high-level architecture for the active branch.
+
+```mermaid
+flowchart LR
+    subgraph Host["Host PC (macOS / Windows)"]
+        UI["spark_app_v2.py\nPyQt panel"]
+        AX["AccessibilityManager\nwindow + text extraction"]
+        Tracker["WindowContextTracker\nSparkDB\nhistory + preferences"]
+        Live["LiveCaptureFeed\nRELEASE OUTPUT"]
+        Hotkeys["GlobalHotkeyManager"]
+        HID["SparkHIDClient\nRaw HID upload"]
+        CDC["SerialSender\nCDC packets"]
     end
 
-    %% Zone 2: The Data Layer
-    subgraph Zone 2: The Memory Bank
-        DB[(spark.db <br> SQLite FTS5)]
-        VectorDB[(ChromaDB <br> Vectors - Optional)]
+    subgraph Pico["Pico Hub (CircuitPython)"]
+        Boot["boot.py\nUSB identity + interfaces"]
+        Code["code.py\nCDC relay + button scan + HID handler"]
+        Upload["upload_protocol.py"]
+        Bridge["serial_bridge.py"]
     end
 
-    %% Zone 3: The Jetson AGX
-    subgraph Zone 3: Jetson AGX (The Brain)
-        StateClass[State Classifier <br> Study/Write/Respond]
-        LLM[Local LLM <br> Llama-3 8B]
-        API[Jetson API Server]
+    subgraph Jetson["Jetson Brain"]
+        Receiver["jetson/receiver.py\nPacketParser"]
+        JDB["JetsonDB\nsessions + button_events"]
     end
 
-    %% Zone 4: The Physical Device
-    subgraph Zone 4: Spark Hardware
-        Screen[OLED Display <br> Shows 4 Options]
-        Keys[4 Dynamic Soft Keys]
-        Release[Physical 'Release' Button]
-    end
+    AX --> UI
+    UI --> Tracker
+    UI --> Live
+    Hotkeys --> UI
+    UI --> HID
+    UI --> CDC
 
-    %% --- Connections ---
+    HID --> Upload
+    CDC --> Bridge
+    Boot --> Code
+    Upload --> Code
+    Bridge --> Code
 
-    %% Data Ingestion (The "Eyes")
-    App -- OS API calls --> WinProv
-    WinProv -- "Extracts Text" --> Manager
-    Manager -- "Writes Window State" --> DB
+    Bridge --> Receiver
+    Code --> Receiver
+    Receiver --> JDB
+```
 
-    %% Context Reading
-    DB -- "Reads Active App & History" --> StateClass
-    StateClass -- "Updates Button Labels" --> API
-    API -- "Sends Display Data" --> Screen
+## Notes
 
-    %% User Interaction
-    Keys -- "User Selects Option" --> API
-    API -- "Fetches Context" --> DB
-    API -- "Prompts AI" --> LLM
-
-    %% Action Execution (The "Hands")
-    LLM -- "Generates Draft/Summary" --> Release
-    Release -- "User Confirms Action" --> Manager
-    Manager -- "Triggers paste_text()" --> Paste
-    Paste -- "Ctrl+V" --> App
-
-    %% Apply Styles
-    class App,Manager,WinProv,Paste laptop;
-    class DB,VectorDB database;
-    class StateClass,LLM,API jetson;
-    class Screen,Keys,Release hardware;
+- The host has two independent device paths:
+  - Raw HID for `Release Text` uploads and device status.
+  - USB CDC serial for `WINDOW_NEW` / `WINDOW_UPDATE` packets heading toward the Jetson.
+- The Pico acknowledges text uploads but does not type text back into the focused external app in the active runtime.
+- `pico/main.py` remains a readable reference, but the deployed firmware entrypoints are `pico/boot.py` and `pico/code.py`.

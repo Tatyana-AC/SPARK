@@ -23,7 +23,7 @@ Privacy & Security → Accessibility (scroll down to find it)
 4. Select your Python executable or application:
    - For direct Python: `/usr/bin/python3`
    - For your IDE: VS Code, PyCharm, etc.
-   - For this script: locate `test_accessibility_demo.py`
+   - For this project: add the Python executable you use to launch `spark_app_v2.py`
 5. Click **'Open'** to add it
 6. You should see a **✓** checkmark next to the app
 
@@ -113,7 +113,7 @@ if manager.check_permissions():
 
 1. Run the demo with debug logging:
    ```bash
-   python test_accessibility_demo.py
+   python spark_app_v2.py
    ```
 
 2. Check logs for specific errors
