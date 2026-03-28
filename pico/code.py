@@ -1,4 +1,5 @@
 import time
+import traceback
 
 import board
 import busio
@@ -27,6 +28,7 @@ CDC_RELAY_SLICE_BYTES = 64
 
 jetson_transport = None
 _last_response_signature = None
+ERROR_LOG_PATH = "runtime_error.txt"
 
 
 def _prepare_upload_result(app_command, text):
@@ -143,6 +145,12 @@ def _sync_response_state(protocol_handler, transport):
 # CIRCUITPY change. USB setup still lives in boot.py and still needs a reboot.
 supervisor.runtime.autoreload = True
 
+try:
+    with open(ERROR_LOG_PATH, "w") as handle:
+        handle.write("")
+except OSError:
+    pass
+
 protocol_handler = UploadProtocolHandler(text_preparer=_prepare_upload_result)
 custom_hid = _find_custom_hid_device()
 uart = busio.UART(board.GP0, board.GP1, baudrate=UART_BAUDRATE, timeout=0)
@@ -150,12 +158,20 @@ buttons = keypad.Keys(BUTTON_PINS, value_when_pressed=False, pull=True)
 serial_bridge = SerialBridge(usb_cdc.data, uart)
 jetson_transport = JetsonTransport(uart)
 
-while True:
-    if not jetson_transport.request_active:
+try:
+    while True:
         serial_bridge.relay_once(max_chunk_size=CDC_RELAY_SLICE_BYTES)
         _drain_button_events(buttons, serial_bridge)
-    jetson_transport.poll(max_chunk_size=CDC_RELAY_SLICE_BYTES)
-    _sync_response_state(protocol_handler, jetson_transport)
-    _drain_hid_reports(custom_hid, protocol_handler)
+        jetson_transport.poll(max_chunk_size=CDC_RELAY_SLICE_BYTES)
+        _sync_response_state(protocol_handler, jetson_transport)
+        _drain_hid_reports(custom_hid, protocol_handler)
 
-    time.sleep(BUTTON_POLL_SLEEP_S)
+        time.sleep(BUTTON_POLL_SLEEP_S)
+except Exception as exc:
+    try:
+        with open(ERROR_LOG_PATH, "w") as handle:
+            handle.write("Unhandled exception in code.py\n")
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=handle)
+    except OSError:
+        pass
+    raise

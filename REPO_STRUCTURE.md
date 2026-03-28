@@ -4,9 +4,9 @@
 
 SPARK is no longer just a desktop capture panel. On the current `sida` branch, it is a distributed three-node system:
 
-- Host PC app: PyQt desktop app that captures desktop context, tracks window state, talks to hardware, and maintains a local history DB.
+- Host PC app: PyQt desktop app that captures desktop context, tracks window state in memory, talks to hardware, and renders local UI state.
 - Pico Hub: RP2040/CircuitPython device that exposes custom Raw HID and USB CDC serial, bridging context packets toward Jetson and accepting HID uploads from the host.
-- Jetson Brain: serial receiver plus SQLite store for session-oriented context and button events.
+- Jetson Brain: UART bridge plus SQLite store for rich context sessions, button events, and summarize handling.
 
 The current codebase is best understood as a host application plus protocol and hardware integration layers.
 
@@ -21,20 +21,20 @@ SPARK/
 |  |- hid/                         # Keyboard Raw HID manager abstraction
 |  |- browser.py                   # Browser tab metadata
 |  |- context.py                   # LLM-friendly host context object
-|  |- db.py                        # Host-side local SQLite store
+|  |- db.py                        # Legacy host-side local SQLite store; not used by spark_app_v2.py
 |  |- hotkeys.py                   # Global hotkeys
 |  |- live_capture.py              # Live-capture feed dedupe helper
 |  |- raw_hid.py                   # Raw HID upload client for SPARK device
 |  `- serial_sender.py             # CDC serial sender to Pico Hub / Jetson path
 |- core/                           # Shared wire protocol builder/parser
-|- jetson/                         # Jetson serial receiver and DB layer
+|- jetson/                         # Deployable Jetson bridge bundle and DB layer
 |- pico/                           # Pico relay reference implementation / firmware spec
 |- tests/                          # Focused unit tests
 |- ENGINEERING_SPEC.md             # Best architecture source of truth
 |- documentation_reference.md      # Current developer lookup for host behavior and extension points
 |- diagram.md                      # Current three-node architecture diagram
 |- requirements.txt                # Current Python dependencies
-|- spark.db                        # Host-local runtime state, ignored in git
+|- spark.db                        # Older host runtime artifact; not used by the active V2 path
 `- setup_accessibility_macos.py    # macOS accessibility setup helper
 ```
 
@@ -48,8 +48,9 @@ The host node is the user-facing desktop application.
   - Main active entrypoint.
   - Runs a 125 ms polling loop.
   - Captures active-window context through `AccessibilityManager`.
-  - Updates local history via `WindowContextTracker` and `SparkDB`.
+  - Updates in-memory context state via `WindowContextTracker`.
   - Maintains a deduped live-capture feed via `LiveCaptureFeed`.
+  - Persists host window position through `QSettings`.
   - Sends host context packets over serial to the Pico Hub using `SerialSender`.
   - Uploads release text to the SPARK device over Raw HID using `SparkHIDClient`.
   - Shows accepted release output locally in the UI after device acknowledgment.
@@ -65,16 +66,21 @@ The host node is the user-facing desktop application.
 - `core/protocol.py`
   - Defines the SPARK wire protocol.
   - Builds:
-    - `WINDOW_NEW` (`0x01`)
-    - `WINDOW_UPDATE` (`0x02`)
+    - `CONTEXT_NEW` (`0x01`)
+    - `CONTEXT_UPDATE` (`0x02`)
+    - `SUMMARIZE_REQUEST` (`0x03`)
+    - `SUMMARIZE_CHUNK` (`0x04`)
     - `BUTTON_PRESS` (`0x05`)
+    - `SUMMARIZE_DONE` (`0x06`)
+    - `ERROR` (`0x07`)
   - Implements packet framing:
     - magic bytes `SP`
     - packet type
     - little-endian payload length
     - payload
     - CRC-8/MAXIM
-  - Also contains `PacketParser`, which the Jetson receiver uses to decode the serial stream.
+  - Uses versioned JSON bodies for structured packets.
+  - Also contains `PacketParser`, which the Pico and Jetson bridge use to decode the serial stream.
 
 ### 3. Pico Hub Layer
 
@@ -85,9 +91,9 @@ The host node is the user-facing desktop application.
     - one custom Raw HID interface
 - `pico/code.py`
   - Active CircuitPython runtime loop.
-  - Relays CDC host packets when idle, forwards `FEATURE_1` summarize requests to Jetson UART, and exposes the streamed Jetson response back over Raw HID.
+  - Relays CDC host packets continuously, forwards `FEATURE_1` summarize requests to Jetson UART, and exposes the streamed Jetson response back over Raw HID.
 - `pico/jetson_transport.py`
-  - Transport-only Pico helper for `payload + EOT`, ACK suppression, response buffering, and completion state.
+  - Transport-only Pico helper for framed summarize requests, response buffering, and completion state.
 - `pico/upload_protocol.py`
   - Pure-Python implementation of the V2 upload protocol state machine and host-readable response buffer metadata.
 - `pico/serial_bridge.py`
@@ -104,11 +110,13 @@ The host node is the user-facing desktop application.
 
 ### 4. Jetson Layer
 
+- `jetson/pico_llm_bridge.py`
+  - Deployable Jetson bridge entrypoint.
+  - Owns the UART, persists context to SQLite, and forwards summarize requests to the local llama.cpp OpenAI-compatible server.
 - `jetson/receiver.py`
-  - Serial receiver for the Jetson.
-  - Reads bytes from UART, feeds them into `PacketParser`, and dispatches decoded packets into the Jetson DB layer.
+  - Compatibility wrapper to the active bridge entrypoint.
 - `jetson/db_manager.py`
-  - Session-aware SQLite store for the Jetson side.
+  - Rich-session SQLite store for the Jetson side.
   - Maintains:
     - `sessions`
     - `button_events`
@@ -135,7 +143,7 @@ Files under `host_pc/accessibility/` are still the base of the host app:
   - Windows accessibility implementation path.
 - `tracker.py`
   - Tracks current and previous windows.
-  - Persists host snapshots into `spark.db`.
+  - Keeps current and prior snapshots in memory only.
   - Provides the `context_key` logic used to detect window changes.
 
 ### Host-Side Supporting Modules
@@ -145,7 +153,8 @@ Files under `host_pc/accessibility/` are still the base of the host app:
 - `context.py`
   - LLM-ready host context object.
 - `db.py`
-  - Host-side local SQLite store for snapshots and preferences.
+  - Legacy host-side local SQLite store for snapshots and preferences.
+  - No longer used by the active `spark_app_v2.py` runtime.
 - `hotkeys.py`
   - Global hotkey listener.
   - Current Windows defaults: `Win+Alt+C` for capture, `Win+Alt+V` for release, and `Win+Alt+Space` for window toggle.
@@ -165,7 +174,7 @@ Files under `host_pc/accessibility/` are still the base of the host app:
     - text submission
 - `serial_sender.py`
   - Sends protocol packets to the Pico CDC serial interface.
-  - Used by V2 to emit `WINDOW_NEW` on context change and `WINDOW_UPDATE` while the same context remains active.
+  - Used by V2 to emit `CONTEXT_NEW` on context change and `CONTEXT_UPDATE` while the same context remains active.
 - `hid/keyboard_hid.py`
   - Higher-level keyboard HID manager abstraction.
   - Legacy path used by `spark_app.py`.
@@ -179,7 +188,6 @@ The main V2 app flow is now:
 2. It creates:
    - `AccessibilityManager`
    - `GlobalHotkeyManager`
-   - `SparkDB`
    - `WindowContextTracker`
    - `SparkHIDClient`
    - `SerialSender`
@@ -189,9 +197,9 @@ The main V2 app flow is now:
    - apply privacy guard
    - optionally enrich browser metadata
    - extract focused-element or full-window text
-   - update host tracker/history
+   - update in-memory host tracker/history
    - append deduped live-capture output
-   - send `WINDOW_NEW` or `WINDOW_UPDATE` over serial toward the Pico/Jetson path
+   - send `CONTEXT_NEW` or `CONTEXT_UPDATE` over serial toward the Pico/Jetson path
 4. On `Capture Text`:
    - selected text is copied from the active app
    - stored as `captured_text`
@@ -204,23 +212,25 @@ The main V2 app flow is now:
 6. On `Summarize Window`:
    - the host builds a structured summarize request from the current active window
    - the host sends it to the Pico through Raw HID `FEATURE_1`
-   - the Pico forwards that request to Jetson over UART and buffers the streamed response
+   - the Pico forwards that request to Jetson over framed UART packets and buffers the streamed response
    - the host polls the Pico response buffer and updates the release-output panel incrementally
 
 ## Important File Ownership
 
 - Main current app: `spark_app_v2.py`
 - Legacy app path: `spark_app.py`
-- Host context capture and persistence:
+- Host context capture and in-memory state:
   - `host_pc/accessibility/`
-  - `host_pc/db.py`
   - `host_pc/context.py`
+- Legacy host DB path:
+  - `host_pc/db.py`
 - Host hardware communication:
   - `host_pc/raw_hid.py`
   - `host_pc/serial_sender.py`
   - `host_pc/hid/keyboard_hid.py`
 - Shared protocol contract: `core/protocol.py`
 - Jetson receiver/storage:
+  - `jetson/pico_llm_bridge.py`
   - `jetson/receiver.py`
   - `jetson/db_manager.py`
 - Pico relay reference: `pico/main.py`
@@ -241,7 +251,8 @@ The repo now has a focused unit test suite covering the active host/device contr
 - `tests/test_hotkeys.py`
 - `tests/test_release_output.py`
 - `tests/test_tracker_persistence.py`
-- `tests/test_db_debug_view.py`
+- `tests/test_protocol_packets.py`
+- `tests/test_jetson_db.py`
 
 There is still no CI configuration checked in, but the repo is no longer in a "single test file" state.
 
@@ -257,6 +268,7 @@ There is still no CI configuration checked in, but the repo is no longer in a "s
 - `core/protocol.py`
 - `host_pc/raw_hid.py`
 - `host_pc/serial_sender.py`
+- `jetson/pico_llm_bridge.py`
 - `jetson/receiver.py`
 - `jetson/db_manager.py`
 - `host_pc/live_capture.py`
@@ -275,7 +287,7 @@ There is still no CI configuration checked in, but the repo is no longer in a "s
 - `spark_app.py` still uses `KeyboardHIDManager`, but that path is legacy and should not be treated as the current Pico contract.
 - The hard-coded macOS `sys.path.insert(...)` remains in both app entrypoints and is still a portability smell.
 - The current `requirements.txt` reflects the newer hardware path and now includes both `hidapi` and `pyserial`.
-- The currently verified summarize path is Raw HID host<->Pico plus UART Pico<->Jetson. USB CDC is not part of the active summarize request/response flow.
+- The currently verified summarize path is Raw HID host<->Pico plus UART Pico<->Jetson, and direct framed CDC summarize packets can also be used for hardware debugging.
 
 ## Practical Mental Model
 
@@ -284,6 +296,6 @@ Think of the current project as four slices:
 - Desktop host app: capture context, render UI, handle user actions.
 - Device bridge: talk to the Pico over Raw HID and CDC serial.
 - Shared protocol: define and parse packets consistently across nodes.
-- Jetson receiver: persist and react to window sessions and button events.
+- Jetson bridge: persist and react to window sessions, button events, and summarize requests.
 
 If you are changing behavior, first decide which slice owns it. That is the fastest way to stay oriented in this repo.

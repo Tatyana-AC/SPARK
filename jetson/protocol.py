@@ -1,22 +1,8 @@
 """
-SPARK distributed protocol - shared framed packet definitions.
+Local copy of the shared SPARK framed packet contract for Jetson deployment.
 
-All transport between Host, Pico, and Jetson uses a single framed packet format:
-
-    MAGIC(2) + TYPE(1) + LEN_LE(2) + PAYLOAD + CRC8(1)
-
-New structured packet payloads are versioned JSON bodies:
-
-    VERSION(1) + UTF8_JSON(...)
-
-The active packet families are:
-    0x01 CONTEXT_NEW
-    0x02 CONTEXT_UPDATE
-    0x03 SUMMARIZE_REQUEST
-    0x04 SUMMARIZE_CHUNK
-    0x05 BUTTON_PRESS
-    0x06 SUMMARIZE_DONE
-    0x07 ERROR
+This lets the `jetson/` folder be copied directly into the bridge folder on the
+Jetson without depending on the repo root package layout.
 """
 
 from __future__ import annotations
@@ -41,7 +27,6 @@ _CRC_FMT = "<B"
 
 HEADER_SIZE = struct.calcsize(_HEADER_FMT)
 FOOTER_SIZE = struct.calcsize(_CRC_FMT)
-OVERHEAD = HEADER_SIZE + FOOTER_SIZE
 
 _JSON_PACKET_TYPES = {
     PKT_CONTEXT_NEW,
@@ -77,18 +62,6 @@ def _build_json_packet(pkt_type: int, payload: dict[str, Any]) -> bytes:
     return build_packet(pkt_type, _json_payload(payload))
 
 
-def build_context_new(payload: dict[str, Any]) -> bytes:
-    return _build_json_packet(PKT_CONTEXT_NEW, payload)
-
-
-def build_context_update(payload: dict[str, Any]) -> bytes:
-    return _build_json_packet(PKT_CONTEXT_UPDATE, payload)
-
-
-def build_summarize_request(request_text: str) -> bytes:
-    return _build_json_packet(PKT_SUMMARIZE_REQUEST, {"request": request_text})
-
-
 def build_summarize_chunk(text: str) -> bytes:
     return _build_json_packet(PKT_SUMMARIZE_CHUNK, {"text": text})
 
@@ -101,44 +74,7 @@ def build_error(message: str) -> bytes:
     return _build_json_packet(PKT_ERROR, {"message": message})
 
 
-def build_button_press(button_id: int) -> bytes:
-    return build_packet(PKT_BUTTON_PRESS, struct.pack("<B", button_id))
-
-
-def _parse_json_payload(pkt_type: int, payload: bytes) -> dict[str, Any] | None:
-    if not payload:
-        return None
-    version = payload[0]
-    if version != PROTOCOL_VERSION:
-        return None
-    try:
-        data = json.loads(payload[1:].decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    data["type"] = pkt_type
-    return data
-
-
-def _parse_payload(pkt_type: int, payload: bytes) -> dict[str, Any] | None:
-    if pkt_type in _JSON_PACKET_TYPES:
-        return _parse_json_payload(pkt_type, payload)
-    if pkt_type == PKT_BUTTON_PRESS:
-        try:
-            (button_id,) = struct.unpack_from("<B", payload, 0)
-        except struct.error:
-            return None
-        return {"type": pkt_type, "button_id": button_id}
-    return None
-
-
 class PacketParser:
-    """
-    Streaming parser: feed bytes in any chunk size via feed().
-    on_packet(dict) fires for every valid, CRC-checked packet.
-    """
-
     _SYNC = 0
     _HEADER = 1
     _BODY = 2
@@ -160,14 +96,12 @@ class PacketParser:
                     self._state = self._HEADER
                 elif len(self._buf) > 2:
                     self._buf = bytearray([self._buf[-1]])
-
             elif self._state == self._HEADER:
                 if len(self._buf) == HEADER_SIZE:
                     _, self._pkt_type, self._pkt_len = struct.unpack_from(
                         _HEADER_FMT, bytes(self._buf), 0
                     )
                     self._state = self._BODY
-
             elif self._state == self._BODY:
                 if len(self._buf) == HEADER_SIZE + self._pkt_len + FOOTER_SIZE:
                     self._dispatch()
@@ -181,10 +115,33 @@ class PacketParser:
             return
 
         payload = bytes(self._buf[HEADER_SIZE : HEADER_SIZE + self._pkt_len])
-        pkt = _parse_payload(self._pkt_type, payload)
+        pkt = self._parse_payload(self._pkt_type, payload)
         if pkt is not None and self.on_packet:
             self.on_packet(pkt)
         self._reset()
+
+    def _parse_payload(self, pkt_type: int, payload: bytes) -> dict[str, Any] | None:
+        if pkt_type in _JSON_PACKET_TYPES:
+            if not payload:
+                return None
+            version = payload[0]
+            if version != PROTOCOL_VERSION:
+                return None
+            try:
+                data = json.loads(payload[1:].decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return None
+            if not isinstance(data, dict):
+                return None
+            data["type"] = pkt_type
+            return data
+        if pkt_type == PKT_BUTTON_PRESS:
+            try:
+                (button_id,) = struct.unpack_from("<B", payload, 0)
+            except struct.error:
+                return None
+            return {"type": pkt_type, "button_id": button_id}
+        return None
 
     def _reset(self) -> None:
         self._buf = bytearray()

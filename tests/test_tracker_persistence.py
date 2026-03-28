@@ -1,10 +1,7 @@
-import tempfile
 import unittest
-from pathlib import Path
 
 from host_pc.accessibility.base import TextSource, WindowInfo
 from host_pc.accessibility.tracker import WindowContextTracker
-from host_pc.db import SparkDB
 
 
 def make_window_info(
@@ -21,66 +18,41 @@ def make_window_info(
     )
 
 
-class WindowContextTrackerPersistenceTests(unittest.TestCase):
+class WindowContextTrackerTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._tmpdir = tempfile.TemporaryDirectory()
-        self.db_path = Path(self._tmpdir.name) / "spark.db"
-        self.db = SparkDB(str(self.db_path))
-        self.tracker = WindowContextTracker(db=self.db)
+        self.tracker = WindowContextTracker()
 
-    def tearDown(self) -> None:
-        self.db.close()
-        self._tmpdir.cleanup()
-
-    def test_first_update_persists_current_window_immediately(self):
+    def test_first_update_sets_current_snapshot(self):
         self.tracker.update(
             make_window_info(),
             "hello from slack",
             TextSource.FULL_WINDOW,
         )
 
-        row = self.db._conn.execute(
-            "SELECT app_name, window_title, text, source FROM window_snapshots"
-        ).fetchone()
+        current = self.tracker.get_current()
 
-        self.assertIsNotNone(row)
-        self.assertEqual(row["app_name"], "slack")
-        self.assertEqual(row["window_title"], "Inbox")
-        self.assertEqual(row["text"], "hello from slack")
-        self.assertEqual(row["source"], TextSource.FULL_WINDOW.value)
+        self.assertIsNotNone(current)
+        self.assertEqual(current.window_info.app_name, "slack")
+        self.assertEqual(current.window_info.title, "Inbox")
+        self.assertEqual(current.text, "hello from slack")
 
-    def test_same_context_updates_existing_row_in_place(self):
-        self.tracker.update(
-            make_window_info(),
-            "first text",
-            TextSource.FULL_WINDOW,
-        )
-        first_id = self.db._conn.execute(
-            "SELECT id FROM window_snapshots"
-        ).fetchone()["id"]
+    def test_same_context_updates_in_place(self):
+        self.tracker.update(make_window_info(), "first text", TextSource.FULL_WINDOW)
+        first = self.tracker.get_current()
 
-        self.tracker.update(
-            make_window_info(),
-            "updated text",
-            TextSource.FOCUSED_ELEMENT,
-        )
+        self.tracker.update(make_window_info(), "updated text", TextSource.FOCUSED_ELEMENT)
+        second = self.tracker.get_current()
 
-        rows = self.db._conn.execute(
-            "SELECT id, text, source FROM window_snapshots"
-        ).fetchall()
+        self.assertIs(first, second)
+        self.assertEqual(second.text, "updated text")
+        self.assertEqual(second.source, TextSource.FOCUSED_ELEMENT)
 
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["id"], first_id)
-        self.assertEqual(rows[0]["text"], "updated text")
-        self.assertEqual(rows[0]["source"], TextSource.FOCUSED_ELEMENT.value)
-
-    def test_context_switch_inserts_new_current_row_without_waiting_for_next_switch(self):
+    def test_context_switch_pushes_previous_snapshot(self):
         self.tracker.update(
             make_window_info(title="Inbox", app_name="slack"),
             "slack message body",
             TextSource.FULL_WINDOW,
         )
-
         self.tracker.update(
             make_window_info(
                 title="Project Plan",
@@ -92,54 +64,15 @@ class WindowContextTrackerPersistenceTests(unittest.TestCase):
             TextSource.FULL_WINDOW,
         )
 
-        rows = self.db._conn.execute(
-            "SELECT app_name, window_title, text FROM window_snapshots ORDER BY id"
-        ).fetchall()
+        current = self.tracker.get_current()
+        previous = self.tracker.get_previous()
 
-        self.assertEqual(
-            [(row["app_name"], row["window_title"], row["text"]) for row in rows],
-            [
-                ("slack", "Inbox", "slack message body"),
-                ("Codex", "Project Plan", "implementation checklist and notes"),
-            ],
-        )
+        self.assertEqual(current.window_info.app_name, "Codex")
+        self.assertIsNotNone(previous)
+        self.assertEqual(previous.window_info.app_name, "slack")
 
-    def test_revisiting_unchanged_context_reuses_existing_row(self):
-        self.tracker.update(
-            make_window_info(title="Inbox", app_name="slack"),
-            "slack message body",
-            TextSource.FULL_WINDOW,
-        )
-        original = self.db._conn.execute(
-            "SELECT id, first_seen, last_seen FROM window_snapshots WHERE app_name = 'slack'"
-        ).fetchone()
-
-        self.tracker.update(
-            make_window_info(
-                title="Project Plan",
-                app_name="Codex",
-                process_name="codex.exe",
-                pid=202,
-            ),
-            "implementation checklist and notes",
-            TextSource.FULL_WINDOW,
-        )
-        self.tracker.update(
-            make_window_info(title="Inbox", app_name="slack"),
-            "slack message body",
-            TextSource.FULL_WINDOW,
-        )
-
-        rows = self.db._conn.execute(
-            "SELECT id, first_seen, last_seen FROM window_snapshots WHERE app_name = 'slack'"
-        ).fetchall()
-
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["id"], original["id"])
-        self.assertEqual(rows[0]["first_seen"], original["first_seen"])
-        self.assertGreaterEqual(rows[0]["last_seen"], original["last_seen"])
-
-    def test_irrelevant_window_is_not_persisted(self):
+    def test_irrelevant_window_is_not_added_to_previous_history(self):
+        self.tracker.update(make_window_info(title="Inbox", app_name="slack"), "hello", TextSource.FULL_WINDOW)
         self.tracker.update(
             make_window_info(
                 title="Search",
@@ -150,32 +83,16 @@ class WindowContextTrackerPersistenceTests(unittest.TestCase):
             "Search",
             TextSource.FULL_WINDOW,
         )
-
-        count = self.db._conn.execute(
-            "SELECT COUNT(*) FROM window_snapshots"
-        ).fetchone()[0]
-
-        self.assertEqual(count, 0)
-
-    def test_codex_style_window_is_persisted_for_debug_visibility(self):
         self.tracker.update(
-            make_window_info(
-                title="Codex",
-                app_name="Codex",
-                process_name="Codex.exe",
-                pid=404,
-            ),
-            "Codex Codex Minimize Maximize Close Codex",
+            make_window_info(title="Plan", app_name="Codex", process_name="Codex.exe", pid=404),
+            "Debug notes",
             TextSource.FULL_WINDOW,
         )
 
-        row = self.db._conn.execute(
-            "SELECT id, app_name, window_title FROM window_snapshots"
-        ).fetchone()
+        previous = self.tracker.get_all_previous()
 
-        self.assertIsNotNone(row)
-        self.assertEqual(row["app_name"], "Codex")
-        self.assertEqual(row["window_title"], "Codex")
+        self.assertEqual(len(previous), 1)
+        self.assertEqual(previous[0].window_info.app_name, "slack")
 
 
 if __name__ == "__main__":

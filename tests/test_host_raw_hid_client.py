@@ -24,6 +24,7 @@ class HostRawHidClientTests(unittest.TestCase):
         client = SparkHIDClient()
         fake = FakeHidDevice()
         client._device = fake
+        client._open = lambda: None
 
         client._write(bytes([0x01]) + bytes(REPORT_SIZE - 1))
 
@@ -35,6 +36,7 @@ class HostRawHidClientTests(unittest.TestCase):
         report = bytes([0x7F]) + bytes(REPORT_SIZE - 1)
         fake = FakeHidDevice(reads=[[RAW_REPORT_ID, *report]])
         client._device = fake
+        client._open = lambda: None
 
         received = client._read()
 

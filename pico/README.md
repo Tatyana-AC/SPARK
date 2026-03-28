@@ -9,11 +9,12 @@ Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` p
 The current Pico Hub firmware in this folder is split into:
 
 - `boot.py`: configure USB identity (`VID 0xC4C4` / `PID 0x5350`), enable USB CDC data, and expose the custom HID interface used by the host.
-- `code.py`: relay Host CDC bytes to Jetson UART when idle, forward `FEATURE_1` summarize requests to Jetson, buffer streamed Jetson responses, and handle custom Raw HID traffic.
-- `jetson_transport.py`: transport-only UART helper for summarize requests and streamed Jetson responses.
+- `code.py`: relay Host CDC bytes to Jetson UART, forward `FEATURE_1` summarize requests to Jetson, buffer streamed Jetson responses, and handle custom Raw HID traffic.
+- `jetson_transport.py`: transport-only UART helper for framed summarize requests and streamed Jetson responses.
 - `upload_protocol.py`: V2 upload state machine shared between tests and the device runtime.
 - `serial_bridge.py`: CDC relay and `BUTTON_PRESS` packet builder.
 - `usb_config.py`: shared USB constants and the custom HID descriptor.
+- `protocol.py`: CircuitPython-local copy of the shared framed SPARK packet contract.
 
 ## Install CircuitPython on a Raspberry Pi Pico
 
@@ -75,6 +76,7 @@ Manual path if needed:
 2. Copy [`code.py`](C:/SPARK/pico/code.py) to the root of `CIRCUITPY` as `code.py`.
 3. Copy these helper modules to the root of `CIRCUITPY`:
    - [`jetson_transport.py`](C:/SPARK/pico/jetson_transport.py)
+   - [`protocol.py`](C:/SPARK/pico/protocol.py)
    - [`upload_protocol.py`](C:/SPARK/pico/upload_protocol.py)
    - [`serial_bridge.py`](C:/SPARK/pico/serial_bridge.py)
    - [`usb_config.py`](C:/SPARK/pico/usb_config.py)
@@ -96,5 +98,7 @@ The active firmware contract is V2 upload-only:
 - the host app shows released text locally after the Pico acknowledges the upload
 - `FEATURE_1` forwards a structured summarize request to Jetson over UART and buffers the streamed Jetson response for host polling
 - `Summarize Window` is now verified as a Jetson-backed streamed path
+- large Jetson summarize responses must be split across multiple framed UART packets; the Jetson bridge in `jetson/pico_llm_bridge.py` now does that explicitly for the real board
+- the current hardware-verified deployment flow is: copy the repo `jetson/` folder into the Jetson `demo/pico_bridge` directory, then deploy this `pico/` folder to `CIRCUITPY`
 
 Legacy `0xA0` / `0xA1` / `0xB0` keyboard-trigger/status reports are not part of the current CircuitPython firmware.

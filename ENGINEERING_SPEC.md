@@ -24,9 +24,9 @@
 
 SPARK is a distributed assistive input system composed of three physically distinct compute nodes:
 
-- Host PC: captures active-window context, stores local host history, uploads text to the Pico, and renders the desktop UI.
+- Host PC: captures active-window context, keeps recent context in memory, uploads text to the Pico, and renders the desktop UI.
 - Pico Hub: a single RP2040 running CircuitPython, exposing USB CDC data and custom Raw HID on one device.
-- Jetson Brain: receives the serial stream, parses packets, stores session state, and handles downstream context processing.
+- Jetson Brain: owns the UART, persists context state, and handles downstream summarize requests through a llama.cpp server.
 
 The active host-facing contract is:
 
@@ -40,19 +40,17 @@ Legacy `spark_app.py` and `host_pc/hid/keyboard_hid.py` remain in the repo for r
 ### 1.1 Data Paths
 
 - Host -> Pico over USB CDC data:
-  - window context packets (`WINDOW_NEW`, `WINDOW_UPDATE`)
+  - framed context packets (`CONTEXT_NEW`, `CONTEXT_UPDATE`)
+  - optional framed summarize packets for direct path debugging
 - Host -> Pico over custom Raw HID:
   - capability query
   - upload begin/chunk/commit/abort
   - ping
   - response-info / response-chunk reads
-- Pico -> Jetson over UART0 for summarize:
-  - `FEATURE_1` request payload plus `EOT`
-  - Jetson `ACK`
-  - streamed UTF-8 response bytes
-  - final `EOT`
 - Pico -> Jetson over UART0:
-  - relayed host context packets
+  - relayed framed host context packets
+  - framed `SUMMARIZE_REQUEST` packets
+  - framed `SUMMARIZE_CHUNK` / `SUMMARIZE_DONE` / `ERROR` packets
   - locally injected `BUTTON_PRESS` packets
 
 ---
@@ -95,32 +93,34 @@ The first non-empty result is used and tracked with `TextSource`.
 
 On each poll tick:
 
-- if the key changed, send `WINDOW_NEW`
-- if the key is unchanged, send `WINDOW_UPDATE`
+- if the key changed, send `CONTEXT_NEW`
+- if the key is unchanged, send `CONTEXT_UPDATE`
 
 This yields exactly one Jetson session insert per contiguous window visit and repeated updates while the window remains active.
 
 ### 2.4 Serial Payload Layouts
 
-All multi-byte integers are little-endian.
+All structured serial packets use the shared framed contract in `core/protocol.py`:
 
-`WINDOW_NEW (0x01)` payload:
+- frame:
+  - magic bytes `SP`
+  - packet type
+  - little-endian payload length
+  - payload bytes
+  - CRC-8/MAXIM
+- JSON payload packets:
+  - version byte
+  - UTF-8 JSON object
 
-- `uint8 app_name_len`
-- `app_name`
-- `uint8 title_len`
-- `title`
-- `uint16 text_len`
-- `text`
+Current framed packet families:
 
-`WINDOW_UPDATE (0x02)` payload:
-
-- `uint16 text_len`
-- `text`
-
-`BUTTON_PRESS (0x05)` payload:
-
-- `uint8 button_id`
+- `CONTEXT_NEW (0x01)`
+- `CONTEXT_UPDATE (0x02)`
+- `SUMMARIZE_REQUEST (0x03)`
+- `SUMMARIZE_CHUNK (0x04)`
+- `BUTTON_PRESS (0x05)`
+- `SUMMARIZE_DONE (0x06)`
+- `ERROR (0x07)`
 
 ---
 
@@ -141,7 +141,7 @@ The current `Summarize Window` flow is:
 
 - build a structured summarize request from the active window on the host
 - upload that request to the Pico through custom Raw HID with `FEATURE_1`
-- forward the accepted request to Jetson over UART with `EOT` framing
+- forward the accepted request to Jetson over framed UART packets
 - stream the Jetson response back into the Pico response buffer
 - poll that response buffer from the host and render partial updates in `RELEASE OUTPUT`
 
@@ -231,7 +231,7 @@ After a successful upload, the Pico can store a UTF-8 response buffer that the h
 The currently verified device-side behavior is:
 
 - `SUBMIT_TEXT`: Pico stores an echo-form response string
-- `FEATURE_1`: Pico forwards the request to Jetson, buffers streamed response bytes, and marks completion on Jetson `EOT`
+- `FEATURE_1`: Pico forwards the request to Jetson, buffers framed streamed response bytes, and marks completion on `SUMMARIZE_DONE`
 - `PING`: still returns readiness through `STATUS`
 
 `GET_RESPONSE_INFO` also carries response-state flags:
@@ -278,7 +278,7 @@ The Pico is a single CircuitPython device split into:
 - `code.py`
   - initializes UART0 on `GP0`/`GP1` at `115200`
   - scans four buttons on `GP14`-`GP17`
-  - relays host CDC data to Jetson UART when idle
+  - relays host CDC data to Jetson UART
   - forwards `FEATURE_1` summarize requests to Jetson UART
   - buffers streamed Jetson response bytes for host HID polling
   - handles the V2 custom HID upload protocol
@@ -308,12 +308,12 @@ Supporting modules:
 
 The deployed runtime uses a short cooperative loop. Each iteration:
 
-1. relays CDC host packets to UART when no summarize request is active
-2. drains button events from `keypad.Keys` when no summarize request is active
+1. relays any available CDC host bytes to UART in bounded reads
+2. drains button events from `keypad.Keys`
 3. polls the Jetson UART summarize transport
 4. updates the host-readable Raw HID response buffer state
 5. processes the latest custom HID report
-5. sleeps for roughly 2 ms
+6. sleeps for roughly 2 ms
 
 This keeps summarize transport and HID acknowledgements responsive without any keyboard type-back path in the active runtime.
 
@@ -327,8 +327,8 @@ Because all SPARK serial packets are self-framed with magic bytes, payload lengt
 
 `JetsonDB` maintains a single `active_session_id`.
 
-- `WINDOW_NEW` inserts a new session row and sets `active_session_id`
-- `WINDOW_UPDATE` updates the active session text
+- `CONTEXT_NEW` inserts a new rich session row and sets `active_session_id`
+- `CONTEXT_UPDATE` updates the active session text and metadata
 - `BUTTON_PRESS` inserts a button-event row, optionally associated with the active session
 
 ---
@@ -361,15 +361,15 @@ sequenceDiagram
     participant Jetson as "PacketParser"
     participant DB as "JetsonDB"
 
-    Host->>Serial: send_window_new(...)
-    Serial->>Pico: framed WINDOW_NEW packet
+    Host->>Serial: send_context_new(...)
+    Serial->>Pico: framed CONTEXT_NEW packet
     Pico->>Jetson: uart.write(bytes)
-    Jetson->>DB: on_window_new(...)
+    Jetson->>DB: on_context_new(...)
 
-    Host->>Serial: send_window_update(...)
-    Serial->>Pico: framed WINDOW_UPDATE packet
+    Host->>Serial: send_context_update(...)
+    Serial->>Pico: framed CONTEXT_UPDATE packet
     Pico->>Jetson: uart.write(bytes)
-    Jetson->>DB: on_window_update(...)
+    Jetson->>DB: on_context_update(...)
 ```
 
 ### 5.4 HID Sequence: Upload and Acknowledge
@@ -414,7 +414,7 @@ The Pico relay has no end-to-end UART acknowledgement. `uart.write()` is effecti
 
 ### 6.5 No Active Session on Update
 
-If the Jetson receives `WINDOW_UPDATE` before `WINDOW_NEW`, `JetsonDB` should log and ignore the update rather than writing inconsistent state.
+If the Jetson receives `CONTEXT_UPDATE` before `CONTEXT_NEW`, `JetsonDB` should log and ignore the update rather than writing inconsistent state.
 
 ---
 
@@ -432,6 +432,7 @@ Copy the following from the repo onto the board:
 
 - `pico/boot.py` -> `CIRCUITPY/boot.py`
 - `pico/code.py` -> `CIRCUITPY/code.py`
+- `pico/protocol.py`
 - `pico/jetson_transport.py`
 - `pico/upload_protocol.py`
 - `pico/serial_bridge.py`
@@ -448,6 +449,7 @@ Expected results:
 - host sees one custom Raw HID interface on usage page `0xFF60`, usage `0x61`
 - `SparkHIDClient.get_info()` succeeds
 - `FEATURE_1` summarize requests reach Jetson and return buffered streamed text
+- longer Jetson summarize responses are chunked across multiple framed UART packets and still complete on the real board
 
 ### 7.4 Host App Dependencies
 
@@ -477,9 +479,13 @@ python spark_app_v2.py
 
 | OpCode | Name | Direction | Payload |
 |---|---|---|---|
-| `0x01` | `WINDOW_NEW` | Host -> Pico -> Jetson | app/title/text payload |
-| `0x02` | `WINDOW_UPDATE` | Host -> Pico -> Jetson | text payload |
+| `0x01` | `CONTEXT_NEW` | Host -> Pico -> Jetson | versioned JSON context payload |
+| `0x02` | `CONTEXT_UPDATE` | Host -> Pico -> Jetson | versioned JSON context payload |
+| `0x03` | `SUMMARIZE_REQUEST` | Host/Pico -> Jetson | versioned JSON summarize request |
+| `0x04` | `SUMMARIZE_CHUNK` | Jetson -> Pico | versioned JSON summarize response chunk |
 | `0x05` | `BUTTON_PRESS` | Pico -> Jetson | `uint8 button_id` |
+| `0x06` | `SUMMARIZE_DONE` | Jetson -> Pico | versioned JSON completion marker |
+| `0x07` | `ERROR` | Jetson -> Pico | versioned JSON error payload |
 
 ### 8.2 Custom Raw HID Protocol
 

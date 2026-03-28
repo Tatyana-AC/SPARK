@@ -1,9 +1,14 @@
 import unittest
 from unittest import mock
 
-from PyQt6.QtWidgets import QApplication, QTextEdit
-
-import spark_app_v2
+try:
+    from PyQt6.QtWidgets import QApplication, QTextEdit
+except ImportError:  # pragma: no cover - environment-dependent test guard
+    QApplication = None
+    QTextEdit = None
+    spark_app_v2 = None
+else:
+    import spark_app_v2
 
 
 class _DummyHotkeys:
@@ -21,32 +26,11 @@ class _DummySerialSender:
     def close(self):
         return None
 
-
-class _DummyDB:
-    def get_pref(self, key):
-        return None
-
-    def set_pref(self, key, value):
-        return None
-
-    def close(self):
-        return None
+    def is_connected(self):
+        return False
 
 
-class _DummyDBViewer:
-    def __init__(self, db):
-        self._visible = False
-
-    def isVisible(self):
-        return self._visible
-
-    def refresh(self):
-        return None
-
-    def close(self):
-        return None
-
-
+@unittest.skipUnless(QApplication is not None, "PyQt6 is not installed")
 class SparkPanelUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -56,9 +40,7 @@ class SparkPanelUiTests(unittest.TestCase):
         with (
             mock.patch.object(spark_app_v2, "AccessibilityManager", return_value=mock.Mock()),
             mock.patch.object(spark_app_v2, "GlobalHotkeyManager", return_value=_DummyHotkeys()),
-            mock.patch.object(spark_app_v2, "SparkDB", return_value=_DummyDB()),
             mock.patch.object(spark_app_v2, "WindowContextTracker", return_value=mock.Mock()),
-            mock.patch.object(spark_app_v2, "DatabaseViewerWindow", side_effect=lambda db: _DummyDBViewer(db)),
             mock.patch.object(spark_app_v2, "SparkHIDClient", return_value=mock.Mock()),
             mock.patch.object(spark_app_v2, "SerialSender", return_value=_DummySerialSender()),
             mock.patch.object(spark_app_v2, "LiveCaptureFeed", return_value=mock.Mock(lines=["Polling not started..."])),
@@ -96,9 +78,7 @@ class SparkPanelUiTests(unittest.TestCase):
         with (
             mock.patch.object(spark_app_v2, "AccessibilityManager", return_value=manager),
             mock.patch.object(spark_app_v2, "GlobalHotkeyManager", return_value=_DummyHotkeys()),
-            mock.patch.object(spark_app_v2, "SparkDB", return_value=_DummyDB()),
             mock.patch.object(spark_app_v2, "WindowContextTracker", return_value=tracker),
-            mock.patch.object(spark_app_v2, "DatabaseViewerWindow", side_effect=lambda db: _DummyDBViewer(db)),
             mock.patch.object(spark_app_v2, "SparkHIDClient", return_value=hid_client),
             mock.patch.object(spark_app_v2, "SerialSender", return_value=_DummySerialSender()),
             mock.patch.object(spark_app_v2, "LiveCaptureFeed", return_value=mock.Mock(lines=["Polling not started..."])),

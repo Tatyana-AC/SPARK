@@ -1,23 +1,7 @@
-import struct
-
-
-def _crc8(data):
-    crc = 0
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 0x01:
-                crc = (crc >> 1) ^ 0x8C
-            else:
-                crc >>= 1
-    return crc & 0xFF
-
-
-def build_button_press_packet(button_id):
-    payload = struct.pack("<B", button_id)
-    header = struct.pack("<2sBH", b"SP", 0x05, len(payload))
-    body = header + payload
-    return body + struct.pack("<B", _crc8(body))
+try:
+    from core.protocol import build_button_press as build_button_press_packet
+except ImportError:
+    from protocol import build_button_press as build_button_press_packet
 
 
 class SerialBridge:
@@ -26,21 +10,13 @@ class SerialBridge:
         self._uart = uart
 
     def relay_once(self, max_chunk_size=64):
-        total = 0
-
-        if getattr(self._cdc_data, "in_waiting", 0) > 0:
-            chunk = self._cdc_data.read(max_chunk_size)
+        available = getattr(self._cdc_data, "in_waiting", 0)
+        if available > 0:
+            chunk = self._cdc_data.read(min(max_chunk_size, available))
             if chunk:
                 self._uart.write(chunk)
-                total += len(chunk)
-
-        if getattr(self._uart, "in_waiting", 0) > 0:
-            chunk = self._uart.read(max_chunk_size)
-            if chunk:
-                self._cdc_data.write(chunk)
-                total += len(chunk)
-
-        return total
+                return len(chunk)
+        return 0
 
     def inject_button_press(self, button_id):
         packet = build_button_press_packet(button_id)

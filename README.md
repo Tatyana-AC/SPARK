@@ -4,7 +4,7 @@ SPARK is a desktop context-capture app with hardware integration. On the current
 
 - Host app: PyQt desktop UI on macOS/Windows
 - Pico Hub: CircuitPython device exposing custom Raw HID and USB CDC serial relay
-- Jetson receiver: session-aware serial ingest and storage
+- Jetson bridge: durable context storage plus summarize broker for the Pico UART path
 
 The main app entrypoint is `spark_app_v2.py`.
 
@@ -105,6 +105,7 @@ Important: install `hidapi`, not the separate `hid` package.
 - `pico/HARDWARE_SMOKE_TEST.md`: post-deploy Pico verification checklist
 - `ACCESSIBILITY_PERMISSIONS.md`: macOS accessibility setup
 - `documentation_reference.md`: current developer lookup for host behavior and extension points
+- `jetson/`: deployable Jetson bridge bundle intended to be copied into the Jetson-side `demo/pico_bridge` folder
 
 ## Notes
 
@@ -116,7 +117,10 @@ Important: install `hidapi`, not the separate `hid` package.
 - `Release Text` uploads text to the Pico, waits for an acknowledgment, and updates the local `RELEASE OUTPUT` panel. It does not type text back into the currently focused external app.
 - `Summarize Window` now sends a structured active-window request to the Pico over Raw HID. The Pico forwards that request to Jetson over UART, and the host streams the Jetson response into `RELEASE OUTPUT`.
 - Jetson now owns the summarize prompt wrapping and system-prompt behavior for `Summarize Window`.
+- `spark_app_v2.py` no longer uses a host-local SQLite database in the active runtime. Context persistence now lives on Jetson, while host UI position is stored through `QSettings`.
+- The `jetson/` folder in this repo is meant to be copy-pasted into the Jetson bridge directory. The active Jetson-side deployment target is `Z:\demo\pico_bridge`.
 - `Test Context` and `Custom Context` are visible in the SPARK panel for summarize-loop debugging without depending on live accessibility extraction.
 - During manual debugging, make sure older `spark_app_v2.py` processes are closed before launching another copy. Duplicate host app processes can contend for the Pico HID session and surface as `BUSY`, `read error`, or device-response timeouts.
 - If the Pico still enumerates on USB but `Test Context` or other summarize requests hit a Raw HID timeout, do a physical Pico reset before trying software recovery steps. A soft reload may help, but it should not be the first-line recovery path.
-- The top-level `spark.db` file is local runtime state, not project source.
+- On March 28, 2026, the real physical Host HID/CDC -> Pico -> Jetson `/dev/ttyTHS0` path was verified end-to-end with live summarize responses from the Jetson llama.cpp server.
+- The top-level `spark.db` file can still exist from older runs, but it is not part of the active `spark_app_v2.py` runtime anymore.

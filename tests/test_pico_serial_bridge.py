@@ -60,7 +60,7 @@ class SerialBridgeTests(unittest.TestCase):
         self.assertEqual(uart.writes, [b"abcdefgh"])
         self.assertEqual(cdc.in_waiting, 18)
 
-    def test_relay_once_forwards_uart_bytes_back_to_cdc(self):
+    def test_relay_once_does_not_consume_uart_response_bytes(self):
         from pico.serial_bridge import SerialBridge
 
         cdc = FakeCDC()
@@ -69,8 +69,9 @@ class SerialBridgeTests(unittest.TestCase):
 
         written = bridge.relay_once(max_chunk_size=8)
 
-        self.assertEqual(written, 7)
-        self.assertEqual(cdc.writes, [b"summary"])
+        self.assertEqual(written, 0)
+        self.assertEqual(cdc.writes, [])
+        self.assertEqual(uart.in_waiting, 7)
 
     def test_inject_button_press_writes_framed_packet_to_uart(self):
         from pico.serial_bridge import SerialBridge

@@ -44,16 +44,43 @@ print(client.upload(AppCommand.SUBMIT_TEXT, "hello ✓ 世界"))
 
 ## CDC to UART relay
 
-1. Start the Jetson serial receiver.
-2. Start `spark_app_v2.py`.
-3. Change focus between two windows on the host.
-4. Verify the Jetson sees valid `WINDOW_NEW` and `WINDOW_UPDATE` packets and continues parsing them without framing errors.
+1. Copy the repo `jetson/` folder into the Jetson bridge directory, such as `Z:\demo\pico_bridge`.
+2. Start the Jetson bridge on the Jetson:
+
+```bash
+cd /mnt/usb_drive/demo/pico_bridge
+python3 -u pico_llm_bridge.py --port /dev/ttyTHS0 --baud 115200 --db /mnt/usb_drive/demo/pico_bridge/jetson_spark.db --llm-url http://127.0.0.1:8080 --timeout 120
+```
+
+3. Start `spark_app_v2.py`, or send a framed context packet over `host_pc/serial_sender.py`.
+4. Change focus between two windows on the host.
+5. Verify the Jetson sees valid `CONTEXT_NEW` and `CONTEXT_UPDATE` packets and continues parsing them without framing errors.
+6. Verify the Jetson database updates in `/mnt/usb_drive/demo/pico_bridge/jetson_spark.db`.
 
 ## Button injection
 
-1. With the Jetson receiver still running, press each button on `GP14` through `GP17`.
+1. With the Jetson bridge still running, press each button on `GP14` through `GP17`.
 2. Verify one `BUTTON_PRESS (0x05)` packet arrives per physical press.
 3. Verify the button id matches the button index.
+
+## Summarize path
+
+1. With the Jetson bridge still running and the llama.cpp server reachable on the Jetson, run:
+
+```python
+from host_pc.raw_hid import AppCommand, SparkHIDClient
+from host_pc.summarize_stream import build_test_summary_request
+
+client = SparkHIDClient()
+print(client.stream_round_trip_text(AppCommand.FEATURE_1, build_test_summary_request()))
+```
+
+2. Verify:
+   - the Pico accepts the `FEATURE_1` upload
+   - the Jetson receives a framed `SUMMARIZE_REQUEST`
+   - the Jetson sends multiple `SUMMARIZE_CHUNK` packets for longer responses
+   - the host receives incremental response updates over Raw HID
+   - the request completes with a final streamed result instead of timing out
 
 ## App output check
 

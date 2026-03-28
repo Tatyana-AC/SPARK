@@ -1,8 +1,12 @@
 import unittest
 
-from host_pc.hotkeys import get_hotkey_config
+try:
+    from host_pc.hotkeys import get_hotkey_config
+except ImportError:  # pragma: no cover - environment-dependent test guard
+    get_hotkey_config = None
 
 
+@unittest.skipUnless(get_hotkey_config is not None, "PyQt6 is not installed")
 class HotkeyConfigTests(unittest.TestCase):
     def test_macos_hotkeys_remain_unchanged(self):
         config = get_hotkey_config("darwin")
