@@ -40,6 +40,28 @@ class HostRawHidClientTests(unittest.TestCase):
 
         self.assertEqual(received, report)
 
+    def test_read_reopens_after_timeout_and_uses_new_device(self):
+        client = SparkHIDClient()
+        report = bytes([0x7F]) + bytes(REPORT_SIZE - 1)
+        devices = iter(
+            [
+                FakeHidDevice(reads=[[]]),
+                FakeHidDevice(reads=[[RAW_REPORT_ID, *report]]),
+            ]
+        )
+
+        def fake_open():
+            if client._device is None:
+                client._device = next(devices)
+
+        client._open = fake_open
+        client.close = lambda: setattr(client, "_device", None)
+        client.is_connected = lambda: True
+
+        received = client._read()
+
+        self.assertEqual(received, report)
+
     def test_get_info_skips_unrelated_status_before_info_reply(self):
         client = SparkHIDClient()
 

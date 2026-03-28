@@ -1063,7 +1063,16 @@ class SparkPanel(QWidget):
             self._set_status("No active window to summarize", RED)
             return
         try:
-            text = self.manager.get_window_text() or ""
+            summary_info = info
+            if info.pid == os.getpid():
+                snapshot = self.tracker.get_current()
+                if not snapshot or snapshot.window_info.pid == os.getpid():
+                    self._set_status("No previous app context available to summarize", RED)
+                    return
+                summary_info = snapshot.window_info
+                text = snapshot.text or ""
+            else:
+                text = self.manager.get_window_text() or ""
             if not text.strip():
                 self._set_status("No text found in active window", RED)
                 return
@@ -1071,10 +1080,10 @@ class SparkPanel(QWidget):
                 self._set_status("SPARK device not connected", RED)
                 return
 
-            request = build_summary_request(info.app_name, info.title or "", text)
+            request = build_summary_request(summary_info.app_name, summary_info.title or "", text)
             self._start_summary_request(
                 request=request,
-                capture_label=f"[SUMMARY REQUEST] {info.app_name} — {(info.title or '')[:60]}",
+                capture_label=f"[SUMMARY REQUEST] {summary_info.app_name} — {(summary_info.title or '')[:60]}",
                 status_text="Sending summary request to Jetson…",
             )
         except Exception as e:

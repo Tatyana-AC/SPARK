@@ -185,28 +185,65 @@ class SparkHIDClient:
     # ── Low-level I/O ──────────────────────────────────────────
 
     def _write(self, report: bytes) -> None:
-        self._open()
         payload = bytes([RAW_REPORT_ID]) + report
-        written = self._device.write(payload)
-        if written not in (len(payload), len(report)):
+        for attempt in range(2):
+            self._open()
+            try:
+                written = self._device.write(payload)
+            except Exception as exc:
+                can_retry = attempt == 0 and self._device is not None and self.is_connected()
+                self.close()
+                if can_retry:
+                    logger.warning("HID write failed; reopening device and retrying: %s", exc)
+                    continue
+                raise SparkProtocolError(f"HID write failed: {exc}") from exc
+
+            if written in (len(payload), len(report)):
+                return
+
+            can_retry = attempt == 0 and self._device is not None and self.is_connected()
+            self.close()
+            if can_retry:
+                logger.warning(
+                    "Short HID write (%s of %s); reopening device and retrying",
+                    written,
+                    len(payload),
+                )
+                continue
             raise SparkProtocolError(
                 f"Short HID write: wrote {written} of {len(payload)} bytes"
             )
 
     def _read(self, timeout_ms: int = 2000) -> bytes:
-        self._open()
-        data = self._device.read(REPORT_SIZE + 1, timeout_ms)
-        if not data:
-            raise SparkProtocolError("Timed out waiting for device response")
-        report = bytes(data)
-        # Strip leading report-ID byte if present
-        if len(report) == REPORT_SIZE + 1 and report[0] == RAW_REPORT_ID:
-            report = report[1:]
-        if len(report) != REPORT_SIZE:
-            raise SparkProtocolError(
-                f"Unexpected report size: {len(report)} (expected {REPORT_SIZE})"
-            )
-        return report
+        for attempt in range(2):
+            self._open()
+            try:
+                data = self._device.read(REPORT_SIZE + 1, timeout_ms)
+            except Exception as exc:
+                can_retry = attempt == 0 and self._device is not None and self.is_connected()
+                self.close()
+                if can_retry:
+                    logger.warning("HID read failed; reopening device and retrying: %s", exc)
+                    continue
+                raise SparkProtocolError(f"HID read failed: {exc}") from exc
+
+            if not data:
+                can_retry = attempt == 0 and self._device is not None and self.is_connected()
+                self.close()
+                if can_retry:
+                    logger.warning("HID read timed out; reopening device and retrying once")
+                    continue
+                raise SparkProtocolError("Timed out waiting for device response")
+
+            report = bytes(data)
+            # Strip leading report-ID byte if present
+            if len(report) == REPORT_SIZE + 1 and report[0] == RAW_REPORT_ID:
+                report = report[1:]
+            if len(report) != REPORT_SIZE:
+                raise SparkProtocolError(
+                    f"Unexpected report size: {len(report)} (expected {REPORT_SIZE})"
+                )
+            return report
 
     def _next_message_id(self) -> int:
         self._message_id = (self._message_id % 0xFFFF) + 1
