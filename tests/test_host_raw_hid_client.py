@@ -40,6 +40,33 @@ class HostRawHidClientTests(unittest.TestCase):
 
         self.assertEqual(received, report)
 
+    def test_get_info_skips_unrelated_status_before_info_reply(self):
+        client = SparkHIDClient()
+
+        status = bytearray(REPORT_SIZE)
+        status[0] = 0x7F
+
+        info = bytearray(REPORT_SIZE)
+        info[0] = 0x01
+        info[1] = 0x02
+        info[3] = 27
+        info[4] = 0x00
+        info[5] = 0x10
+        info[8] = 0x98
+
+        reads = iter([bytes(status), bytes(info)])
+        writes = []
+        client._write = lambda payload: writes.append(payload)
+        client._read = lambda timeout_ms=2000: next(reads)
+
+        result = client.get_info()
+
+        self.assertEqual(result.protocol_version, 0x0002)
+        self.assertEqual(result.chunk_payload_size, 27)
+        self.assertEqual(result.max_upload_bytes, 4096)
+        self.assertEqual(result.max_chunk_count, 152)
+        self.assertEqual(writes[0][0], 0x01)
+
     def test_upload_inserts_report_gap_after_each_chunk_write(self):
         client = SparkHIDClient()
         writes = []

@@ -14,6 +14,10 @@ class JetsonTransport:
     def response_bytes(self):
         return bytes(self._response)
 
+    @property
+    def response_len(self):
+        return len(self._response)
+
     def start_request(self, payload):
         if self.request_active:
             raise RuntimeError("busy")

@@ -66,6 +66,7 @@ CAPTURE_BORDER = "#14532D"
 ORANGE       = "#e0af68"
 RED          = "#f7768e"
 PURPLE       = "#bb9af7"
+ENABLE_LEGACY_UART_CONTEXT_RELAY = False
 
 
 # ── Stylesheet ────────────────────────────────────────────────
@@ -600,7 +601,8 @@ class SparkPanel(QWidget):
 
         # ── Serial sender (Host → Pico Hub) ──────────────────────
         self.serial_sender = SerialSender()
-        self.serial_sender.connect()   # best-effort; silently skipped if no Pico
+        if ENABLE_LEGACY_UART_CONTEXT_RELAY:
+            self.serial_sender.connect()   # best-effort; silently skipped if no Pico
         self._last_serial_key: str | None = None
 
         self.captured_text: str = ""
@@ -951,17 +953,20 @@ class SparkPanel(QWidget):
             self._push_poll_capture_line(f"[{info.app_name}] {preview}")
             self.tracker.update(info, text, source, tab=tab)
 
-            # ── Serial → Pico Hub ────────────────────────────────
-            current = self.tracker.get_current()
-            if current:
-                key = current.context_key
-                if key != self._last_serial_key:
-                    self._last_serial_key = key
-                    self.serial_sender.send_window_new(
-                        info.app_name, info.title or "", text
-                    )
-                else:
-                    self.serial_sender.send_window_update(text)
+            # Keep the Jetson UART dedicated to summarize traffic on this branch.
+            # The legacy CDC relay packets share the same downstream line and can
+            # corrupt the bridge's EOT-delimited prompt stream.
+            if ENABLE_LEGACY_UART_CONTEXT_RELAY:
+                current = self.tracker.get_current()
+                if current:
+                    key = current.context_key
+                    if key != self._last_serial_key:
+                        self._last_serial_key = key
+                        self.serial_sender.send_window_new(
+                            info.app_name, info.title or "", text
+                        )
+                    else:
+                        self.serial_sender.send_window_update(text)
         else:
             self._push_poll_capture_line(f"[{info.app_name}] (no text extracted)")
 

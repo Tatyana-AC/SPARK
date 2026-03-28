@@ -297,7 +297,7 @@ class SparkHIDClient:
         report = bytearray(REPORT_SIZE)
         report[0] = Command.GET_INFO
         self._write(bytes(report))
-        reply = self._read()
+        reply = self._read_until(lambda response: response[0] == Command.GET_INFO)
 
         if reply[0] != Command.GET_INFO:
             raise SparkProtocolError(

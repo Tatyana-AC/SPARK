@@ -26,6 +26,7 @@ CDC_RELAY_SLICE_BYTES = 64
 
 
 jetson_transport = None
+_last_response_signature = None
 
 
 def _prepare_upload_result(app_command, text):
@@ -119,6 +120,25 @@ def _drain_hid_reports(custom_hid, protocol_handler):
             custom_hid.send_report(reply, RAW_REPORT_ID)
 
 
+def _sync_response_state(protocol_handler, transport):
+    global _last_response_signature
+
+    signature = (
+        transport.response_len,
+        transport.response_complete,
+        transport.request_active,
+    )
+    if signature == _last_response_signature:
+        return
+
+    protocol_handler.update_response_state(
+        transport.response_bytes,
+        complete=transport.response_complete,
+        active=transport.request_active,
+    )
+    _last_response_signature = signature
+
+
 # Allow CircuitPython to restart the runtime automatically when files on
 # CIRCUITPY change. USB setup still lives in boot.py and still needs a reboot.
 supervisor.runtime.autoreload = True
@@ -135,11 +155,7 @@ while True:
         serial_bridge.relay_once(max_chunk_size=CDC_RELAY_SLICE_BYTES)
         _drain_button_events(buttons, serial_bridge)
     jetson_transport.poll(max_chunk_size=CDC_RELAY_SLICE_BYTES)
-    protocol_handler.update_response_state(
-        jetson_transport.response_bytes,
-        complete=jetson_transport.response_complete,
-        active=jetson_transport.request_active,
-    )
+    _sync_response_state(protocol_handler, jetson_transport)
     _drain_hid_reports(custom_hid, protocol_handler)
 
     time.sleep(BUTTON_POLL_SLEEP_S)
