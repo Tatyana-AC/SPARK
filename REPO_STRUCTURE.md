@@ -18,21 +18,33 @@ SPARK/
 |- spark_app.py                    # Older desktop UI path; still wired to keyboard HID manager
 |- host_pc/                        # Host-side runtime package
 |  |- accessibility/               # Cross-platform text capture
+|  |  `- base.py                   # TextSource enum (incl. WEB_CONTENT), shared dataclasses
 |  |- hid/                         # Keyboard Raw HID manager abstraction
 |  |- browser.py                   # Browser tab metadata
 |  |- context.py                   # LLM-friendly host context object
 |  |- db.py                        # Host-side local SQLite store
 |  |- hotkeys.py                   # Global hotkeys
 |  |- live_capture.py              # Live-capture feed dedupe helper
-|  |- raw_hid.py                   # Raw HID upload client for SPARK device
-|  `- serial_sender.py             # CDC serial sender to Pico Hub / Jetson path
+|  |- raw_hid.py                   # Raw HID upload + response-fetch client for SPARK device
+|  |- serial_sender.py             # Bidirectional CDC serial bridge to Pico Hub / Jetson
+|  `- web_content.py               # AppleScript browser text extractor (Docs, Sheets, general)
 |- core/                           # Shared wire protocol builder/parser
 |- jetson/                         # Jetson serial receiver and DB layer
-|- pico/                           # Pico relay reference implementation / firmware spec
+|- pico/                           # Pico firmware and tooling
+|  |- boot.py                      # USB identity + CDC/HID composite setup
+|  |- code.py                      # Active CircuitPython runtime loop (incl. JetsonTransport)
+|  |- lcd_smoke_test.py            # Standalone ILI9341 + button smoke test (copy to CIRCUITPY)
+|  |- deploy_to_pico.py            # Cross-platform deploy helper
+|  `- HARDWARE_SMOKE_TEST.md       # Wiring reference and test checklist
+|- lcd_screen_ui/                  # React UI kit for the 320×240 ILI9341 LCD
+|  |- src/app/                     # Screen components + state machine
+|  `- README.md                    # Hardware specs, layout rules, dev server instructions
 |- tests/                          # Focused unit tests
+|- docs/                           # Handoff and decision records
 |- ENGINEERING_SPEC.md             # Best architecture source of truth
 |- documentation_reference.md      # Older host-app-focused notes; partially outdated
 |- diagram.md                      # Earlier system diagram; partially outdated
+|- pin_layout.png                  # Pico ↔ ILI9341 and button wiring diagram
 |- requirements.txt                # Current Python dependencies
 |- spark.db                        # Host-local runtime state, ignored in git
 `- setup_accessibility_macos.py    # macOS accessibility setup helper
@@ -152,17 +164,34 @@ Files under `host_pc/accessibility/` are still the base of the host app:
   - Small helper extracted from V2 to manage live-capture display lines.
   - Important behavior: dedupes repeated poll entries, but still allows explicit event entries like `[CAPTURED] ...`.
 
+### Web Content Extraction
+
+- `web_content.py`
+  - `WebContentExtractor` — uses AppleScript to inject JavaScript into the active browser tab.
+  - Supported targets: Google Docs (`.kix-lineview-text-block`), Google Sheets (`.waffle td`), general websites (`document.body.innerText`).
+  - Bypasses the AX accessibility tree, which returns almost nothing for browser-rendered content.
+  - `TextSource.WEB_CONTENT` was added to `accessibility/base.py` to tag text sourced this way.
+
 ### Hardware / Device Communication
 
 - `raw_hid.py`
   - Synchronous Raw HID client used by `spark_app_v2.py`.
-  - Talks directly to the SPARK device for:
-    - capability query
-    - upload begin/chunk/commit
-    - text submission
+  - Upload path: `BEGIN_UPLOAD` → chunks → `COMMIT_UPLOAD` (unchanged).
+  - **New in this branch:** response-fetch path:
+    - `GET_RESPONSE_INFO` (0x20) — query whether the Pico/Jetson has a response ready.
+    - `GET_RESPONSE_CHUNK` (0x21) — download a response chunk by index.
+    - `ResponseInfo` dataclass, `get_response_info()`, `fetch_response()`.
+    - `round_trip_text()` — upload + fetch in one call.
+    - `stream_round_trip_text()` — upload then poll for a streaming response with callback.
+  - `_ensure_idle()` aborts a stale upload session on the device before each new upload.
+  - `_read_until(predicate)` replaces raw `_read()` calls for all status waits.
 - `serial_sender.py`
-  - Sends protocol packets to the Pico CDC serial interface.
-  - Used by V2 to emit `WINDOW_NEW` on context change and `WINDOW_UPDATE` while the same context remains active.
+  - **Expanded** from a one-way packet writer to a bidirectional CDC serial bridge.
+  - Now uses `list_ports` with VID/PID (`0xC4C4 / 0x5350`) for reliable Pico detection.
+  - `send_raw()` — send arbitrary bytes (used by the summarize streaming flow).
+  - Background reader thread with `set_stream_callback()` — notifies caller of incoming bytes.
+  - `ACK` (`0x06`) and `EOT` (`0x04`) byte constants.
+  - Existing `send_window_new()` / `send_window_update()` framed helpers are unchanged.
 - `hid/keyboard_hid.py`
   - Higher-level keyboard HID manager abstraction.
   - Legacy path used by `spark_app.py`.
@@ -236,9 +265,12 @@ There is still no broad test suite, CI config, or packaging source manifest chec
 - `core/protocol.py`
 - `host_pc/raw_hid.py`
 - `host_pc/serial_sender.py`
+- `host_pc/web_content.py`
 - `jetson/receiver.py`
 - `jetson/db_manager.py`
 - `host_pc/live_capture.py`
+- `pico/code.py` (includes JetsonTransport integration and autoreload)
+- `lcd_screen_ui/` (React UI kit, see its own README)
 
 ### Older or only partially current
 
