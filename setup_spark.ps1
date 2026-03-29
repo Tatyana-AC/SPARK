@@ -3,6 +3,7 @@ param(
     [string]$JetsonUser = "sidac",
     [string]$JetsonMountLetter = "Z",
     [string]$JetsonRemotePath = "/mnt/usb_drive",
+    [int]$BridgeSettleSeconds = 10,
     [switch]$SkipSmokeTest,
     [switch]$SkipAppLaunch
 )
@@ -253,6 +254,41 @@ tail -n 20 "$BRIDGE_LOG" || true
     Invoke-JetsonSsh -ScriptText $remoteScript
 }
 
+function Restart-JetsonBridge {
+    param([string]$RemotePath)
+
+    $remoteScript = @'
+set -euo pipefail
+
+BRIDGE_DIR="__REMOTE_PATH__/demo/pico_bridge"
+BRIDGE_LOG="$BRIDGE_DIR/bridge.log"
+
+pkill -f 'pico_llm_bridge.py' || true
+sleep 2
+cd "$BRIDGE_DIR"
+nohup bash -lc "cd '$BRIDGE_DIR' && exec ./run_bridge.sh" >"$BRIDGE_LOG" 2>&1 < /dev/null &
+sleep 4
+echo "bridge restart status:"
+pgrep -af 'pico_llm_bridge.py' || true
+echo "bridge log tail:"
+tail -n 20 "$BRIDGE_LOG" || true
+'@
+    $remoteScript = $remoteScript.Replace("__REMOTE_PATH__", $RemotePath)
+
+    Invoke-JetsonSsh -ScriptText $remoteScript
+}
+
+function Wait-JetsonBridgeSettle {
+    param([int]$Seconds)
+
+    if ($Seconds -le 0) {
+        return
+    }
+
+    Write-Status "Bridge settle" "Waiting $Seconds second(s) for UART path to stabilize"
+    Start-Sleep -Seconds $Seconds
+}
+
 function Invoke-SmokeTest {
     param([string]$PythonExe)
 
@@ -313,6 +349,8 @@ try:
         on_update=on_update,
         timeout_ms=90000,
     )
+    if response.lstrip().startswith("[ERROR]"):
+        raise SparkProtocolError(f"Smoke summarize returned error payload: {response}")
     print(
         json.dumps(
             {
@@ -366,7 +404,8 @@ function Invoke-PicoSoftReload {
 function Run-SmokeTestWithRecovery {
     param(
         [string]$PythonExe,
-        [string]$PicoDrive
+        [string]$PicoDrive,
+        [string]$RemotePath
     )
 
     Write-Section "Smoke Test"
@@ -376,7 +415,8 @@ function Run-SmokeTestWithRecovery {
     }
 
     $shouldRetry = $result.Output -match "status=BUSY" -or
-        $result.Output -match "Timed out waiting for streamed device response"
+        $result.Output -match "Timed out waiting for streamed device response" -or
+        $result.Output -match "Smoke summarize returned error payload"
 
     if (-not $shouldRetry) {
         throw "Smoke test failed with exit code $($result.ExitCode)."
@@ -384,6 +424,9 @@ function Run-SmokeTestWithRecovery {
 
     Write-Status "Smoke recovery" "Detected busy or stuck summarize state; retrying after Pico soft reload"
     Invoke-PicoSoftReload -PicoDrive $PicoDrive
+    Write-Section "Bridge Recovery"
+    Restart-JetsonBridge -RemotePath $RemotePath
+    Wait-JetsonBridgeSettle -Seconds $BridgeSettleSeconds
 
     Write-Section "Smoke Test Retry"
     $retry = Invoke-SmokeTest -PythonExe $PythonExe
@@ -465,10 +508,11 @@ Write-Status "LLM folder" (Test-Path $llamaPath)
 
 Write-Section "Jetson Services"
 Start-JetsonServices -RemotePath $JetsonRemotePath
+Wait-JetsonBridgeSettle -Seconds $BridgeSettleSeconds
 
 if (-not $SkipSmokeTest) {
     Stop-SparkAppProcesses
-    Run-SmokeTestWithRecovery -PythonExe $pythonExe -PicoDrive $picoMount.Drive
+    Run-SmokeTestWithRecovery -PythonExe $pythonExe -PicoDrive $picoMount.Drive -RemotePath $JetsonRemotePath
 }
 
 if (-not $SkipAppLaunch) {

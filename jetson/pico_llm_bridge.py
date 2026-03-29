@@ -138,24 +138,37 @@ def _emit_summary_response(ser, text: str) -> None:
 
 def handle_summarize_request(ser, request_text: str, args) -> None:
     llm_system_prompt, llm_prompt = build_llm_request(request_text, args.system_prompt)
+    logger.info(
+        "Handling summarize request: chars=%d stream=%s llm_url=%s",
+        len(request_text or ""),
+        args.stream,
+        args.llm_url,
+    )
     try:
         if args.stream:
             streamed_any = False
+            chunk_count = 0
             for chunk in query_llm_streaming(args.llm_url, llm_prompt, llm_system_prompt, args.timeout):
                 streamed_any = True
+                chunk_count += 1
                 _emit_summary_response(ser, chunk)
             if not streamed_any:
                 _emit_summary_response(ser, "")
+            logger.info("Summarize request completed with %d streamed chunk(s)", chunk_count)
         else:
             response = query_llm_blocking(args.llm_url, llm_prompt, llm_system_prompt, args.timeout)
             _emit_summary_response(ser, response)
+            logger.info("Summarize request completed with blocking response (%d chars)", len(response))
         time.sleep(INTER_PACKET_DELAY_S)
         ser.write(build_summarize_done())
         ser.flush()
     except Exception as exc:
         logger.exception("LLM request failed")
-        ser.write(build_error(f"[ERROR] {exc}"))
-        ser.flush()
+        try:
+            ser.write(build_error(f"[ERROR] {exc}"))
+            ser.flush()
+        except Exception:
+            logger.exception("Failed to send error packet back to Pico")
 
 
 def open_serial_with_retry(port: str, baud: int, reconnect_delay: float):
@@ -218,16 +231,19 @@ def run_bridge(args) -> int:
             handle_summarize_request(ser, pkt.get("request", ""), args)
             return
 
-    parser = PacketParser(on_packet=handle_packet)
+    parser = None
 
     try:
         while True:
             if ser is None:
                 ser = open_serial_with_retry(args.port, args.baud, args.reconnect_delay)
+                parser = PacketParser(on_packet=handle_packet)
+                logger.info("Packet parser reset after serial reconnect")
 
             try:
                 chunk = ser.read(256)
                 if chunk:
+                    logger.debug("Read %d byte(s) from serial", len(chunk))
                     parser.feed(chunk)
             except Exception as exc:
                 logger.warning(
@@ -241,6 +257,7 @@ def run_bridge(args) -> int:
                 except Exception:
                     pass
                 ser = None
+                parser = None
                 time.sleep(args.reconnect_delay)
     finally:
         if ser is not None:
