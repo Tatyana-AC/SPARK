@@ -102,11 +102,12 @@ class HostRawHidClientTests(unittest.TestCase):
             ]
         )
 
-        client._write = lambda payload: writes.append(payload)
-        client._read_status = lambda expected_cmd, message_id, timeout_ms=2000: next(statuses)
-        client._report_gap = lambda: gap_calls.append("gap")
+        with mock.patch.object(client, "_ensure_idle", return_value=None):
+            client._write = lambda payload: writes.append(payload)
+            client._read_status = lambda expected_cmd, message_id, timeout_ms=2000: next(statuses)
+            client._report_gap = lambda: gap_calls.append("gap")
 
-        result = client.upload(AppCommand.SUBMIT_TEXT, "a" * 28)
+            result = client.upload(AppCommand.SUBMIT_TEXT, "a" * 28)
 
         self.assertTrue(result.ok)
         self.assertEqual(len(writes), 4)
@@ -243,6 +244,33 @@ class HostRawHidClientTests(unittest.TestCase):
 
         self.assertEqual(result, "Partial output")
         self.assertEqual(updates, ["Partial", "Partial output"])
+
+    def test_upload_aborts_stale_active_session_before_begin(self):
+        client = SparkHIDClient()
+        writes = []
+        statuses = iter(
+            [
+                UploadStatus(message_id=7, code=StatusCode.OK, value0=0, value1=0, detail=""),
+                UploadStatus(message_id=1, code=StatusCode.OK, value0=0, value1=0, detail=""),
+                UploadStatus(message_id=1, code=StatusCode.OK, value0=0, value1=0, detail=""),
+            ]
+        )
+
+        with (
+            mock.patch.object(
+                client,
+                "get_info",
+                return_value=mock.Mock(upload_active=True, active_message_id=7),
+            ),
+            mock.patch.object(client, "_write", side_effect=lambda payload: writes.append(payload)),
+            mock.patch.object(client, "_read_status", side_effect=lambda *args, **kwargs: next(statuses)),
+            mock.patch.object(client, "_report_gap", return_value=None),
+        ):
+            result = client.upload(AppCommand.SUBMIT_TEXT, "hi")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(writes[0][0], 0x13)
+        self.assertEqual(writes[1][0], 0x10)
 
 
 if __name__ == "__main__":

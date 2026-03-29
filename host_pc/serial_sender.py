@@ -11,7 +11,8 @@ import glob
 import logging
 import sys
 import threading
-from typing import Optional
+import time
+from typing import Callable, Optional
 
 from serial.tools import list_ports
 
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_BAUD = 115200
 SPARK_VID = 0xC4C4
 SPARK_PID = 0x5350
+ACK = b"\x06"
+EOT = b"\x04"
 
 
 class SerialSender:
@@ -32,6 +35,10 @@ class SerialSender:
         self._baud = baud
         self._serial = None
         self._lock = threading.Lock()
+        self._stream_callback: Optional[Callable[[bytes], None]] = None
+        self._reader_thread: Optional[threading.Thread] = None
+        self._stop_reader = threading.Event()
+        self._paused = threading.Event()
 
     @staticmethod
     def _find_pico_port() -> Optional[str]:
@@ -78,6 +85,7 @@ class SerialSender:
 
         with self._lock:
             if self._serial and self._serial.is_open:
+                self.start_reader()
                 return True
 
             port = self._port or self._find_pico_port()
@@ -91,6 +99,8 @@ class SerialSender:
                 logger.warning("SerialSender: open failed - %s", exc)
                 return False
 
+        self._stop_reader.clear()
+        self.start_reader()
         logger.info("SerialSender: connected on %s @ %s", port, self._baud)
         return True
 
@@ -98,6 +108,7 @@ class SerialSender:
         return self._serial is not None and self._serial.is_open
 
     def close(self) -> None:
+        self._stop_reader.set()
         with self._lock:
             if self._serial:
                 try:
@@ -106,6 +117,9 @@ class SerialSender:
                     pass
                 self._serial = None
         logger.info("SerialSender: closed")
+
+    def set_stream_callback(self, callback: Optional[Callable[[bytes], None]]) -> None:
+        self._stream_callback = callback
 
     def _send(self, packet: bytes) -> bool:
         if not self.is_connected():
@@ -119,6 +133,55 @@ class SerialSender:
                 logger.warning("SerialSender: write error - %s", exc)
                 self._serial = None
                 return False
+
+    def send_raw(self, payload: bytes, append_eot: bool = False) -> bool:
+        if append_eot:
+            payload += EOT
+        return self._send(payload)
+
+    def read_once(self, max_chunk_size: int = 256) -> bytes:
+        if not self.is_connected():
+            return b""
+
+        with self._lock:
+            try:
+                waiting = getattr(self._serial, "in_waiting", 0)
+                if waiting <= 0:
+                    return b""
+                chunk = self._serial.read(min(max_chunk_size, waiting))
+            except Exception as exc:
+                logger.warning("SerialSender: read error - %s", exc)
+                self._serial = None
+                return b""
+
+        filtered = bytes(byte for byte in chunk if byte != ACK[0])
+        if filtered and self._stream_callback:
+            self._stream_callback(filtered)
+        return filtered
+
+    def start_reader(self) -> None:
+        if self._reader_thread and self._reader_thread.is_alive():
+            return
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader_thread.start()
+
+    def _reader_loop(self) -> None:
+        while not self._stop_reader.is_set():
+            if not self.is_connected():
+                time.sleep(0.05)
+                continue
+
+            chunk = self.read_once()
+            if not chunk:
+                time.sleep(0.01)
+
+    def pause(self) -> None:
+        """Suppress context sends while a HID upload is in progress."""
+        self._paused.set()
+
+    def resume(self) -> None:
+        """Re-enable context sends after a HID upload completes."""
+        self._paused.clear()
 
     @staticmethod
     def _snapshot_payload(snapshot) -> dict:
@@ -135,7 +198,11 @@ class SerialSender:
         }
 
     def send_context_new(self, snapshot) -> bool:
+        if self._paused.is_set():
+            return False
         return self._send(build_context_new(self._snapshot_payload(snapshot)))
 
     def send_context_update(self, snapshot) -> bool:
+        if self._paused.is_set():
+            return False
         return self._send(build_context_update(self._snapshot_payload(snapshot)))

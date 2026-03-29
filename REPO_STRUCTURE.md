@@ -25,10 +25,12 @@ SPARK/
 |  |- hotkeys.py                   # Global hotkeys
 |  |- live_capture.py              # Live-capture feed dedupe helper
 |  |- raw_hid.py                   # Raw HID upload client for SPARK device
-|  `- serial_sender.py             # CDC serial sender to Pico Hub / Jetson path
+|  |- serial_sender.py             # CDC serial sender to Pico Hub / Jetson path
+|  `- web_content.py               # Browser JavaScript extraction helper for supported tabs
 |- core/                           # Shared wire protocol builder/parser
 |- jetson/                         # Deployable Jetson bridge bundle and DB layer
 |- pico/                           # Pico relay reference implementation / firmware spec
+|- lcd_screen_ui/                  # React/Vite LCD workflow UI kit for the ILI9341 target
 |- tests/                          # Focused unit tests
 |- ENGINEERING_SPEC.md             # Best architecture source of truth
 |- documentation_reference.md      # Current developer lookup for host behavior and extension points
@@ -150,6 +152,9 @@ Files under `host_pc/accessibility/` are still the base of the host app:
 
 - `browser.py`
   - Browser tab enrichment for supported desktop browsers.
+- `web_content.py`
+  - Browser-page extraction helper for supported Safari/Chrome tabs.
+  - Uses browser JavaScript injection when the accessibility tree does not expose useful page text.
 - `context.py`
   - LLM-ready host context object.
 - `db.py`
@@ -196,7 +201,8 @@ The main V2 app flow is now:
    - read active window info
    - apply privacy guard
    - optionally enrich browser metadata
-   - extract focused-element or full-window text
+   - try browser JavaScript extraction for supported tabs
+   - otherwise extract focused-element or full-window text
    - update in-memory host tracker/history
    - append deduped live-capture output
    - send `CONTEXT_NEW` or `CONTEXT_UPDATE` over serial toward the Pico/Jetson path

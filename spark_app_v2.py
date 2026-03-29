@@ -10,6 +10,7 @@ Hotkeys (global, work from any app):
 
 import os
 import sys
+import signal
 import logging
 import threading
 
@@ -37,6 +38,7 @@ from host_pc.live_capture import LiveCaptureFeed
 from host_pc.snapshot_policy import is_relevant_snapshot
 from host_pc.summarize_stream import build_summary_request, build_test_summary_request
 from host_pc.single_instance import SingleInstanceGuard
+from host_pc.web_content import WebContentExtractor, SUPPORTED_BROWSERS
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s  %(name)s  %(levelname)s  %(message)s")
@@ -452,6 +454,7 @@ class SparkPanel(QWidget):
 
         # ── Backend (same objects as SparkPipeline) ──────────────
         self.manager = AccessibilityManager()
+        self.web_extractor = WebContentExtractor()
         self.hotkeys = GlobalHotkeyManager()
         self.settings = QSettings("SPARK", "SPARK")
         self.tracker = WindowContextTracker()
@@ -468,6 +471,7 @@ class SparkPanel(QWidget):
         self.captured_text: str = ""
         self.processed_text: str = ""
         self.is_polling = False
+        self._release_in_progress = False
         self._capture_feed = LiveCaptureFeed(max_lines=self.MAX_CAPTURE_LINES)
         self._drag_pos: QPoint | None = None
 
@@ -689,31 +693,51 @@ class SparkPanel(QWidget):
 
     def _poll_hid_connection(self):
         """Check USB connection and emit signal if state changed."""
-        connected = self.hid_client.is_connected()
-        if connected != getattr(self, "_hid_connected", None):
+        try:
+            connected = self.hid_client.is_connected()
+        except Exception as exc:
+            logger.error("[HID] is_connected() raised unexpectedly: %s", exc)
+            connected = False
+        previous = getattr(self, "_hid_connected", None)
+        if connected != previous:
+            self._hid_previous_state = previous
             self._hid_connected = connected
             self.hid_signals.device_connected.emit(connected)
 
     def _on_hid_connected(self, connected: bool):
-        """Update the device status dot in the header."""
+        """Update the device status dot in the header and handle mid-session drops."""
         if connected:
             self.device_dot.setText("● DEVICE CONNECTED")
             self.device_dot.setStyleSheet(f"color: {GREEN};")
             self.device_dot.setToolTip("SPARK device connected")
+            logger.info("[HID] Device connected")
+            if self.processed_text:
+                self.btn_release.setEnabled(True)
         else:
             self.device_dot.setText("● DEVICE DISCONNECTED")
             self.device_dot.setStyleSheet("color: #374151;")
             self.device_dot.setToolTip("SPARK device disconnected")
+            self.btn_release.setEnabled(False)
+            if getattr(self, "_hid_previous_state", None) is True:
+                logger.warning("[HID] Device disconnected mid-session - Release disabled")
+                self._set_status("SPARK device disconnected", RED)
+                if self._release_in_progress:
+                    logger.warning("[HID] Release was in progress when device dropped")
+            else:
+                logger.warning("[HID] Device not found")
 
     def _on_release_succeeded(self, text: str):
         self.release_output_lbl.setPlainText(format_release_output(text) if text else "No released text yet…")
         self._set_status("Sent to SPARK — output updated ✓", GREEN)
 
     def _on_release_failed(self, message: str):
+        logger.error("[RELEASE] Failed: %s", message)
         self._set_status(message, RED)
 
     def _on_release_finished(self):
-        self.btn_release.setEnabled(True)
+        self._release_in_progress = False
+        if getattr(self, "_hid_connected", False):
+            self.btn_release.setEnabled(True)
 
     def _set_summary_buttons_enabled(self, enabled: bool):
         self.btn_summarize.setEnabled(enabled)
@@ -782,20 +806,30 @@ class SparkPanel(QWidget):
 
         # Try to get text
         text, source = None, None
-        try:
-            text = self.manager.get_focused_element_text()
-            if text:
-                source = TextSource.FOCUSED_ELEMENT
-        except Exception:
-            pass
+
+        if info.app_name in SUPPORTED_BROWSERS and tab and tab.url:
+            try:
+                text = self.web_extractor.get_page_text(tab.url, info.app_name)
+                if text:
+                    source = TextSource.WEB_CONTENT
+            except Exception as exc:
+                logger.warning("[POLL] web extraction failed for %s: %s", info.app_name, exc)
+
+        if not text:
+            try:
+                text = self.manager.get_focused_element_text()
+                if text:
+                    source = TextSource.FOCUSED_ELEMENT
+            except Exception as exc:
+                logger.warning("[POLL] get_focused_element_text failed for %s: %s", info.app_name, exc)
 
         if not text:
             try:
                 text = self.manager.get_window_text()
                 if text:
                     source = TextSource.FULL_WINDOW
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("[POLL] get_window_text failed for %s: %s", info.app_name, exc)
 
         #Edit 
 
@@ -866,7 +900,8 @@ class SparkPanel(QWidget):
             #   QTimer.singleShot(0, lambda: self._run_ai(text))
             # where _run_ai runs the model in a thread and sets self.processed_text.
             self.processed_text = text
-            self.btn_release.setEnabled(True)
+            if getattr(self, "_hid_connected", False):
+                self.btn_release.setEnabled(True)
             self.btn_release.set_subtitle(f"{len(self.processed_text)} chars ready")
             self._set_status(
                 f"Captured {len(text)} chars - {RELEASE_HOTKEY_LABEL} to send to SPARK", GREEN
@@ -884,21 +919,38 @@ class SparkPanel(QWidget):
             return
         self._set_status("Sending to device…", ORANGE)
         self.btn_release.setEnabled(False)
+        self._release_in_progress = True
         text = self.processed_text
         threading.Thread(target=self._do_release, args=(text,), daemon=True).start()
 
     def _do_release(self, text: str):
         """Upload text to the device (runs in background thread)."""
+        self.serial_sender.pause()
         try:
             status = self.hid_client.upload(AppCommand.SUBMIT_TEXT, text)
             if status.ok:
+                logger.info("[RELEASE] Upload acknowledged by device (%d chars)", len(text))
+                try:
+                    echo = self.hid_client.fetch_response()
+                    if echo:
+                        logger.info("[PICO ECHO] %s", echo)
+                    else:
+                        logger.info("[PICO ECHO] (empty response buffer)")
+                except Exception as exc:
+                    logger.warning("[PICO ECHO] Could not read response: %s", exc)
                 self.hid_signals.device_connected.emit(True)  # reuse signal to confirm alive
                 self.hid_signals.release_succeeded.emit(text)
             else:
+                logger.error("[RELEASE] Device rejected upload: %s", status.code.name)
                 self.hid_signals.release_failed.emit(f"Device error: {status.code.name}")
         except SparkProtocolError as exc:
+            logger.error("[RELEASE] SparkProtocolError: %s", exc)
             self.hid_signals.release_failed.emit(f"HID error: {exc}")
+        except Exception as exc:
+            logger.exception("[RELEASE] Unexpected error during upload")
+            self.hid_signals.release_failed.emit(f"Unexpected error: {exc}")
         finally:
+            self.serial_sender.resume()
             self.hid_signals.release_finished.emit()
 
     def _on_summarize(self):
@@ -1058,12 +1110,23 @@ class SparkPanel(QWidget):
     # ─────────────────────────────────────────────────────────────
 
     def closeEvent(self, event):
-        self.poll_timer.stop()
-        self._blink_timer.stop()
-        self._hid_poll_timer.stop()
-        self.hotkeys.stop()
-        self.hid_client.close()
-        self.serial_sender.close()
+        logger.info("[APP] Shutting down - cleaning up resources")
+        try:
+            self.poll_timer.stop()
+            self._blink_timer.stop()
+            self._hid_poll_timer.stop()
+            self.hotkeys.stop()
+        except Exception as exc:
+            logger.error("[APP] Error stopping timers/hotkeys: %s", exc)
+        try:
+            self.hid_client.close()
+        except Exception as exc:
+            logger.error("[APP] Error closing HID client: %s", exc)
+        try:
+            self.serial_sender.close()
+        except Exception as exc:
+            logger.error("[APP] Error closing serial sender: %s", exc)
+        logger.info("[APP] Shutdown complete")
         super().closeEvent(event)
 
 
@@ -1081,18 +1144,58 @@ def _make_tray_icon() -> QIcon:
     p.end()
     return QIcon(px)
 
+def _install_exception_hooks():
+    """Report uncaught exceptions from any thread to the terminal."""
+    def _excepthook(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        logger.critical("[CRASH] Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+
+    sys.excepthook = _excepthook
+
+    def _thread_excepthook(args):
+        logger.critical(
+            "[CRASH] Uncaught exception in thread '%s'",
+            args.thread.name if args.thread else "unknown",
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    threading.excepthook = _thread_excepthook
+
 def main():
+    _install_exception_hooks()
+
     instance_guard = SingleInstanceGuard.for_app("spark_app_v2")
     if not instance_guard.acquire():
         logger.error("Another spark_app_v2.py instance is already running; refusing to start a duplicate")
         return 1
 
-    app = QApplication(sys.argv)
+    try:
+        app = QApplication(sys.argv)
+    except Exception as exc:
+        logger.critical("[APP] Failed to create QApplication: %s", exc)
+        instance_guard.release()
+        return 1
+
     app.setStyle("Fusion")
     app.setQuitOnLastWindowClosed(False)
     app.aboutToQuit.connect(instance_guard.release)
 
-    panel = SparkPanel()
+    signal.signal(signal.SIGINT, lambda *_: (logger.info("[APP] SIGINT received - quitting"), app.quit()))
+    signal.signal(signal.SIGTERM, lambda *_: (logger.info("[APP] SIGTERM received - quitting"), app.quit()))
+    _sig_timer = QTimer()
+    _sig_timer.setInterval(200)
+    _sig_timer.timeout.connect(lambda: None)
+    _sig_timer.start()
+
+    try:
+        panel = SparkPanel()
+    except Exception as exc:
+        logger.critical("[APP] Failed to initialise SparkPanel: %s", exc, exc_info=True)
+        instance_guard.release()
+        return 1
+
     panel._instance_guard = instance_guard
 
     # ── System tray ──────────────────────────────────────────
@@ -1110,9 +1213,14 @@ def main():
         else None
     )
     tray.show()
+    app.aboutToQuit.connect(panel.close)
 
     panel.show()
-    return app.exec()
+    try:
+        return app.exec()
+    except Exception as exc:
+        logger.critical("[APP] Fatal error in event loop: %s", exc, exc_info=True)
+        return 1
 
 
 if __name__ == '__main__':

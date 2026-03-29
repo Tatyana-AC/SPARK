@@ -405,6 +405,22 @@ class SparkHIDClient:
 
         return bytes(response[:total_len]).decode("utf-8", errors="replace")
 
+    def _ensure_idle(self) -> None:
+        """
+        If the device is stuck in an active upload session after a timeout,
+        abort it so the next upload can proceed cleanly.
+        """
+        try:
+            info = self.get_info()
+            if info.upload_active and info.active_message_id:
+                logger.warning(
+                    "Device has stale upload session msg=%d - sending ABORT",
+                    info.active_message_id,
+                )
+                self.abort(info.active_message_id)
+        except SparkProtocolError as exc:
+            logger.warning("_ensure_idle failed (device may be in unknown state): %s", exc)
+
     def upload(self, app_command: AppCommand, text: str) -> UploadStatus:
         """
         Upload UTF-8 text to the device.
@@ -412,6 +428,7 @@ class SparkHIDClient:
         Handles BEGIN_UPLOAD → chunks → COMMIT_UPLOAD and returns the final
         status. Raises SparkProtocolError on transport or protocol errors.
         """
+        self._ensure_idle()
         payload    = text.encode("utf-8")
         message_id = self._next_message_id()
         crc32      = zlib.crc32(payload) & 0xFFFFFFFF

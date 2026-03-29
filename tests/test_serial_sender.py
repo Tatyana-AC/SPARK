@@ -8,13 +8,23 @@ from host_pc.accessibility.base import TextSource, WindowContextSnapshot, Window
 
 
 class FakeSerialPort:
-    def __init__(self):
+    def __init__(self, reads=None):
         self.is_open = True
         self.writes = []
+        self._reads = list(reads or [])
+        self.in_waiting = len(self._reads[0]) if self._reads else 0
 
     def write(self, data):
         self.writes.append(bytes(data))
         return len(data)
+
+    def read(self, size):
+        if not self._reads:
+            self.in_waiting = 0
+            return b""
+        chunk = bytes(self._reads.pop(0))
+        self.in_waiting = len(self._reads[0]) if self._reads else 0
+        return chunk
 
 
 def make_snapshot(text="hello world"):
@@ -70,6 +80,39 @@ class SerialSenderTests(unittest.TestCase):
         parser.feed(sender._serial.writes[0])
         self.assertEqual(parser_packets[0]["type"], PKT_CONTEXT_UPDATE)
         self.assertEqual(parser_packets[0]["text"], "updated")
+
+    def test_send_raw_appends_eot_when_requested(self):
+        sender = serial_sender.SerialSender(port="COM7")
+        sender._serial = FakeSerialPort()
+
+        ok = sender.send_raw(b"hello", append_eot=True)
+
+        self.assertTrue(ok)
+        self.assertEqual(sender._serial.writes[0], b"hello" + serial_sender.EOT)
+
+    def test_pause_blocks_context_packets_until_resume(self):
+        sender = serial_sender.SerialSender(port="COM7")
+        sender._serial = FakeSerialPort()
+
+        sender.pause()
+        paused_ok = sender.send_context_new(make_snapshot())
+        sender.resume()
+        resumed_ok = sender.send_context_new(make_snapshot())
+
+        self.assertFalse(paused_ok)
+        self.assertTrue(resumed_ok)
+        self.assertEqual(len(sender._serial.writes), 1)
+
+    def test_read_once_filters_ack_and_notifies_callback(self):
+        sender = serial_sender.SerialSender(port="COM7")
+        sender._serial = FakeSerialPort(reads=[b"\x06hello"])
+        updates = []
+        sender.set_stream_callback(updates.append)
+
+        chunk = sender.read_once()
+
+        self.assertEqual(chunk, b"hello")
+        self.assertEqual(updates, [b"hello"])
 
 
 if __name__ == "__main__":

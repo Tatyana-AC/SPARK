@@ -18,6 +18,7 @@ class TextSource(Enum):
     SELECTED = "selected"
     FOCUSED_ELEMENT = "focused_element"
     FULL_WINDOW = "full_window"
+    WEB_CONTENT = "web_content"
 
 
 @dataclass

@@ -89,6 +89,12 @@ Runtime reload behavior:
 - On Windows, give CircuitPython a few seconds after deployment before probing the new runtime. The board can briefly continue serving the previous code during file-write completion.
 - Changes to `boot.py` still require a full board reboot / reconnect because USB configuration is established during boot.
 
+Separate display bring-up:
+
+- [`lcd_smoke_test.py`](C:/SPARK/pico/lcd_smoke_test.py) is a standalone ILI9341 + button smoke test for the 320x240 LCD workflow UI.
+- Use it when validating wiring before integrating the full runtime loop.
+- It is intentionally separate from `deploy_to_pico.py` and should be copied manually when needed.
+
 The active firmware contract is V2 upload-only:
 
 - supported custom HID commands: `GET_INFO`, `GET_RESPONSE_INFO`, `GET_RESPONSE_CHUNK`, `BEGIN_UPLOAD`, `UPLOAD_CHUNK`, `COMMIT_UPLOAD`, `ABORT_UPLOAD`, `STATUS`

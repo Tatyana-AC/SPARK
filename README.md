@@ -101,6 +101,7 @@ Important: install `hidapi`, not the separate `hid` package.
 - `REPO_STRUCTURE.md`: codebase map and ownership notes
 - `diagram.md`: high-level three-node system diagram for the current architecture
 - `docs/BRANCH_HANDOFF_2026-03-24.md`: summary of branch changes since Tatyana's last handoff
+- `docs/BRANCH_HANDOFF_2026-03-29.md`: follow-up handoff covering the LCD UI kit, browser extraction, and smoke-test additions
 - `pico/README.md`: Pico firmware notes and bring-up
 - `pico/HARDWARE_SMOKE_TEST.md`: post-deploy Pico verification checklist
 - `ACCESSIBILITY_PERMISSIONS.md`: macOS accessibility setup
@@ -111,11 +112,14 @@ Important: install `hidapi`, not the separate `hid` package.
 
 - `spark_app_v2.py` is the active app path.
 - `spark_app.py` is an older UI path and should be treated as secondary.
+- `lcd_screen_ui/` is a standalone React/Vite UI kit for the 320x240 LCD workflow screens.
 - The current Pico firmware target is CircuitPython.
 - `pico/main.py` is a readable behavioral reference for the Pico role, not the literal deployed `boot.py` / `code.py` pair.
+- `pico/lcd_smoke_test.py` is a separate display/button bring-up script, not part of the default deploy flow.
 - `python pico/deploy_to_pico.py` is the cross-platform helper to push the Pico firmware and `adafruit_hid` onto a mounted `CIRCUITPY` board.
 - `Release Text` uploads text to the Pico, waits for an acknowledgment, and updates the local `RELEASE OUTPUT` panel. It does not type text back into the currently focused external app.
 - `Summarize Window` now sends a structured active-window request to the Pico over Raw HID. The Pico forwards that request to Jetson over UART, and the host streams the Jetson response into `RELEASE OUTPUT`.
+- Browser polling can now use `host_pc/web_content.py` to extract visible text from supported Chrome/Safari tabs when the accessibility tree is sparse.
 - Jetson now owns the summarize prompt wrapping and system-prompt behavior for `Summarize Window`.
 - `spark_app_v2.py` no longer uses a host-local SQLite database in the active runtime. Context persistence now lives on Jetson, while host UI position is stored through `QSettings`.
 - The `jetson/` folder in this repo is meant to be copy-pasted into the Jetson bridge directory. The active Jetson-side deployment target is `Z:\demo\pico_bridge`.
