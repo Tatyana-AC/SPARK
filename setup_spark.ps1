@@ -226,9 +226,61 @@ function Invoke-JetsonSsh {
         $target,
         "bash -s"
     )
-    $ScriptText | & ssh @sshArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "SSH command failed with exit code $LASTEXITCODE."
+
+    $normalizedScript = $ScriptText -replace "`r`n", "`n" -replace "`r", "`n"
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = "ssh"
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+    $startInfo.Arguments = [string]::Join(" ", ($sshArgs | ForEach-Object {
+        if ($_ -match '[\s"]') {
+            '"' + ($_ -replace '"', '\"') + '"'
+        }
+        else {
+            $_
+        }
+    }))
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $exitCode = $null
+
+    try {
+        [void]$process.Start()
+        $process.StandardInput.NewLine = "`n"
+        $process.StandardInput.Write($normalizedScript)
+        if (-not $normalizedScript.EndsWith("`n")) {
+            $process.StandardInput.Write("`n")
+        }
+        $process.StandardInput.Close()
+
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+    }
+    finally {
+        $process.Dispose()
+    }
+
+    if ($stdout) {
+        foreach ($line in $stdout -split "\r?\n") {
+            Write-Host $line
+        }
+    }
+
+    if ($stderr) {
+        foreach ($line in $stderr -split "\r?\n") {
+            Write-Host $line
+        }
+    }
+
+    if ($exitCode -ne 0) {
+        throw "SSH command failed with exit code $exitCode."
     }
 }
 
