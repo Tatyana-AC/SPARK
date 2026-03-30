@@ -3,6 +3,8 @@ param(
     [string]$JetsonUser = "sidac",
     [string]$JetsonMountLetter = "Z",
     [string]$JetsonRemotePath = "/mnt/usb_drive",
+    [int]$JetsonMountCommandTimeoutSeconds = 30,
+    [int]$JetsonSshConnectTimeoutSeconds = 10,
     [int]$BridgeSettleSeconds = 10,
     [switch]$SkipSmokeTest,
     [switch]$SkipAppLaunch
@@ -26,6 +28,47 @@ function Write-Status {
         [string]$Value
     )
     Write-Host ("{0,-24} {1}" -f "${Label}:", $Value)
+}
+
+function Stop-ProcessTree {
+    param([int]$ProcessId)
+
+    $allProcesses = @(Get-CimInstance Win32_Process)
+
+    function Stop-ChildProcesses {
+        param(
+            [int]$ParentId,
+            [object[]]$ProcessTable
+        )
+
+        $children = @($ProcessTable | Where-Object { $_.ParentProcessId -eq $ParentId })
+        foreach ($child in $children) {
+            Stop-ChildProcesses -ParentId $child.ProcessId -ProcessTable $ProcessTable
+            Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    Stop-ChildProcesses -ParentId $ProcessId -ProcessTable $allProcesses
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+}
+
+function Invoke-ProcessWithTimeout {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList,
+        [int]$TimeoutSeconds,
+        [string]$DisplayName
+    )
+
+    $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru -WindowStyle Hidden
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        Stop-ProcessTree -ProcessId $process.Id
+        throw "$DisplayName timed out after $TimeoutSeconds second(s)."
+    }
+
+    if ($process.ExitCode -ne 0) {
+        throw "$DisplayName failed with exit code $($process.ExitCode)."
+    }
 }
 
 function Get-RepoPython {
@@ -98,7 +141,8 @@ function Ensure-JetsonMount {
         [string]$JetsonHostValue,
         [string]$JetsonUserValue,
         [string]$MountLetter,
-        [string]$RemotePath
+        [string]$RemotePath,
+        [int]$MountCommandTimeoutSeconds
     )
 
     $existing = Get-JetsonMount -JetsonHostValue $JetsonHostValue -JetsonUserValue $JetsonUserValue
@@ -133,11 +177,12 @@ function Ensure-JetsonMount {
     $remoteWindowsPath = ($RemotePath -replace "^/", "") -replace "/", "\"
     $prefix = "\sshfs.kr\$JetsonUserValue@$JetsonHostValue\$remoteWindowsPath"
 
-    Write-Status "Jetson mount" "Mapping $driveRoot with SSHFS-Win"
-    & $sshfsWin svc $prefix $driveRoot
-    if ($LASTEXITCODE -ne 0) {
-        throw "SSHFS-Win mount command failed with exit code $LASTEXITCODE."
-    }
+    Write-Status "Jetson mount" "Mapping $driveRoot with SSHFS-Win (timeout ${MountCommandTimeoutSeconds}s)"
+    Invoke-ProcessWithTimeout `
+        -FilePath $sshfsWin `
+        -ArgumentList @("svc", $prefix, $driveRoot) `
+        -TimeoutSeconds $MountCommandTimeoutSeconds `
+        -DisplayName "SSHFS-Win mount command"
 
     for ($attempt = 1; $attempt -le 20; $attempt++) {
         Start-Sleep -Seconds 1
@@ -155,10 +200,30 @@ function Invoke-JetsonSsh {
     param([string]$ScriptText)
 
     $target = "$JetsonUser@$JetsonHost"
-    $ScriptText | & ssh $target "bash -s"
+    $sshArgs = @(
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=$JetsonSshConnectTimeoutSeconds",
+        $target,
+        "bash -s"
+    )
+    $ScriptText | & ssh @sshArgs
     if ($LASTEXITCODE -ne 0) {
         throw "SSH command failed with exit code $LASTEXITCODE."
     }
+}
+
+function Test-JetsonRemoteDirectory {
+    param([string]$RemoteDirectory)
+
+    $target = "$JetsonUser@$JetsonHost"
+    $sshArgs = @(
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=$JetsonSshConnectTimeoutSeconds",
+        $target,
+        "test -d '$RemoteDirectory'"
+    )
+    & ssh @sshArgs | Out-Null
+    return ($LASTEXITCODE -eq 0)
 }
 
 function Start-JetsonServices {
@@ -497,14 +562,46 @@ Write-Status "Pico drive" $picoMount.Drive
 Write-Status "Pico code.py" (Test-Path $picoMount.CodePath)
 Write-Status "Pico boot.py" (Test-Path $picoMount.BootPath)
 
-$jetsonMount = Ensure-JetsonMount -JetsonHostValue $JetsonHost -JetsonUserValue $JetsonUser -MountLetter $JetsonMountLetter -RemotePath $JetsonRemotePath
-Write-Status "Jetson drive" $jetsonMount.Drive
-Write-Status "Jetson path" $jetsonMount.Provider
+$jetsonMount = $null
+try {
+    $jetsonMount = Ensure-JetsonMount `
+        -JetsonHostValue $JetsonHost `
+        -JetsonUserValue $JetsonUser `
+        -MountLetter $JetsonMountLetter `
+        -RemotePath $JetsonRemotePath `
+        -MountCommandTimeoutSeconds $JetsonMountCommandTimeoutSeconds
+}
+catch {
+    Write-Status "Jetson mount" ("Unavailable: " + $_.Exception.Message + " (continuing in SSH-only mode)")
+}
 
-$bridgePath = Join-Path $jetsonMount.Drive "demo\pico_bridge"
-$llamaPath = Join-Path $jetsonMount.Drive "demo\llama_demo"
-Write-Status "Bridge folder" (Test-Path $bridgePath)
-Write-Status "LLM folder" (Test-Path $llamaPath)
+if ($null -ne $jetsonMount) {
+    Write-Status "Jetson drive" $jetsonMount.Drive
+    Write-Status "Jetson path" $jetsonMount.Provider
+
+    $bridgePath = Join-Path $jetsonMount.Drive "demo\pico_bridge"
+    $llamaPath = Join-Path $jetsonMount.Drive "demo\llama_demo"
+    $bridgeExists = Test-Path $bridgePath
+    $llamaExists = Test-Path $llamaPath
+}
+else {
+    Write-Status "Jetson drive" "(ssh-only)"
+    Write-Status "Jetson path" $JetsonRemotePath
+
+    $bridgeExists = Test-JetsonRemoteDirectory -RemoteDirectory "$JetsonRemotePath/demo/pico_bridge"
+    $llamaExists = Test-JetsonRemoteDirectory -RemoteDirectory "$JetsonRemotePath/demo/llama_demo"
+}
+
+Write-Status "Bridge folder" $bridgeExists
+Write-Status "LLM folder" $llamaExists
+
+if (-not $bridgeExists) {
+    throw "Jetson bridge folder was not found."
+}
+
+if (-not $llamaExists) {
+    throw "Jetson llama folder was not found."
+}
 
 Write-Section "Jetson Services"
 Start-JetsonServices -RemotePath $JetsonRemotePath
