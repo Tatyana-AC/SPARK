@@ -59,7 +59,7 @@ python3 -u pico_llm_bridge.py --port /dev/ttyTHS0 --baud 115200 --db /mnt/usb_dr
 
 ## Button injection
 
-1. With the Jetson bridge still running, press each button on `GP14` through `GP17`.
+1. With the Jetson bridge still running, press each button on `GP2` through `GP5`.
 2. Verify one `BUTTON_PRESS (0x05)` packet arrives per physical press.
 3. Verify the button id matches the button index.
 

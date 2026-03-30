@@ -32,6 +32,9 @@ class DeployToPicoTests(unittest.TestCase):
 
             self.assertEqual(deploy_to_pico.firmware_sources(repo_root), expected)
 
+    def test_firmware_bundle_includes_shared_pin_config(self):
+        self.assertIn("pin_config.py", deploy_to_pico.FIRMWARE_FILES)
+
     def test_firmware_sources_copy_code_py_last_for_safe_autoreload(self):
         repo_root = self._workspace_tempdir("deploy-order-sources")
         pico_dir = repo_root / "pico"

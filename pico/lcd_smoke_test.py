@@ -8,8 +8,7 @@ Wiring
   DIN  (MOSI)  → GP19  (SPI0 TX)
   CLK  (SCK)   → GP18  (SPI0 SCK)
   CS           → GP17
-  DC           → GP16  ← YOUR DIAGRAM SAYS GP18, BUT THAT CONFLICTS WITH CLK.
-                          Change this constant if your DC wire is on a different pin.
+  DC           → GP16
   RST          → GP20
   BL           → 3V3   (backlight always on — no code needed)
   PB1          → GP2
@@ -38,14 +37,19 @@ from digitalio import DigitalInOut
 
 import adafruit_ili9341
 
-# ── Pin constants ────────────────────────────────────────────────────────────
-PIN_CLK  = board.GP18
-PIN_MOSI = board.GP19
-PIN_CS   = board.GP17
-PIN_DC   = board.GP16   # ← CHANGE THIS if your DC wire is not on GP16
-PIN_RST  = board.GP20
+try:
+    from pico.pin_config import BUTTON_PIN_NUMBERS, LCD_PIN_NUMBERS
+except ImportError:
+    from pin_config import BUTTON_PIN_NUMBERS, LCD_PIN_NUMBERS
 
-BUTTON_PINS = (board.GP2, board.GP3, board.GP4, board.GP5)  # PB1–PB4
+# ── Pin constants ────────────────────────────────────────────────────────────
+PIN_CLK  = getattr(board, f"GP{LCD_PIN_NUMBERS['clk']}")
+PIN_MOSI = getattr(board, f"GP{LCD_PIN_NUMBERS['mosi']}")
+PIN_CS   = getattr(board, f"GP{LCD_PIN_NUMBERS['cs']}")
+PIN_DC   = getattr(board, f"GP{LCD_PIN_NUMBERS['dc']}")
+PIN_RST  = getattr(board, f"GP{LCD_PIN_NUMBERS['rst']}")
+
+BUTTON_PINS = tuple(getattr(board, f"GP{pin}") for pin in BUTTON_PIN_NUMBERS)  # PB1–PB4
 
 # ── Colours ──────────────────────────────────────────────────────────────────
 BG      = 0x1A1B26

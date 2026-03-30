@@ -23,10 +23,10 @@ Wiring (single Pico Hub)
                     - Custom HID   (GET_INFO/BEGIN_UPLOAD/.../STATUS)
   GP0 (TX) -> Jetson RX   (UART0, 115200 baud)
   GP1 (RX) <- Jetson TX   (reserved, future ACK)
-  GP14 - Button 0  (active-low, internal pull-up)
-  GP15 - Button 1
-  GP16 - Button 2
-  GP17 - Button 3
+  GP2  - Button 0  (active-low, internal pull-up)
+  GP3  - Button 1
+  GP4  - Button 2
+  GP5  - Button 3
 
 This file is reference logic, not the literal deployed CircuitPython
 firmware file set.
@@ -38,11 +38,16 @@ import struct
 import machine
 import utime
 
+try:
+    from pico.pin_config import BUTTON_PIN_NUMBERS
+except ImportError:
+    from pin_config import BUTTON_PIN_NUMBERS
+
 # UART to Jetson Brain
 uart = machine.UART(0, baudrate=115200, tx=machine.Pin(0), rx=machine.Pin(1))
 
 # Physical buttons (active-low, pulled high internally)
-BUTTON_PINS = [14, 15, 16, 17]
+BUTTON_PINS = list(BUTTON_PIN_NUMBERS)
 buttons = [machine.Pin(p, machine.Pin.IN, machine.Pin.PULL_UP) for p in BUTTON_PINS]
 btn_prev = [1] * len(buttons)  # 1 = released
 

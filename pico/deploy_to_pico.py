@@ -14,6 +14,7 @@ from pathlib import Path
 FIRMWARE_FILES = (
     "boot.py",
     "jetson_transport.py",
+    "pin_config.py",
     "protocol.py",
     "upload_protocol.py",
     "serial_bridge.py",

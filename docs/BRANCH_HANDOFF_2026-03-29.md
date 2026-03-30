@@ -60,13 +60,21 @@ before integrating with the full firmware.
 | DIN (MOSI) | GP19 |
 | CLK (SCK) | GP18 |
 | CS | GP17 |
-| DC | GP16 ← **verify against physical wire; diagram had a conflict** |
+| DC | GP16 |
 | RST | GP20 |
 | BL | 3V3 (always on) |
 | PB1 | GP2 |
 | PB2 | GP3 |
 | PB3 | GP4 |
 | PB4 | GP5 |
+| EC11 A | GP10 |
+| EC11 B | GP11 |
+| EC11 Push Button | GP9 |
+| EC11 Common | GND |
+| Slide Switch Position 1 | GP6 |
+| Slide Switch Position 2 | GP7 |
+| Slide Switch Position 3 | GP8 |
+| Slide Switch Common | GND |
 
 **What the test does:**
 - Initializes display via SPI0, `rotation=90` for landscape 320×240
@@ -219,9 +227,11 @@ Reference for the smoke test pin constants in `pico/lcd_smoke_test.py`.
 
 ## Known Notes / Open Items
 
-- **DC pin conflict:** the physical wiring diagram shows DC → GP18, but GP18 is
-  already CLK. The smoke test assumes DC → GP16. Verify the physical wire and
-  update `PIN_DC` in `lcd_smoke_test.py` if needed.
+- **Confirmed LCD/button pinout:** DIN/MOSI → GP19, CLK/SCK → GP18, CS → GP17,
+  DC → GP16, RST → GP20, BL → 3V3, and PB1/PB2/PB3/PB4 → GP2/GP3/GP4/GP5.
+- **Confirmed encoder/switch pinout:** EC11 A → GP10, EC11 B → GP11, EC11 push
+  button → GP9, EC11 common → GND, and slide-switch positions 1/2/3 → GP6/GP7/GP8
+  with switch common → GND.
 - **Thumbnail placeholders:** `IdleScreen.tsx` uses `placehold.co` URLs for the
   40×40 cell thumbnails. Replace with real PNGs before deploying to the Jetson.
 - **Smoke test not in deploy script:** `lcd_smoke_test.py` must be manually

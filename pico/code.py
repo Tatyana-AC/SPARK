@@ -9,11 +9,13 @@ import usb_cdc
 import usb_hid
 
 try:
+    from pico.pin_config import BUTTON_PIN_NUMBERS
     from pico.jetson_transport import JetsonTransport
     from pico.serial_bridge import SerialBridge
     from pico.upload_protocol import AppCommand, StatusCode, UploadProtocolHandler
     from pico.usb_config import RAW_REPORT_ID, RAW_USAGE_ID, RAW_USAGE_PAGE
 except ImportError:
+    from pin_config import BUTTON_PIN_NUMBERS
     from jetson_transport import JetsonTransport
     from serial_bridge import SerialBridge
     from upload_protocol import AppCommand, StatusCode, UploadProtocolHandler
@@ -21,7 +23,7 @@ except ImportError:
 
 
 UART_BAUDRATE = 115200
-BUTTON_PINS = (board.GP14, board.GP15, board.GP16, board.GP17)
+BUTTON_PINS = tuple(getattr(board, f"GP{pin}") for pin in BUTTON_PIN_NUMBERS)
 BUTTON_POLL_SLEEP_S = 0.002
 CDC_RELAY_SLICE_BYTES = 64
 

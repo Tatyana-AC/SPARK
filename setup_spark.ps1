@@ -178,18 +178,38 @@ function Ensure-JetsonMount {
     $prefix = "\sshfs.kr\$JetsonUserValue@$JetsonHostValue\$remoteWindowsPath"
 
     Write-Status "Jetson mount" "Mapping $driveRoot with SSHFS-Win (timeout ${MountCommandTimeoutSeconds}s)"
-    Invoke-ProcessWithTimeout `
+    $mountProcess = Start-Process `
         -FilePath $sshfsWin `
         -ArgumentList @("svc", $prefix, $driveRoot) `
-        -TimeoutSeconds $MountCommandTimeoutSeconds `
-        -DisplayName "SSHFS-Win mount command"
+        -PassThru `
+        -WindowStyle Hidden
 
     for ($attempt = 1; $attempt -le 20; $attempt++) {
-        Start-Sleep -Seconds 1
         $mounted = Get-JetsonMount -JetsonHostValue $JetsonHostValue -JetsonUserValue $JetsonUserValue
         if ($null -ne $mounted) {
             Write-Status "Jetson mount" "$($mounted.Drive) mapped to $($mounted.Provider)"
             return $mounted
+        }
+
+        $hasExitedProperty = $mountProcess.PSObject.Properties["HasExited"]
+        if ($null -ne $hasExitedProperty) {
+            $mountProcess.Refresh()
+            if ($mountProcess.HasExited) {
+                if ($mountProcess.ExitCode -ne 0) {
+                    throw "SSHFS-Win mount command failed with exit code $($mountProcess.ExitCode)."
+                }
+                break
+            }
+        }
+
+        Start-Sleep -Seconds 1
+    }
+
+    $hasExitedProperty = $mountProcess.PSObject.Properties["HasExited"]
+    if ($null -ne $hasExitedProperty) {
+        $mountProcess.Refresh()
+        if (-not $mountProcess.HasExited) {
+            Stop-ProcessTree -ProcessId $mountProcess.Id
         }
     }
 
@@ -547,75 +567,81 @@ function Start-SparkApp {
     Write-Status "App status" "spark_app_v2.py launched"
 }
 
-Write-Section "Environment"
-$pythonExe = Get-RepoPython
-Write-Status "Repo root" $RepoRoot
-Write-Status "Python" $pythonExe
-Write-Status "Jetson SSH" "$JetsonUser@$JetsonHost"
+function Invoke-SetupSpark {
+    Write-Section "Environment"
+    $pythonExe = Get-RepoPython
+    Write-Status "Repo root" $RepoRoot
+    Write-Status "Python" $pythonExe
+    Write-Status "Jetson SSH" "$JetsonUser@$JetsonHost"
 
-Write-Section "Drive Detection"
-$picoMount = Get-PicoMount
-if ($null -eq $picoMount) {
-    throw "Could not find a mounted CIRCUITPY drive for the Pico."
+    Write-Section "Drive Detection"
+    $picoMount = Get-PicoMount
+    if ($null -eq $picoMount) {
+        throw "Could not find a mounted CIRCUITPY drive for the Pico."
+    }
+    Write-Status "Pico drive" $picoMount.Drive
+    Write-Status "Pico code.py" (Test-Path $picoMount.CodePath)
+    Write-Status "Pico boot.py" (Test-Path $picoMount.BootPath)
+
+    $jetsonMount = $null
+    try {
+        $jetsonMount = Ensure-JetsonMount `
+            -JetsonHostValue $JetsonHost `
+            -JetsonUserValue $JetsonUser `
+            -MountLetter $JetsonMountLetter `
+            -RemotePath $JetsonRemotePath `
+            -MountCommandTimeoutSeconds $JetsonMountCommandTimeoutSeconds
+    }
+    catch {
+        Write-Status "Jetson mount" ("Unavailable: " + $_.Exception.Message + " (continuing in SSH-only mode)")
+    }
+
+    if ($null -ne $jetsonMount) {
+        Write-Status "Jetson drive" $jetsonMount.Drive
+        Write-Status "Jetson path" $jetsonMount.Provider
+
+        $bridgePath = Join-Path $jetsonMount.Drive "demo\pico_bridge"
+        $llamaPath = Join-Path $jetsonMount.Drive "demo\llama_demo"
+        $bridgeExists = Test-Path $bridgePath
+        $llamaExists = Test-Path $llamaPath
+    }
+    else {
+        Write-Status "Jetson drive" "(ssh-only)"
+        Write-Status "Jetson path" $JetsonRemotePath
+
+        $bridgeExists = Test-JetsonRemoteDirectory -RemoteDirectory "$JetsonRemotePath/demo/pico_bridge"
+        $llamaExists = Test-JetsonRemoteDirectory -RemoteDirectory "$JetsonRemotePath/demo/llama_demo"
+    }
+
+    Write-Status "Bridge folder" $bridgeExists
+    Write-Status "LLM folder" $llamaExists
+
+    if (-not $bridgeExists) {
+        throw "Jetson bridge folder was not found."
+    }
+
+    if (-not $llamaExists) {
+        throw "Jetson llama folder was not found."
+    }
+
+    Write-Section "Jetson Services"
+    Start-JetsonServices -RemotePath $JetsonRemotePath
+    Wait-JetsonBridgeSettle -Seconds $BridgeSettleSeconds
+
+    if (-not $SkipSmokeTest) {
+        Stop-SparkAppProcesses
+        Run-SmokeTestWithRecovery -PythonExe $pythonExe -PicoDrive $picoMount.Drive -RemotePath $JetsonRemotePath
+    }
+
+    if (-not $SkipAppLaunch) {
+        Write-Section "Launch App"
+        Start-SparkApp -PythonExe $pythonExe
+    }
+
+    Write-Section "Done"
+    Write-Status "Result" "Setup complete"
 }
-Write-Status "Pico drive" $picoMount.Drive
-Write-Status "Pico code.py" (Test-Path $picoMount.CodePath)
-Write-Status "Pico boot.py" (Test-Path $picoMount.BootPath)
 
-$jetsonMount = $null
-try {
-    $jetsonMount = Ensure-JetsonMount `
-        -JetsonHostValue $JetsonHost `
-        -JetsonUserValue $JetsonUser `
-        -MountLetter $JetsonMountLetter `
-        -RemotePath $JetsonRemotePath `
-        -MountCommandTimeoutSeconds $JetsonMountCommandTimeoutSeconds
+if ($MyInvocation.InvocationName -ne ".") {
+    Invoke-SetupSpark
 }
-catch {
-    Write-Status "Jetson mount" ("Unavailable: " + $_.Exception.Message + " (continuing in SSH-only mode)")
-}
-
-if ($null -ne $jetsonMount) {
-    Write-Status "Jetson drive" $jetsonMount.Drive
-    Write-Status "Jetson path" $jetsonMount.Provider
-
-    $bridgePath = Join-Path $jetsonMount.Drive "demo\pico_bridge"
-    $llamaPath = Join-Path $jetsonMount.Drive "demo\llama_demo"
-    $bridgeExists = Test-Path $bridgePath
-    $llamaExists = Test-Path $llamaPath
-}
-else {
-    Write-Status "Jetson drive" "(ssh-only)"
-    Write-Status "Jetson path" $JetsonRemotePath
-
-    $bridgeExists = Test-JetsonRemoteDirectory -RemoteDirectory "$JetsonRemotePath/demo/pico_bridge"
-    $llamaExists = Test-JetsonRemoteDirectory -RemoteDirectory "$JetsonRemotePath/demo/llama_demo"
-}
-
-Write-Status "Bridge folder" $bridgeExists
-Write-Status "LLM folder" $llamaExists
-
-if (-not $bridgeExists) {
-    throw "Jetson bridge folder was not found."
-}
-
-if (-not $llamaExists) {
-    throw "Jetson llama folder was not found."
-}
-
-Write-Section "Jetson Services"
-Start-JetsonServices -RemotePath $JetsonRemotePath
-Wait-JetsonBridgeSettle -Seconds $BridgeSettleSeconds
-
-if (-not $SkipSmokeTest) {
-    Stop-SparkAppProcesses
-    Run-SmokeTestWithRecovery -PythonExe $pythonExe -PicoDrive $picoMount.Drive -RemotePath $JetsonRemotePath
-}
-
-if (-not $SkipAppLaunch) {
-    Write-Section "Launch App"
-    Start-SparkApp -PythonExe $pythonExe
-}
-
-Write-Section "Done"
-Write-Status "Result" "Setup complete"
