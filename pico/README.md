@@ -9,8 +9,9 @@ Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` p
 The current Pico Hub firmware in this folder is split into:
 
 - `boot.py`: configure USB identity (`VID 0xC4C4` / `PID 0x5350`), enable USB CDC data, and expose the custom HID interface used by the host.
-- `code.py`: relay Host CDC bytes to Jetson UART, forward `FEATURE_1` summarize requests to Jetson, buffer streamed Jetson responses, and handle custom Raw HID traffic.
+- `code.py`: relay Host CDC bytes to Jetson UART, keep the LCD idle screen active, forward `FEATURE_1` summarize requests to Jetson, buffer streamed Jetson responses, and handle custom Raw HID traffic.
 - `jetson_transport.py`: transport-only UART helper for framed summarize requests and streamed Jetson responses.
+- `lcd_ui.py`: shared ILI9341 display setup plus the persistent idle-screen UI and button-highlight behavior.
 - `upload_protocol.py`: V2 upload state machine shared between tests and the device runtime.
 - `serial_bridge.py`: CDC relay and `BUTTON_PRESS` packet builder.
 - `usb_config.py`: shared USB constants and the custom HID descriptor.
@@ -60,7 +61,7 @@ That script will:
 
 - detect the mounted `CIRCUITPY` volume on Windows or macOS
 - copy the SPARK firmware files to the root of the board
-- install any firmware support files needed by the current Pico runtime
+- install the runtime libraries needed by the current Pico runtime, including `adafruit_hid`, `adafruit_bus_device`, `adafruit_display_text`, and `adafruit_ili9341.py`
 
 Useful flags:
 
@@ -76,11 +77,17 @@ Manual path if needed:
 2. Copy [`code.py`](C:/SPARK/pico/code.py) to the root of `CIRCUITPY` as `code.py`.
 3. Copy these helper modules to the root of `CIRCUITPY`:
    - [`jetson_transport.py`](C:/SPARK/pico/jetson_transport.py)
+   - [`lcd_ui.py`](C:/SPARK/pico/lcd_ui.py)
    - [`protocol.py`](C:/SPARK/pico/protocol.py)
    - [`upload_protocol.py`](C:/SPARK/pico/upload_protocol.py)
    - [`serial_bridge.py`](C:/SPARK/pico/serial_bridge.py)
    - [`usb_config.py`](C:/SPARK/pico/usb_config.py)
-4. Reboot the Pico so the USB configuration in `boot.py` is applied.
+4. Copy these runtime libraries into `CIRCUITPY/lib/`:
+   - `adafruit_hid/`
+   - `adafruit_bus_device/`
+   - `adafruit_display_text/`
+   - `adafruit_ili9341.py`
+5. Reboot the Pico so the USB configuration in `boot.py` is applied.
 
 Runtime reload behavior:
 
@@ -93,7 +100,7 @@ Separate display bring-up:
 
 - [`lcd_smoke_test.py`](C:/SPARK/pico/lcd_smoke_test.py) is a standalone ILI9341 + button smoke test for the 320x240 LCD workflow UI.
 - Use it when validating wiring before integrating the full runtime loop.
-- It is intentionally separate from `deploy_to_pico.py` and should be copied manually when needed.
+- It now shares the same [`lcd_ui.py`](C:/SPARK/pico/lcd_ui.py) screen builder used by the runtime firmware.
 
 The active firmware contract is V2 upload-only:
 
