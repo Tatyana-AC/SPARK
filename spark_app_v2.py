@@ -449,7 +449,7 @@ class SparkPanel(QWidget):
             Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedWidth(440)
+        self.setFixedWidth(1340)
         self.setStyleSheet(QSS)
 
         # ── Backend (same objects as SparkPipeline) ──────────────
@@ -501,11 +501,11 @@ class SparkPanel(QWidget):
 
         inner = QWidget()
         inner.setObjectName("root")
-        lay = QVBoxLayout(inner)
-        lay.setContentsMargins(22, 20, 22, 22)
-        lay.setSpacing(0)
+        top_lay = QVBoxLayout(inner)
+        top_lay.setContentsMargins(22, 20, 22, 22)
+        top_lay.setSpacing(0)
 
-        # ── Header ───────────────────────────────────────────
+        # ── Header (full width) ──────────────────────────────
         hdr = QHBoxLayout()
 
         title_col = QVBoxLayout()
@@ -530,12 +530,19 @@ class SparkPanel(QWidget):
         close.mousePressEvent = lambda _: self.hide()
         hdr.addWidget(close, alignment=Qt.AlignmentFlag.AlignTop)
 
-        lay.addLayout(hdr)
-        lay.addSpacing(14)
-        lay.addWidget(self._divider())
-        lay.addSpacing(14)
+        top_lay.addLayout(hdr)
+        top_lay.addSpacing(14)
+        top_lay.addWidget(self._divider())
+        top_lay.addSpacing(14)
 
-        # ── Live Context ──────────────────────────────────────
+        # ── Two-column body ──────────────────────────────────
+        columns = QHBoxLayout()
+        columns.setSpacing(20)
+
+        # ── LEFT COLUMN: context cards + status + actions ────
+        left = QVBoxLayout()
+        left.setSpacing(0)
+
         ctx_hdr = QHBoxLayout()
         ctx_lbl = QLabel("LIVE CONTEXT")
         ctx_lbl.setObjectName("section_label")
@@ -549,85 +556,36 @@ class SparkPanel(QWidget):
         self.poll_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.poll_btn.clicked.connect(self._on_toggle_polling)
         ctx_hdr.addWidget(self.poll_btn)
-        lay.addLayout(ctx_hdr)
-        lay.addSpacing(10)
+        left.addLayout(ctx_hdr)
+        left.addSpacing(10)
 
         # 3 context cards (active + 2 history)
         self.ctx_card_active = ContextCard("—", "No window detected", active=True)
         self.ctx_card_prev1  = ContextCard("—", "")
         self.ctx_card_prev2  = ContextCard("—", "")
         for card in (self.ctx_card_active, self.ctx_card_prev1, self.ctx_card_prev2):
-            lay.addWidget(card)
-            lay.addSpacing(6)
+            left.addWidget(card)
+            left.addSpacing(6)
 
-        lay.addSpacing(10)
-        lay.addWidget(self._divider())
-        lay.addSpacing(14)
-
-        # ── Live Capture ──────────────────────────────────────
-        cap_hdr = QHBoxLayout()
-        cap_sec = QLabel("LIVE CAPTURE")
-        cap_sec.setObjectName("section_label")
-        cap_hdr.addWidget(cap_sec)
-        cap_hdr.addStretch()
-
-        self.live_dot = QLabel("● Live")
-        self.live_dot.setObjectName("live_dot")
-        cap_hdr.addWidget(self.live_dot)
-        lay.addLayout(cap_hdr)
-        lay.addSpacing(10)
-
-        cap_frame = QFrame()
-        cap_frame.setObjectName("capture_frame")
-        cap_inner = QVBoxLayout(cap_frame)
-        cap_inner.setContentsMargins(14, 12, 14, 12)
-
-        self.capture_lbl = QLabel("Polling not started…")
-        self.capture_lbl.setObjectName("capture_text")
-        self.capture_lbl.setWordWrap(True)
-        self.capture_lbl.setMinimumHeight(60)
-        cap_inner.addWidget(self.capture_lbl)
-        lay.addWidget(cap_frame)
-        lay.addSpacing(10)
-
-        out_hdr = QHBoxLayout()
-        out_sec = QLabel("RELEASE OUTPUT")
-        out_sec.setObjectName("section_label")
-        out_hdr.addWidget(out_sec)
-        out_hdr.addStretch()
-        lay.addLayout(out_hdr)
-        lay.addSpacing(10)
-
-        out_frame = QFrame()
-        out_frame.setObjectName("capture_frame")
-        out_inner = QVBoxLayout(out_frame)
-        out_inner.setContentsMargins(14, 12, 14, 12)
-
-        self.release_output_lbl = QTextEdit("No released text yet…")
-        self.release_output_lbl.setObjectName("release_output_text")
-        self.release_output_lbl.setReadOnly(True)
-        self.release_output_lbl.setFrameStyle(QFrame.Shape.NoFrame)
-        self.release_output_lbl.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.release_output_lbl.setFixedHeight(120)
-        out_inner.addWidget(self.release_output_lbl)
-        lay.addWidget(out_frame)
-        lay.addSpacing(10)
+        left.addSpacing(10)
+        left.addWidget(self._divider())
+        left.addSpacing(14)
 
         # Status line
         self.status_lbl = QLabel(f"Ready - select text in any app, then {CAPTURE_HOTKEY_LABEL}")
         self.status_lbl.setObjectName("status_label")
         self.status_lbl.setWordWrap(True)
-        lay.addWidget(self.status_lbl)
-        lay.addSpacing(14)
+        left.addWidget(self.status_lbl)
+        left.addSpacing(14)
 
-        lay.addWidget(self._divider())
-        lay.addSpacing(14)
+        left.addWidget(self._divider())
+        left.addSpacing(14)
 
         # ── Suggested Actions ─────────────────────────────────
         act_lbl = QLabel("SUGGESTED ACTIONS")
         act_lbl.setObjectName("section_label")
-        lay.addWidget(act_lbl)
-        lay.addSpacing(10)
+        left.addWidget(act_lbl)
+        left.addSpacing(10)
 
         grid = QGridLayout()
         grid.setSpacing(8)
@@ -654,13 +612,89 @@ class SparkPanel(QWidget):
         grid.addWidget(self.btn_test_context, 1, 1)
         grid.addWidget(self.btn_custom_context, 2, 0)
         grid.addWidget(self.btn_history,  2, 1)
-        lay.addLayout(grid)
+        left.addLayout(grid)
+        left.addStretch()
+
+        # ── RIGHT COLUMN: live capture + release output ──────
+        right = QVBoxLayout()
+        right.setSpacing(0)
+
+        cap_hdr = QHBoxLayout()
+        cap_sec = QLabel("LIVE CAPTURE")
+        cap_sec.setObjectName("section_label")
+        cap_hdr.addWidget(cap_sec)
+        cap_hdr.addStretch()
+
+        self.live_dot = QLabel("● Live")
+        self.live_dot.setObjectName("live_dot")
+        cap_hdr.addWidget(self.live_dot)
+        right.addLayout(cap_hdr)
+        right.addSpacing(10)
+
+        cap_frame = QFrame()
+        cap_frame.setObjectName("capture_frame")
+        cap_inner = QVBoxLayout(cap_frame)
+        cap_inner.setContentsMargins(14, 12, 14, 12)
+
+        self.capture_lbl = QLabel("Polling not started…")
+        self.capture_lbl.setObjectName("capture_text")
+        self.capture_lbl.setWordWrap(True)
+        self.capture_lbl.setMinimumHeight(60)
+        self.capture_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        cap_inner.addWidget(self.capture_lbl)
+        right.addWidget(cap_frame)
+        right.addSpacing(14)
+
+        right.addWidget(self._divider())
+        right.addSpacing(14)
+
+        out_hdr = QHBoxLayout()
+        out_sec = QLabel("RELEASE OUTPUT")
+        out_sec.setObjectName("section_label")
+        out_hdr.addWidget(out_sec)
+        out_hdr.addStretch()
+        right.addLayout(out_hdr)
+        right.addSpacing(10)
+
+        out_frame = QFrame()
+        out_frame.setObjectName("capture_frame")
+        out_inner = QVBoxLayout(out_frame)
+        out_inner.setContentsMargins(14, 12, 14, 12)
+
+        self.release_output_lbl = QTextEdit("No released text yet…")
+        self.release_output_lbl.setObjectName("release_output_text")
+        self.release_output_lbl.setReadOnly(True)
+        self.release_output_lbl.setFrameStyle(QFrame.Shape.NoFrame)
+        self.release_output_lbl.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.release_output_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        out_inner.addWidget(self.release_output_lbl)
+        right.addWidget(out_frame)
+
+        # ── Assemble columns (1:2 ratio) ─────────────────────
+        left_wrapper = QWidget()
+        left_wrapper.setLayout(left)
+        left_wrapper.setFixedWidth(400)
+
+        right_wrapper = QWidget()
+        right_wrapper.setLayout(right)
+
+        columns.addWidget(left_wrapper)
+        columns.addWidget(self._vdivider())
+        columns.addWidget(right_wrapper, stretch=1)
+
+        top_lay.addLayout(columns)
 
         outer.addWidget(inner)
 
     def _divider(self) -> QFrame:
         d = QFrame()
         d.setObjectName("divider")
+        return d
+
+    def _vdivider(self) -> QFrame:
+        d = QFrame()
+        d.setStyleSheet(f"background-color: {SURFACE}; max-width: 1px;")
+        d.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         return d
 
     # ─────────────────────────────────────────────────────────────

@@ -59,6 +59,30 @@ DEFAULT_DB_PATH = "jetson_spark.db"
 MAX_SUMMARIZE_CHARS_PER_PACKET = 64
 INTER_PACKET_DELAY_S = 0.01
 
+SUMMARY_JSON_SCHEMA = {
+    "name": "summary",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "app": {
+                "type": "string",
+                "description": "The active application name",
+            },
+            "activity": {
+                "type": "string",
+                "description": "What the user appears to be doing on screen",
+            },
+            "next_step": {
+                "type": "string",
+                "description": "The most likely immediate next action",
+            },
+        },
+        "required": ["app", "activity", "next_step"],
+        "additionalProperties": False,
+    },
+}
+
 
 def build_llm_request(raw_prompt: str, default_system_prompt: str) -> tuple[str, str]:
     try:
@@ -87,15 +111,25 @@ def build_llm_request(raw_prompt: str, default_system_prompt: str) -> tuple[str,
     return default_system_prompt, raw_prompt
 
 
-def query_llm_streaming(url: str, prompt: str, system_prompt: str, timeout: int):
-    endpoint = f"{url}/v1/chat/completions"
+def _build_payload(prompt: str, system_prompt: str, *, stream: bool, structured: bool) -> dict:
     payload = {
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
-        "stream": True,
+        "stream": stream,
     }
+    if structured:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": SUMMARY_JSON_SCHEMA,
+        }
+    return payload
+
+
+def query_llm_streaming(url: str, prompt: str, system_prompt: str, timeout: int, *, structured: bool = False):
+    endpoint = f"{url}/v1/chat/completions"
+    payload = _build_payload(prompt, system_prompt, stream=True, structured=structured)
     with requests.post(endpoint, json=payload, stream=True, timeout=timeout) as resp:
         resp.raise_for_status()
         for line in resp.iter_lines(decode_unicode=True):
@@ -113,18 +147,33 @@ def query_llm_streaming(url: str, prompt: str, system_prompt: str, timeout: int)
                 continue
 
 
-def query_llm_blocking(url: str, prompt: str, system_prompt: str, timeout: int) -> str:
+def query_llm_blocking(url: str, prompt: str, system_prompt: str, timeout: int, *, structured: bool = False) -> str:
     endpoint = f"{url}/v1/chat/completions"
-    payload = {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-    }
+    payload = _build_payload(prompt, system_prompt, stream=False, structured=structured)
     resp = requests.post(endpoint, json=payload, timeout=timeout)
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
+
+
+def format_structured_summary(raw: str) -> str:
+    """Parse structured JSON from the LLM and format as display text.
+
+    Falls back to the raw string if the JSON is malformed.
+    """
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("Structured response was not valid JSON; using raw text")
+        return raw
+
+    parts: list[str] = []
+    if obj.get("app"):
+        parts.append(obj["app"])
+    if obj.get("activity"):
+        parts.append(obj["activity"])
+    if obj.get("next_step"):
+        parts.append(f"Next: {obj['next_step']}")
+    return " | ".join(parts) if parts else raw
 
 
 def _emit_summary_response(ser, text: str) -> None:
@@ -138,25 +187,49 @@ def _emit_summary_response(ser, text: str) -> None:
 
 def handle_summarize_request(ser, request_text: str, args) -> None:
     llm_system_prompt, llm_prompt = build_llm_request(request_text, args.system_prompt)
+    structured = args.structured
     logger.info(
-        "Handling summarize request: chars=%d stream=%s llm_url=%s",
+        "Handling summarize request: chars=%d stream=%s structured=%s llm_url=%s",
         len(request_text or ""),
         args.stream,
+        structured,
         args.llm_url,
     )
     try:
         if args.stream:
-            streamed_any = False
-            chunk_count = 0
-            for chunk in query_llm_streaming(args.llm_url, llm_prompt, llm_system_prompt, args.timeout):
-                streamed_any = True
-                chunk_count += 1
-                _emit_summary_response(ser, chunk)
-            if not streamed_any:
-                _emit_summary_response(ser, "")
-            logger.info("Summarize request completed with %d streamed chunk(s)", chunk_count)
+            if structured:
+                # Buffer the full streamed response so we can parse as JSON.
+                buf: list[str] = []
+                for chunk in query_llm_streaming(
+                    args.llm_url, llm_prompt, llm_system_prompt, args.timeout, structured=True
+                ):
+                    buf.append(chunk)
+                raw = "".join(buf)
+                formatted = format_structured_summary(raw)
+                logger.info(
+                    "Structured streaming complete (%d raw chars -> %d formatted chars)",
+                    len(raw),
+                    len(formatted),
+                )
+                _emit_summary_response(ser, formatted)
+            else:
+                streamed_any = False
+                chunk_count = 0
+                for chunk in query_llm_streaming(
+                    args.llm_url, llm_prompt, llm_system_prompt, args.timeout
+                ):
+                    streamed_any = True
+                    chunk_count += 1
+                    _emit_summary_response(ser, chunk)
+                if not streamed_any:
+                    _emit_summary_response(ser, "")
+                logger.info("Summarize request completed with %d streamed chunk(s)", chunk_count)
         else:
-            response = query_llm_blocking(args.llm_url, llm_prompt, llm_system_prompt, args.timeout)
+            response = query_llm_blocking(
+                args.llm_url, llm_prompt, llm_system_prompt, args.timeout, structured=structured
+            )
+            if structured:
+                response = format_structured_summary(response)
             _emit_summary_response(ser, response)
             logger.info("Summarize request completed with blocking response (%d chars)", len(response))
         time.sleep(INTER_PACKET_DELAY_S)
@@ -297,6 +370,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--system-prompt",
         default="You are a helpful assistant.",
         help="System prompt sent with every summarize request",
+    )
+    parser.add_argument(
+        "--structured",
+        action="store_true",
+        default=False,
+        help="Enable structured JSON output via response_format (requires llama.cpp grammar support)",
     )
     parser.add_argument(
         "--no-stream",

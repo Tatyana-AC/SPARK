@@ -2,7 +2,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SYSTEM_PROMPT="${SYSTEM_PROMPT:-You summarize the current active application context. Describe what appears to be happening on screen, the main task or content in view, and the most likely immediate next step. Stay concise, concrete, and grounded in the provided context only.}"
+STRUCTURED="${STRUCTURED:-true}"
+if [ "$STRUCTURED" = "true" ]; then
+  SYSTEM_PROMPT="${SYSTEM_PROMPT:-Summarize the current active application context. Respond with JSON containing app (application name), activity (what is happening on screen), and next_step (most likely immediate action). Be concise and grounded in the provided context only.}"
+  STRUCTURED_FLAG="--structured"
+else
+  SYSTEM_PROMPT="${SYSTEM_PROMPT:-You summarize the current active application context. Describe what appears to be happening on screen, the main task or content in view, and the most likely immediate next step. Stay concise, concrete, and grounded in the provided context only.}"
+  STRUCTURED_FLAG=""
+fi
 
 if [ ! -w /dev/ttyTHS0 ]; then
   echo "Setting permissions on /dev/ttyTHS0..."
@@ -15,4 +22,5 @@ exec python3 "$SCRIPT_DIR/pico_llm_bridge.py" \
   --db "$SCRIPT_DIR/jetson_spark.db" \
   --llm-url http://127.0.0.1:8080 \
   --system-prompt "$SYSTEM_PROMPT" \
+  $STRUCTURED_FLAG \
   "$@"
