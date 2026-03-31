@@ -4,6 +4,13 @@ This folder contains the SPARK Pico Hub reference logic for the current CircuitP
 
 Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` pair. [`main.py`](C:/SPARK/pico/main.py) is a readable behavioral reference for the same Pico role, not the literal runtime entrypoint.
 
+Verified button wiring on the current board revision:
+
+- `PB1 -> GP2`
+- `PB2 -> GP4`
+- `PB3 -> GP3`
+- `PB4 -> GP5`
+
 ## Current firmware files
 
 The current Pico Hub firmware in this folder is split into:
@@ -13,7 +20,7 @@ The current Pico Hub firmware in this folder is split into:
 - `jetson_transport.py`: transport-only UART helper for framed summarize requests and streamed Jetson responses.
 - `lcd_ui.py`: shared ILI9341 display setup plus the persistent idle-screen UI and button-highlight behavior.
 - `upload_protocol.py`: V2 upload state machine shared between tests and the device runtime.
-- `serial_bridge.py`: CDC relay and `BUTTON_PRESS` packet builder.
+- `serial_bridge.py`: CDC relay helper for the Host-to-Jetson runtime path.
 - `usb_config.py`: shared USB constants and the custom HID descriptor.
 - `protocol.py`: CircuitPython-local copy of the shared framed SPARK packet contract.
 
@@ -95,6 +102,11 @@ Runtime reload behavior:
 - The deploy helper copies `code.py` last so the runtime restarts after the updated support files are already in place.
 - On Windows, give CircuitPython a few seconds after deployment before probing the new runtime. The board can briefly continue serving the previous code during file-write completion.
 - Changes to `boot.py` still require a full board reboot / reconnect because USB configuration is established during boot.
+
+Physical button behavior in the current runtime:
+
+- `PB1` through `PB4` only update the LCD highlight state locally.
+- They do not send `BUTTON_PRESS` packets to the host app or the Jetson.
 
 Separate display bring-up:
 

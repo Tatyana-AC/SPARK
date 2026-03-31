@@ -8,7 +8,7 @@ class PicoPinConfigTests(unittest.TestCase):
             LCD_PIN_NUMBERS,
         )
 
-        self.assertEqual(BUTTON_PIN_NUMBERS, (2, 3, 4, 5))
+        self.assertEqual(BUTTON_PIN_NUMBERS, (2, 4, 3, 5))
         self.assertEqual(
             LCD_PIN_NUMBERS,
             {

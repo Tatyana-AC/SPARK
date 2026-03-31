@@ -12,8 +12,8 @@ Wiring
   RST          -> GP20
   BL           -> 3V3   (backlight always on - no code needed)
   PB1          -> GP2
-  PB2          -> GP3
-  PB3          -> GP4
+  PB2          -> GP4
+  PB3          -> GP3
   PB4          -> GP5
 
 Required libraries (copy to CIRCUITPY/lib/ before running)

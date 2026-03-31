@@ -85,13 +85,12 @@ def _find_custom_hid_device(usb_hid, raw_usage_page, raw_usage_id):
     raise RuntimeError("SPARK custom HID device not enabled")
 
 
-def _drain_button_events(buttons, serial_bridge, lcd_ui, now):
+def _drain_button_events(buttons, lcd_ui, now):
     while True:
         event = buttons.events.get()
         if event is None:
             return
         if event.pressed:
-            serial_bridge.inject_button_press(event.key_number)
             lcd_ui.handle_press(event.key_number, now=now)
 
 
@@ -187,7 +186,7 @@ def _main(record_step):
     while True:
         now = time.monotonic()
         serial_bridge.relay_once(max_chunk_size=CDC_RELAY_SLICE_BYTES)
-        _drain_button_events(buttons, serial_bridge, lcd_ui, now)
+        _drain_button_events(buttons, lcd_ui, now)
         jetson_transport.poll(max_chunk_size=CDC_RELAY_SLICE_BYTES)
         _sync_response_state(protocol_handler, jetson_transport)
         _drain_hid_reports(custom_hid, protocol_handler, RAW_REPORT_ID)

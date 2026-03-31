@@ -1,7 +1,7 @@
 """
 SPARK Pico Hub - serial relay behavioral reference.
 
-This file documents the relay and button-injection logic that runs on the
+This file documents the relay and local button-feedback logic that runs on the
 single Pico Hub device (RP2040, CircuitPython firmware target,
 VID 0xC4C4 / PID 0x5350).
 The deployed firmware is a CircuitPython `boot.py` + `code.py` pair.
@@ -9,8 +9,8 @@ This file remains a readable Python reference for the expected Pico-side
 behavior and protocol handling.
 
 Role: sit between the Host PC (USB CDC) and the Jetson Brain (UART),
-forwarding all Host context packets transparently while injecting
-BUTTON_PRESS (0x05) packets whenever a physical button is pressed.
+forwarding all Host context packets transparently while keeping
+physical button feedback local to the LCD UI.
 Host uploads are handled separately via the custom Raw HID interface of
 the same CircuitPython device. `SUBMIT_TEXT` uploads are validated and
 acknowledged over Raw HID only. The host app renders released text
@@ -24,8 +24,8 @@ Wiring (single Pico Hub)
   GP0 (TX) -> Jetson RX   (UART0, 115200 baud)
   GP1 (RX) <- Jetson TX   (reserved, future ACK)
   GP2  - Button 0  (active-low, internal pull-up)
-  GP3  - Button 1
-  GP4  - Button 2
+  GP4  - Button 1
+  GP3  - Button 2
   GP5  - Button 3
 
 This file is reference logic, not the literal deployed CircuitPython
