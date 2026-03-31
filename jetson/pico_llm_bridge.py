@@ -16,6 +16,7 @@ import json
 import logging
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -84,27 +85,44 @@ SUMMARY_JSON_SCHEMA = {
 }
 
 
-def build_llm_request(raw_prompt: str, default_system_prompt: str) -> tuple[str, str]:
+def _build_summarize_prompt(app_name: str, window_title: str, window_text: str) -> str:
+    app_name = (app_name or "").strip() or "(unknown app)"
+    window_title = (window_title or "").strip() or "(untitled window)"
+    window_text = (window_text or "").strip()
+    return (
+        "Summarize the user's current active application context.\n"
+        "State what appears to be happening on screen, what content is visible, "
+        "and the most likely immediate next step.\n"
+        "Be concise, concrete, and grounded only in the provided context.\n\n"
+        f"Active application: {app_name}\n"
+        f"Window title: {window_title}\n"
+        "Visible text:\n"
+        f"{window_text}\n"
+    )
+
+
+def build_llm_request(raw_prompt: str, default_system_prompt: str, *, db=None) -> tuple[str, str]:
     try:
         request = json.loads(raw_prompt)
     except json.JSONDecodeError:
         return default_system_prompt, raw_prompt
 
     command = request.get("command")
-    if command == "summarize_window":
-        app_name = (request.get("app_name") or "").strip() or "(unknown app)"
-        window_title = (request.get("window_title") or "").strip() or "(untitled window)"
-        window_text = (request.get("window_text") or "").strip()
 
-        user_prompt = (
-            "Summarize the user's current active application context.\n"
-            "State what appears to be happening on screen, what content is visible, "
-            "and the most likely immediate next step.\n"
-            "Be concise, concrete, and grounded only in the provided context.\n\n"
-            f"Active application: {app_name}\n"
-            f"Window title: {window_title}\n"
-            "Visible text:\n"
-            f"{window_text}\n"
+    if command == "summarize":
+        if db is None:
+            return default_system_prompt, "(no database available)"
+        session = db.get_active_session()
+        if session is None:
+            return default_system_prompt, "(no active session)"
+        user_prompt = _build_summarize_prompt(
+            session["app_name"], session["window_title"], session["text"],
+        )
+        return default_system_prompt, user_prompt
+
+    if command == "summarize_window":
+        user_prompt = _build_summarize_prompt(
+            request.get("app_name"), request.get("window_title"), request.get("window_text"),
         )
         return default_system_prompt, user_prompt
 
@@ -185,8 +203,8 @@ def _emit_summary_response(ser, text: str) -> None:
         time.sleep(INTER_PACKET_DELAY_S)
 
 
-def handle_summarize_request(ser, request_text: str, args) -> None:
-    llm_system_prompt, llm_prompt = build_llm_request(request_text, args.system_prompt)
+def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
+    llm_system_prompt, llm_prompt = build_llm_request(request_text, args.system_prompt, db=db)
     structured = args.structured
     logger.info(
         "Handling summarize request: chars=%d stream=%s structured=%s llm_url=%s",
@@ -299,9 +317,20 @@ def run_bridge(args) -> int:
             return
         if pkt_type == PKT_BUTTON_PRESS:
             db.on_button_press(pkt["button_id"])
+            threading.Thread(
+                target=handle_summarize_request,
+                args=(ser, '{"command": "summarize"}', args),
+                kwargs={"db": db},
+                daemon=True,
+            ).start()
             return
         if pkt_type == PKT_SUMMARIZE_REQUEST:
-            handle_summarize_request(ser, pkt.get("request", ""), args)
+            threading.Thread(
+                target=handle_summarize_request,
+                args=(ser, pkt.get("request", ""), args),
+                kwargs={"db": db},
+                daemon=True,
+            ).start()
             return
 
     parser = None

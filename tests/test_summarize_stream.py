@@ -19,28 +19,21 @@ class SummarizeStreamTests(unittest.TestCase):
         self.assertEqual(request["window_title"], "ChatGPT - OpenAI")
         self.assertIn("The user is reading notes", request["window_text"])
 
-    def test_summary_stream_accumulator_ignores_ack_and_completes_on_eot(self):
-        from host_pc.summarize_stream import SummaryStreamAccumulator
+    def test_build_summarize_command_is_lightweight(self):
+        from host_pc.summarize_stream import build_summarize_command
 
-        accumulator = SummaryStreamAccumulator()
+        payload = build_summarize_command()
+        request = json.loads(payload)
 
-        first = accumulator.feed(b"\x06The user is reviewing")
-        second = accumulator.feed(b" the active app.\x04")
+        self.assertEqual(request["command"], "summarize")
+        self.assertEqual(len(request), 1, "should only contain 'command' key")
 
-        self.assertEqual(first.text, "The user is reviewing")
-        self.assertFalse(first.completed)
-        self.assertEqual(second.text, "The user is reviewing the active app.")
-        self.assertTrue(second.completed)
-
-    def test_build_test_summary_request_returns_fixed_debug_context(self):
+    def test_build_test_summary_request_uses_lightweight_command(self):
         from host_pc.summarize_stream import build_test_summary_request
 
         request = json.loads(build_test_summary_request())
 
-        self.assertEqual(request["command"], "summarize_window")
-        self.assertEqual(request["app_name"], "Cursor")
-        self.assertIn("Weekly planning", request["window_title"])
-        self.assertIn("SPARK host to pico to jetson loop", request["window_text"])
+        self.assertEqual(request["command"], "summarize")
 
 
 if __name__ == "__main__":

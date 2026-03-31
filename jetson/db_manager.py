@@ -191,6 +191,15 @@ class JetsonDB:
         )
         self._conn.commit()
 
+    def get_active_session(self) -> Optional[sqlite3.Row]:
+        """Return the most recently updated session, or None."""
+        if self._active_session_id is None:
+            return None
+        return self._conn.execute(
+            "SELECT * FROM sessions WHERE id = ?",
+            (self._active_session_id,),
+        ).fetchone()
+
     def get_recent_sessions(self, limit: int = 20):
         return self._conn.execute(
             "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?",

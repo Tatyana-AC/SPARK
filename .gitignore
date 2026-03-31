@@ -27,6 +27,7 @@ __pycache__/
 .idea/
 *.swp
 *.swo
+.history/
 
 # Logs
 *.log
