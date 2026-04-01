@@ -392,7 +392,8 @@ class SparkHIDClient:
             chunk_report[2] = (index >> 8) & 0xFF
             self._write(bytes(chunk_report))
             chunk = self._read_until(
-                lambda reply: reply[0] in (Command.GET_RESPONSE_CHUNK, Command.STATUS)
+                lambda reply: reply[0] == Command.STATUS
+                or (reply[0] == Command.GET_RESPONSE_CHUNK and reply[1] == (index & 0xFF))
             )
 
             if chunk[0] == Command.STATUS:

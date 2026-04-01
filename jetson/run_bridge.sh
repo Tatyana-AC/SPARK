@@ -2,7 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-STRUCTURED="${STRUCTURED:-true}"
+# Default to plain-text summarize mode so Jetson can forward partial chunks
+# immediately instead of buffering a full structured JSON response first.
+STRUCTURED="${STRUCTURED:-false}"
 if [ "$STRUCTURED" = "true" ]; then
   SYSTEM_PROMPT="${SYSTEM_PROMPT:-Summarize the current active application context. Respond with JSON containing app (application name), activity (what is happening on screen), and next_step (most likely immediate action). Be concise and grounded in the provided context only.}"
   STRUCTURED_FLAG="--structured"

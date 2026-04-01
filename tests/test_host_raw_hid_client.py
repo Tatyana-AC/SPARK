@@ -194,6 +194,34 @@ class HostRawHidClientTests(unittest.TestCase):
 
         self.assertEqual(response, "hello pico")
 
+    def test_fetch_response_skips_stale_chunk_for_wrong_index(self):
+        client = SparkHIDClient()
+
+        info = bytearray(REPORT_SIZE)
+        info[0] = 0x20
+        info[1] = 40
+        info[5] = 2
+
+        chunk0 = bytearray(REPORT_SIZE)
+        chunk0[0] = 0x21
+        chunk0[1] = 0
+        chunk0[2:29] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ["
+
+        stale_chunk0 = bytearray(chunk0)
+
+        chunk1 = bytearray(REPORT_SIZE)
+        chunk1[0] = 0x21
+        chunk1[1] = 1
+        chunk1[2:15] = b"abcdefghijklm"
+
+        reads = iter([bytes(info), bytes(chunk0), bytes(stale_chunk0), bytes(chunk1)])
+        client._write = lambda payload: None
+        client._read = lambda timeout_ms=2000: next(reads)
+
+        response = client.fetch_response()
+
+        self.assertEqual(response, "ABCDEFGHIJKLMNOPQRSTUVWXYZ[abcdefghijklm")
+
     def test_get_response_info_parses_flags(self):
         client = SparkHIDClient()
         writes = []
