@@ -144,14 +144,14 @@ QFrame#capture_frame {{
 QLabel#capture_text {{
     color: #22C55E;
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-    font-size: 11px;
+    font-size: 18px;
     background: transparent;
     padding: 4px;
 }}
 QTextEdit#release_output_text {{
     color: #22C55E;
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-    font-size: 11px;
+    font-size: 18px;
     background: transparent;
     border: none;
     padding: 4px;
@@ -449,7 +449,7 @@ class SparkPanel(QWidget):
             Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFixedWidth(1340)
+        self.setFixedWidth(1500)
         self.setStyleSheet(QSS)
 
         # ── Backend (same objects as SparkPipeline) ──────────────
@@ -639,9 +639,10 @@ class SparkPanel(QWidget):
         self.capture_lbl = QLabel("Polling not started…")
         self.capture_lbl.setObjectName("capture_text")
         self.capture_lbl.setWordWrap(True)
-        self.capture_lbl.setMinimumHeight(60)
+        self.capture_lbl.setMinimumHeight(120)
         self.capture_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         cap_inner.addWidget(self.capture_lbl)
+        cap_frame.setMinimumHeight(180)
         right.addWidget(cap_frame)
         right.addSpacing(14)
 
@@ -666,14 +667,16 @@ class SparkPanel(QWidget):
         self.release_output_lbl.setReadOnly(True)
         self.release_output_lbl.setFrameStyle(QFrame.Shape.NoFrame)
         self.release_output_lbl.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.release_output_lbl.setMinimumHeight(320)
         self.release_output_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         out_inner.addWidget(self.release_output_lbl)
+        out_frame.setMinimumHeight(380)
         right.addWidget(out_frame)
 
         # ── Assemble columns (1:2 ratio) ─────────────────────
         left_wrapper = QWidget()
         left_wrapper.setLayout(left)
-        left_wrapper.setFixedWidth(400)
+        left_wrapper.setFixedWidth(440)
 
         right_wrapper = QWidget()
         right_wrapper.setLayout(right)
