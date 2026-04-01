@@ -177,7 +177,7 @@ def _main(record_step):
     record_step("buttons ready")
 
     serial_bridge = SerialBridge(usb_cdc.data, uart)
-    jetson_transport = JetsonTransport(uart)
+    jetson_transport = JetsonTransport(uart, max_request_retries=0)
     record_step("transport ready")
 
     lcd_ui = initialize_lcd_ui()
