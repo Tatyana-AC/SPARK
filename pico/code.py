@@ -90,8 +90,6 @@ def _drain_button_events(buttons, lcd_ui, now):
         event = buttons.events.get()
         if event is None:
             return
-        if event.pressed:
-            lcd_ui.handle_press(event.key_number, now=now)
 
 
 def _drain_hid_reports(custom_hid, protocol_handler, raw_report_id):

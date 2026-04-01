@@ -60,7 +60,7 @@ class PicoCodeTests(unittest.TestCase):
                 sys.modules["runtime_runner"] = prior_runtime_runner
         return module
 
-    def test_drain_button_events_updates_lcd_without_uart_injection(self):
+    def test_drain_button_events_drains_press_and_release_without_touching_lcd(self):
         module = self._load_code_module()
         lcd_ui = _FakeLcdUi()
         buttons = _FakeButtons([_FakeEvent(2), _FakeEvent(1, pressed=False)])
@@ -71,7 +71,8 @@ class PicoCodeTests(unittest.TestCase):
             now=123.0,
         )
 
-        self.assertEqual(lcd_ui.presses, [(2, 123.0)])
+        self.assertEqual(lcd_ui.presses, [])
+        self.assertIsNone(buttons.events.get())
 
 
 if __name__ == "__main__":
