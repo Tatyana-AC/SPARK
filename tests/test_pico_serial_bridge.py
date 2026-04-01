@@ -41,6 +41,11 @@ class FakeUART:
         return data
 
 
+class FailingUART(FakeUART):
+    def write(self, data):
+        raise OSError("uart write failed")
+
+
 class SerialBridgeTests(unittest.TestCase):
     def test_build_button_press_packet_matches_shared_protocol(self):
         from pico.serial_bridge import build_button_press_packet
@@ -83,6 +88,15 @@ class SerialBridgeTests(unittest.TestCase):
 
         self.assertEqual(written, len(build_button_press(2)))
         self.assertEqual(uart.writes, [build_button_press(2)])
+
+    def test_inject_button_press_tolerates_uart_write_failure(self):
+        from pico.serial_bridge import SerialBridge
+
+        bridge = SerialBridge(FakeCDC(), FailingUART())
+
+        written = bridge.inject_button_press(2)
+
+        self.assertEqual(written, 0)
 
 
 if __name__ == "__main__":

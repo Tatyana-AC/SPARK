@@ -150,6 +150,10 @@ class SparkHIDClient:
         """Return True if the SPARK Raw HID interface is visible on USB."""
         return bool(self._matching_interfaces())
 
+    def poll_connected(self) -> bool:
+        """Alias for is_connected(), used by the UI poll timer."""
+        return self.is_connected()
+
     def _open(self) -> None:
         """Open the HID device if not already open."""
         try:

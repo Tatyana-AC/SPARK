@@ -117,10 +117,14 @@ class JetsonTransport:
     def _handle_packet(self, pkt):
         pkt_type = pkt["type"]
         if pkt_type == PKT_SUMMARIZE_CHUNK:
+            if not self.request_active:
+                return  # discard stale chunk from a previous request/retry
             self._last_activity_s = self._time_source()
             self._response.extend((pkt.get("text") or "").encode("utf-8"))
             return
         if pkt_type == PKT_SUMMARIZE_DONE:
+            if not self.request_active:
+                return  # discard stale done from a previous request/retry
             self._last_activity_s = self._time_source()
             self.request_active = False
             self.response_complete = True
@@ -128,5 +132,7 @@ class JetsonTransport:
             self._retry_count = 0
             return
         if pkt_type == PKT_ERROR:
+            if not self.request_active:
+                return  # discard stale error from a previous request/retry
             self._last_activity_s = self._time_source()
             self._fail_request(pkt.get("message") or "[ERROR] Jetson bridge error")

@@ -20,5 +20,8 @@ class SerialBridge:
 
     def inject_button_press(self, button_id):
         packet = build_button_press_packet(button_id)
-        self._uart.write(packet)
+        try:
+            self._uart.write(packet)
+        except OSError:
+            return 0
         return len(packet)

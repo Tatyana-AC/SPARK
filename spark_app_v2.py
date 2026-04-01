@@ -36,7 +36,7 @@ from host_pc.release_output import format_release_output
 from host_pc.serial_sender import SerialSender
 from host_pc.live_capture import LiveCaptureFeed
 from host_pc.snapshot_policy import is_relevant_snapshot
-from host_pc.summarize_stream import build_summary_request, build_test_summary_request
+from host_pc.summarize_stream import build_summary_request, build_summarize_command, build_test_summary_request
 from host_pc.single_instance import SingleInstanceGuard
 from host_pc.web_content import WebContentExtractor, SUPPORTED_BROWSERS
 
@@ -727,13 +727,15 @@ class SparkPanel(QWidget):
         self._hid_poll_timer.setInterval(2000)
         self._hid_poll_timer.timeout.connect(self._poll_hid_connection)
         self._hid_poll_timer.start()
+        # Fire initial poll immediately so UI shows correct device state at startup
+        self._poll_hid_connection()
 
     def _poll_hid_connection(self):
         """Check USB connection and emit signal if state changed."""
         try:
-            connected = self.hid_client.is_connected()
+            connected = self.hid_client.poll_connected()
         except Exception as exc:
-            logger.error("[HID] is_connected() raised unexpectedly: %s", exc)
+            logger.error("[HID] poll_connected() raised unexpectedly: %s", exc)
             connected = False
         previous = getattr(self, "_hid_connected", None)
         if connected != previous:
@@ -991,38 +993,16 @@ class SparkPanel(QWidget):
             self.hid_signals.release_finished.emit()
 
     def _on_summarize(self):
-        """Summarize whatever is currently visible in the active window."""
-        info = self.manager.get_active_window_info()
-        if not info:
-            self._set_status("No active window to summarize", RED)
+        """Send lightweight summarize signal — Jetson reads context from its own DB."""
+        if not self.hid_client.is_connected():
+            self._set_status("SPARK device not connected", RED)
             return
-        try:
-            summary_info = info
-            if info.pid == os.getpid():
-                snapshot = self.tracker.get_current()
-                if not snapshot or snapshot.window_info.pid == os.getpid():
-                    self._set_status("No previous app context available to summarize", RED)
-                    return
-                summary_info = snapshot.window_info
-                text = snapshot.text or ""
-            else:
-                text = self.manager.get_window_text() or ""
-            if not text.strip():
-                self._set_status("No text found in active window", RED)
-                return
-            if not self.hid_client.is_connected():
-                self._set_status("SPARK device not connected", RED)
-                return
-
-            request = build_summary_request(summary_info.app_name, summary_info.title or "", text)
-            self._start_summary_request(
-                request=request,
-                capture_label=f"[SUMMARY REQUEST] {summary_info.app_name} — {(summary_info.title or '')[:60]}",
-                status_text="Sending summary request to Jetson…",
-            )
-        except Exception as e:
-            self._set_summary_buttons_enabled(True)
-            self._set_status(f"Summarize failed: {e}", RED)
+        request = build_summarize_command()
+        self._start_summary_request(
+            request=request,
+            capture_label="[SUMMARY REQUEST] Summarize active context",
+            status_text="Sending summarize command to Jetson…",
+        )
 
     def _on_test_context(self):
         request = build_test_summary_request()

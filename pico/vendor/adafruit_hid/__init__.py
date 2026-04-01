@@ -32,7 +32,7 @@ try:
 except ImportError:
     Device = None
 
-__version__ = "6.1.8"
+__version__ = "6.1.9"
 __repo__ = "https://github.com/adafruit/Adafruit_CircuitPython_HID.git"
 
 

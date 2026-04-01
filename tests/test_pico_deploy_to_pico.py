@@ -35,6 +35,12 @@ class DeployToPicoTests(unittest.TestCase):
     def test_firmware_bundle_includes_shared_pin_config(self):
         self.assertIn("pin_config.py", deploy_to_pico.FIRMWARE_FILES)
 
+    def test_firmware_bundle_includes_shared_lcd_ui_module(self):
+        self.assertIn("lcd_ui.py", deploy_to_pico.FIRMWARE_FILES)
+
+    def test_firmware_bundle_includes_runtime_runner_module(self):
+        self.assertIn("runtime_runner.py", deploy_to_pico.FIRMWARE_FILES)
+
     def test_firmware_sources_copy_code_py_last_for_safe_autoreload(self):
         repo_root = self._workspace_tempdir("deploy-order-sources")
         pico_dir = repo_root / "pico"
@@ -132,6 +138,50 @@ class DeployToPicoTests(unittest.TestCase):
             self.assertTrue((target_root / "adafruit_hid" / "keyboard.py").exists())
             self.assertFalse((target_root / "not_needed.py").exists())
 
+    def test_extract_runtime_libraries_from_bundle_copies_lcd_dependencies(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            bundle_zip = temp_path / "bundle.zip"
+            target_root = temp_path / "lib"
+            target_root.mkdir()
+
+            with zipfile.ZipFile(bundle_zip, "w") as archive:
+                archive.writestr(
+                    "adafruit-circuitpython-bundle-py-20260101/lib/adafruit_hid/__init__.py",
+                    "# hid\n",
+                )
+                archive.writestr(
+                    "adafruit-circuitpython-bundle-py-20260101/lib/adafruit_bus_device/__init__.py",
+                    "# bus device\n",
+                )
+                archive.writestr(
+                    "adafruit-circuitpython-bundle-py-20260101/lib/adafruit_display_text/__init__.py",
+                    "# display text\n",
+                )
+                archive.writestr(
+                    "adafruit-circuitpython-bundle-py-20260101/lib/adafruit_ili9341.py",
+                    "# ili9341\n",
+                )
+                archive.writestr(
+                    "adafruit-circuitpython-bundle-py-20260101/lib/not_needed.py",
+                    "# ignore\n",
+                )
+
+            extracted = deploy_to_pico.extract_required_libraries_from_bundle(
+                bundle_zip,
+                target_root,
+                required_paths=deploy_to_pico.RUNTIME_LIBRARY_PATHS,
+            )
+
+            self.assertEqual(
+                {path.name for path in extracted},
+                {"adafruit_bus_device", "adafruit_display_text", "adafruit_hid", "adafruit_ili9341.py"},
+            )
+            self.assertTrue((target_root / "adafruit_bus_device" / "__init__.py").exists())
+            self.assertTrue((target_root / "adafruit_display_text" / "__init__.py").exists())
+            self.assertTrue((target_root / "adafruit_ili9341.py").exists())
+            self.assertFalse((target_root / "not_needed.py").exists())
+
     def test_detect_target_uses_macos_volume(self):
         fake_volume = Path("/Volumes/CIRCUITPY")
         with mock.patch.object(Path, "exists", autospec=True) as exists:
@@ -151,7 +201,18 @@ class DeployToPicoTests(unittest.TestCase):
             release = deploy_to_pico.fetch_latest_bundle_release()
         self.assertEqual(release["assets"][0]["name"], payload["assets"][0]["name"])
 
-    def test_ensure_adafruit_hid_downloads_into_repo_cache_then_copies_to_target(self):
+    def test_runtime_library_paths_include_lcd_support(self):
+        self.assertEqual(
+            deploy_to_pico.RUNTIME_LIBRARY_PATHS,
+            (
+                "adafruit_hid",
+                "adafruit_bus_device",
+                "adafruit_display_text",
+                "adafruit_ili9341.py",
+            ),
+        )
+
+    def test_ensure_runtime_libraries_downloads_into_repo_cache_then_copies_to_target(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             repo = root / "repo"
@@ -169,23 +230,47 @@ class DeployToPicoTests(unittest.TestCase):
                         "adafruit-circuitpython-bundle-py-20260101/lib/adafruit_hid/keyboard.py",
                         "# keyboard\n",
                     )
+                    archive.writestr(
+                        "adafruit-circuitpython-bundle-py-20260101/lib/adafruit_bus_device/__init__.py",
+                        "# bus\n",
+                    )
+                    archive.writestr(
+                        "adafruit-circuitpython-bundle-py-20260101/lib/adafruit_display_text/__init__.py",
+                        "# text\n",
+                    )
+                    archive.writestr(
+                        "adafruit-circuitpython-bundle-py-20260101/lib/adafruit_ili9341.py",
+                        "# lcd\n",
+                    )
                 return destination
 
             with mock.patch.object(deploy_to_pico, "download_bundle_zip", side_effect=fake_download):
-                source_package, target_package, mode = deploy_to_pico.ensure_adafruit_hid(
+                source_paths, copied_paths, mode = deploy_to_pico.ensure_runtime_libraries(
                     target,
                     repo=repo,
                     library_source=None,
                     dry_run=False,
                 )
 
-            cached_package = repo / "pico" / "vendor" / "adafruit_hid"
+            cached_vendor = repo / "pico" / "vendor"
             self.assertEqual(mode, "download")
-            self.assertEqual(source_package, cached_package)
-            self.assertEqual(target_package, target / "lib" / "adafruit_hid")
-            self.assertTrue((cached_package / "__init__.py").exists())
-            self.assertTrue((cached_package / "keyboard.py").exists())
+            self.assertEqual(
+                {path.name for path in source_paths},
+                {"adafruit_bus_device", "adafruit_display_text", "adafruit_hid", "adafruit_ili9341.py"},
+            )
+            self.assertEqual(
+                {path.name for path in copied_paths},
+                {"adafruit_bus_device", "adafruit_display_text", "adafruit_hid", "adafruit_ili9341.py"},
+            )
+            self.assertTrue((cached_vendor / "adafruit_hid" / "__init__.py").exists())
+            self.assertTrue((cached_vendor / "adafruit_hid" / "keyboard.py").exists())
+            self.assertTrue((cached_vendor / "adafruit_bus_device" / "__init__.py").exists())
+            self.assertTrue((cached_vendor / "adafruit_display_text" / "__init__.py").exists())
+            self.assertTrue((cached_vendor / "adafruit_ili9341.py").exists())
             self.assertTrue((target / "lib" / "adafruit_hid" / "__init__.py").exists())
+            self.assertTrue((target / "lib" / "adafruit_bus_device" / "__init__.py").exists())
+            self.assertTrue((target / "lib" / "adafruit_display_text" / "__init__.py").exists())
+            self.assertTrue((target / "lib" / "adafruit_ili9341.py").exists())
 
     def test_runtime_code_enables_circuitpython_autoreload(self):
         code_py = Path(deploy_to_pico.__file__).resolve().with_name("code.py")

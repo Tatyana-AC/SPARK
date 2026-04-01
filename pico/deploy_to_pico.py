@@ -14,13 +14,22 @@ from pathlib import Path
 FIRMWARE_FILES = (
     "boot.py",
     "jetson_transport.py",
+    "lcd_ui.py",
     "pin_config.py",
     "protocol.py",
+    "runtime_runner.py",
     "upload_protocol.py",
     "serial_bridge.py",
     "typeback.py",
     "usb_config.py",
     "code.py",
+)
+
+RUNTIME_LIBRARY_PATHS = (
+    "adafruit_hid",
+    "adafruit_bus_device",
+    "adafruit_display_text",
+    "adafruit_ili9341.py",
 )
 
 GITHUB_LATEST_BUNDLE_API = (
@@ -50,6 +59,11 @@ def cached_adafruit_hid_dir(repo=None):
 
 def cached_bundle_zip_path(repo=None):
     return pico_vendor_dir(repo) / "adafruit-circuitpython-bundle-py.zip"
+
+
+def cached_runtime_library_paths(repo=None):
+    vendor_dir = pico_vendor_dir(repo)
+    return [vendor_dir / relative_path for relative_path in RUNTIME_LIBRARY_PATHS]
 
 
 def firmware_sources(repo=None):
@@ -197,29 +211,53 @@ def download_bundle_zip(destination):
 
 
 def extract_adafruit_hid_from_bundle(bundle_zip_path, target_lib_dir):
+    return extract_required_libraries_from_bundle(
+        bundle_zip_path,
+        target_lib_dir,
+        required_paths=("adafruit_hid",),
+    )[0]
+
+
+def extract_required_libraries_from_bundle(bundle_zip_path, target_lib_dir, required_paths=None):
     target_lib_dir = Path(target_lib_dir)
-    package_root = target_lib_dir / "adafruit_hid"
-    if package_root.exists():
-        shutil.rmtree(package_root)
+    required_paths = tuple(required_paths or RUNTIME_LIBRARY_PATHS)
+    extracted = []
 
     with zipfile.ZipFile(bundle_zip_path) as archive:
-        members = [
-            name
-            for name in archive.namelist()
-            if "/lib/adafruit_hid/" in name and not name.endswith("/")
-        ]
-        if not members:
-            raise DeployError("Downloaded bundle did not contain lib/adafruit_hid")
+        names = archive.namelist()
+        for relative_path in required_paths:
+            destination = target_lib_dir / relative_path
+            _remove_existing_path(destination)
+            _extract_bundle_path(archive, names, relative_path, destination)
+            extracted.append(destination)
 
-        prefix = members[0].split("/lib/adafruit_hid/", 1)[0] + "/lib/adafruit_hid/"
-        for member in members:
-            relative_name = member[len(prefix) :]
-            destination = package_root / relative_name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(member) as source_file, destination.open("wb") as dest_file:
-                shutil.copyfileobj(source_file, dest_file)
+    return extracted
 
-    return package_root
+
+def _extract_bundle_path(archive, names, relative_path, destination):
+    normalized = relative_path.replace("\\", "/")
+    if normalized.endswith(".py"):
+        suffix = f"/lib/{normalized}"
+        matches = [name for name in names if name.endswith(suffix)]
+        if not matches:
+            raise DeployError(f"Downloaded bundle did not contain lib/{normalized}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(matches[0]) as source_file, destination.open("wb") as dest_file:
+            shutil.copyfileobj(source_file, dest_file)
+        return
+
+    marker = f"/lib/{normalized}/"
+    matches = [name for name in names if marker in name and not name.endswith("/")]
+    if not matches:
+        raise DeployError(f"Downloaded bundle did not contain lib/{normalized}")
+
+    prefix = matches[0].split(marker, 1)[0] + marker
+    for member in matches:
+        relative_name = member[len(prefix) :]
+        target_path = destination / relative_name
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(member) as source_file, target_path.open("wb") as dest_file:
+            shutil.copyfileobj(source_file, dest_file)
 
 
 def ensure_adafruit_hid(target_root, repo=None, library_source=None, dry_run=False):
@@ -253,10 +291,90 @@ def ensure_adafruit_hid(target_root, repo=None, library_source=None, dry_run=Fal
 
 
 def copy_package_tree(source_dir, destination_dir):
-    if destination_dir.exists():
-        shutil.rmtree(destination_dir)
-    destination_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source_dir, destination_dir)
+    copy_library_path(source_dir, destination_dir)
+
+
+def copy_library_path(source_path, destination_path):
+    source_path = Path(source_path)
+    destination_path = Path(destination_path)
+    _remove_existing_path(destination_path)
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    if source_path.is_dir():
+        shutil.copytree(source_path, destination_path)
+        return
+    shutil.copy2(source_path, destination_path)
+
+
+def _remove_existing_path(path):
+    path = Path(path)
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _resolve_library_source_paths(repo=None, library_source=None):
+    repo = repo or repo_root()
+    explicit_root = Path(library_source).expanduser().resolve() if library_source else None
+    resolved = []
+
+    for relative_path in RUNTIME_LIBRARY_PATHS:
+        candidates = []
+        if explicit_root is not None:
+            candidates.append(explicit_root / relative_path)
+        candidates.extend(
+            (
+                repo / "lib" / relative_path,
+                repo / "pico" / "lib" / relative_path,
+                pico_vendor_dir(repo) / relative_path,
+            )
+        )
+        if relative_path == "adafruit_hid":
+            imported = find_local_adafruit_hid(repo, library_source)
+            if imported is not None:
+                candidates.insert(0, imported)
+
+        match = next((candidate for candidate in candidates if candidate.exists()), None)
+        if match is None:
+            return None
+        resolved.append(match)
+
+    return resolved
+
+
+def ensure_runtime_libraries(target_root, repo=None, library_source=None, dry_run=False):
+    target_root = Path(target_root)
+    repo = repo or repo_root()
+    lib_dir = target_root / "lib"
+    target_paths = [lib_dir / Path(relative_path).name for relative_path in RUNTIME_LIBRARY_PATHS]
+
+    source_paths = _resolve_library_source_paths(repo=repo, library_source=library_source)
+    if source_paths is not None:
+        if dry_run:
+            return source_paths, target_paths, "local"
+        for source_path, target_path in zip(source_paths, target_paths):
+            copy_library_path(source_path, target_path)
+        return source_paths, target_paths, "local"
+
+    if dry_run:
+        return cached_runtime_library_paths(repo), target_paths, "download"
+
+    lib_dir.mkdir(parents=True, exist_ok=True)
+    vendor_dir = pico_vendor_dir(repo)
+    vendor_dir.mkdir(parents=True, exist_ok=True)
+    bundle_zip = cached_bundle_zip_path(repo)
+    try:
+        download_bundle_zip(bundle_zip)
+        source_paths = extract_required_libraries_from_bundle(
+            bundle_zip,
+            vendor_dir,
+            required_paths=RUNTIME_LIBRARY_PATHS,
+        )
+        for source_path, target_path in zip(source_paths, target_paths):
+            copy_library_path(source_path, target_path)
+    except Exception as exc:
+        raise DeployError(f"Could not install runtime libraries: {exc}") from exc
+    return source_paths, target_paths, "download"
 
 
 def copy_firmware_files(target_root, repo=None, dry_run=False):
@@ -283,7 +401,7 @@ def run_deploy(target=None, library_source=None, dry_run=False):
     repo = repo_root()
     target_path = detect_target_path(target)
     copies = copy_firmware_files(target_path, repo=repo, dry_run=dry_run)
-    library_result = ensure_adafruit_hid(
+    library_result = ensure_runtime_libraries(
         target_path,
         repo=repo,
         library_source=library_source,
@@ -322,19 +440,29 @@ def main(argv=None):
         action = "Would copy" if args.dry_run else "Copied"
         print(f"{action}: {source.name} -> {destination}")
 
-    source_package, target_package, mode = library_result
+    source_paths, target_paths, mode = library_result
     if args.dry_run:
         if mode == "local":
-            print(f"Would copy local adafruit_hid: {source_package} -> {target_package}")
+            for source_path, target_path in zip(source_paths, target_paths):
+                print(f"Would copy local runtime library: {source_path} -> {target_path}")
         else:
-            print(f"Would download adafruit_hid into repo cache: {source_package}")
-            print(f"Would copy cached adafruit_hid to: {target_package}")
+            print("Would download runtime libraries into repo cache:")
+            for source_path in source_paths:
+                print(f"  - {source_path}")
+            print("Would copy cached runtime libraries to:")
+            for target_path in target_paths:
+                print(f"  - {target_path}")
     else:
         if mode == "local":
-            print(f"Installed adafruit_hid from local source: {source_package}")
+            for source_path in source_paths:
+                print(f"Installed runtime library from local source: {source_path}")
         else:
-            print(f"Downloaded and cached adafruit_hid at: {source_package}")
-            print(f"Installed adafruit_hid into: {target_package}")
+            print("Downloaded and cached runtime libraries at:")
+            for source_path in source_paths:
+                print(f"  - {source_path}")
+        print("Installed runtime libraries into:")
+        for target_path in target_paths:
+            print(f"  - {target_path}")
 
     if not args.dry_run:
         print("Deployment complete.")
