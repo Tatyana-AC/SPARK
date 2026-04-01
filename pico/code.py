@@ -170,7 +170,7 @@ def _main(record_step):
     custom_hid = _find_custom_hid_device(usb_hid, RAW_USAGE_PAGE, RAW_USAGE_ID)
     record_step("custom hid ready")
 
-    uart = busio.UART(board.GP0, board.GP1, baudrate=UART_BAUDRATE, timeout=0)
+    uart = busio.UART(board.GP0, board.GP1, baudrate=UART_BAUDRATE, timeout=0, receiver_buffer_size=256)
     record_step("uart ready")
 
     buttons = keypad.Keys(button_pins, value_when_pressed=False, pull=True)

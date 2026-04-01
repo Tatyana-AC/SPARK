@@ -213,6 +213,25 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
         structured,
         args.llm_url,
     )
+
+    # If no context has been received from the host, skip the LLM and send
+    # a diagnostic warning back so the user knows what went wrong.
+    _NO_CONTEXT_MARKERS = ("(no database available)", "(no active session)")
+    if llm_prompt in _NO_CONTEXT_MARKERS:
+        warning_msg = (
+            "[WARNING] No context received from host. "
+            "Context polling may not be reaching the Jetson."
+        )
+        logger.warning("Summarize skipped LLM: %s", warning_msg)
+        try:
+            _emit_summary_response(ser, warning_msg)
+            time.sleep(INTER_PACKET_DELAY_S)
+            ser.write(build_summarize_done())
+            ser.flush()
+        except Exception:
+            logger.exception("Failed to send no-context warning back to Pico")
+        return
+
     try:
         if args.stream:
             if structured:

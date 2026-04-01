@@ -25,6 +25,7 @@ SPARK_VID = 0xC4C4
 SPARK_PID = 0x5350
 ACK = b"\x06"
 EOT = b"\x04"
+RECONNECT_COOLDOWN_S = 3.0  # minimum seconds between connect() attempts
 
 
 class SerialSender:
@@ -39,6 +40,7 @@ class SerialSender:
         self._reader_thread: Optional[threading.Thread] = None
         self._stop_reader = threading.Event()
         self._paused = threading.Event()
+        self._last_connect_attempt: float = 0.0
 
     @staticmethod
     def _find_pico_port() -> Optional[str]:
@@ -77,6 +79,17 @@ class SerialSender:
         return candidates[0] if candidates else None
 
     def connect(self) -> bool:
+        # Skip if already connected
+        if self._serial and self._serial.is_open:
+            self.start_reader()
+            return True
+
+        # Cooldown: don't hammer USB bus with repeated scans
+        now = time.monotonic()
+        if now - self._last_connect_attempt < RECONNECT_COOLDOWN_S:
+            return False
+        self._last_connect_attempt = now
+
         try:
             import serial
         except ImportError:
@@ -84,9 +97,6 @@ class SerialSender:
             return False
 
         with self._lock:
-            if self._serial and self._serial.is_open:
-                self.start_reader()
-                return True
 
             port = self._port or self._find_pico_port()
             if not port:
@@ -94,7 +104,7 @@ class SerialSender:
                 return False
 
             try:
-                self._serial = serial.Serial(port, self._baud, timeout=0.1)
+                self._serial = serial.Serial(port, self._baud, timeout=0.1, write_timeout=2.0)
             except Exception as exc:
                 logger.warning("SerialSender: open failed - %s", exc)
                 return False

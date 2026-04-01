@@ -724,13 +724,15 @@ class SparkPanel(QWidget):
         self._hid_poll_timer.setInterval(2000)
         self._hid_poll_timer.timeout.connect(self._poll_hid_connection)
         self._hid_poll_timer.start()
+        # Fire initial poll immediately so UI shows correct device state at startup
+        self._poll_hid_connection()
 
     def _poll_hid_connection(self):
         """Check USB connection and emit signal if state changed."""
         try:
-            connected = self.hid_client.is_connected()
+            connected = self.hid_client.poll_connected()
         except Exception as exc:
-            logger.error("[HID] is_connected() raised unexpectedly: %s", exc)
+            logger.error("[HID] poll_connected() raised unexpectedly: %s", exc)
             connected = False
         previous = getattr(self, "_hid_connected", None)
         if connected != previous:
