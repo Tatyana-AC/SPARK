@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import tempfile
 import types
 import unittest
 import uuid
@@ -73,6 +74,18 @@ class PicoCodeTests(unittest.TestCase):
 
         self.assertEqual(lcd_ui.presses, [])
         self.assertIsNone(buttons.events.get())
+
+    def test_record_uart_diag_appends_line_to_log_file(self):
+        module = self._load_code_module()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "uart_diag.txt"
+            module.UART_DIAG_LOG_PATH = str(log_path)
+
+            module._record_uart_diag("event-1")
+            module._record_uart_diag("event-2")
+
+            self.assertEqual(log_path.read_text(encoding="utf-8"), "event-1\nevent-2\n")
 
 
 if __name__ == "__main__":

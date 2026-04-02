@@ -56,6 +56,7 @@ class JetsonDB:
         self._active_session_id: Optional[int] = None
         self._active_context_key: Optional[str] = None
         self._create_tables()
+        self._restore_active_session()
         logger.info("JetsonDB opened at %s", self._path.resolve())
 
     def _create_tables(self) -> None:
@@ -93,6 +94,15 @@ class JetsonDB:
         """
         )
         self._conn.commit()
+
+    def _restore_active_session(self) -> None:
+        row = self._conn.execute(
+            "SELECT id, context_key FROM sessions ORDER BY updated_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return
+        self._active_session_id = int(row["id"])
+        self._active_context_key = row["context_key"]
 
     def on_context_new(self, payload: dict) -> int:
         now = time.time()

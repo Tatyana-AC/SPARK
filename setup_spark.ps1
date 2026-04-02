@@ -559,8 +559,7 @@ function Run-SmokeTestWithRecovery {
         throw "Smoke test failed with exit code $($result.ExitCode)."
     }
 
-    Write-Status "Smoke recovery" "Detected busy or stuck summarize state; retrying after Pico soft reload"
-    Invoke-PicoSoftReload -PicoDrive $PicoDrive
+    Write-Status "Smoke recovery" "Detected busy or stuck summarize state; retrying after Jetson bridge restart"
     Write-Section "Bridge Recovery"
     Restart-JetsonBridge -RemotePath $RemotePath
     Wait-JetsonBridgeSettle -Seconds $BridgeSettleSeconds
@@ -571,7 +570,7 @@ function Run-SmokeTestWithRecovery {
         return
     }
 
-    throw "Smoke test failed after Pico soft reload retry."
+    throw "Smoke test failed after Jetson bridge restart retry. If the Pico HID interface is wedged, do a physical Pico reset before retrying setup."
 }
 
 function Get-SparkAppProcesses {

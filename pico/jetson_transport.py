@@ -28,6 +28,7 @@ class JetsonTransport:
         request_retry_s=2.0,
         max_request_retries=1,
         time_source=None,
+        debug_hook=None,
     ):
         self._uart = uart
         self._response = bytearray()
@@ -42,6 +43,8 @@ class JetsonTransport:
         self._last_send_s = 0.0
         self._request_bytes = b""
         self._retry_count = 0
+        self._debug_hook = debug_hook
+        self._uart_read_count = 0
 
     @property
     def response_bytes(self):
@@ -66,6 +69,8 @@ class JetsonTransport:
         self._last_activity_s = self._time_source()
         self._request_bytes = build_summarize_request(request_text)
         self._retry_count = 0
+        self._uart_read_count = 0
+        self._debug("start_request", payload_len=len(request_text))
         self._send_request()
 
     def poll(self, max_chunk_size=64):
@@ -75,6 +80,8 @@ class JetsonTransport:
             self._expire_if_needed()
             return 0
         self._last_activity_s = self._time_source()
+        self._uart_read_count += 1
+        self._debug("uart_read", byte_count=len(chunk))
         self._parser.feed(chunk)
         return len(chunk)
 
@@ -94,13 +101,16 @@ class JetsonTransport:
             return
         if (self._time_source() - self._last_activity_s) < self._request_timeout_s:
             return
-        self._fail_request("[ERROR] Jetson request timed out")
+        self._fail_request(
+            f"[ERROR] Jetson request timed out (reads={self._uart_read_count}, response_len={len(self._response)})"
+        )
 
     def _send_request(self):
         self._uart.write(self._request_bytes)
         now = self._time_source()
         self._last_send_s = now
         self._last_activity_s = now
+        self._debug("send_request", byte_count=len(self._request_bytes), retry_count=self._retry_count)
 
     def _fail_request(self, message):
         existing = bytes(self._response)
@@ -113,6 +123,14 @@ class JetsonTransport:
         self.response_complete = True
         self._request_bytes = b""
         self._retry_count = 0
+        self._debug("fail_request", message=message, response_len=len(self._response))
+
+    def _debug(self, event, **fields):
+        if self._debug_hook is None:
+            return
+        payload = {"event": event}
+        payload.update(fields)
+        self._debug_hook(payload)
 
     def _handle_packet(self, pkt):
         pkt_type = pkt["type"]
@@ -120,7 +138,9 @@ class JetsonTransport:
             if not self.request_active:
                 return  # discard stale chunk from a previous request/retry
             self._last_activity_s = self._time_source()
-            self._response.extend((pkt.get("text") or "").encode("utf-8"))
+            text = pkt.get("text") or ""
+            self._response.extend(text.encode("utf-8"))
+            self._debug("recv_chunk", chunk_len=len(text), response_len=len(self._response))
             return
         if pkt_type == PKT_SUMMARIZE_DONE:
             if not self.request_active:
@@ -130,9 +150,11 @@ class JetsonTransport:
             self.response_complete = True
             self._request_bytes = b""
             self._retry_count = 0
+            self._debug("recv_done", response_len=len(self._response))
             return
         if pkt_type == PKT_ERROR:
             if not self.request_active:
                 return  # discard stale error from a previous request/retry
             self._last_activity_s = self._time_source()
+            self._debug("recv_error", message=pkt.get("message") or "[ERROR] Jetson bridge error")
             self._fail_request(pkt.get("message") or "[ERROR] Jetson bridge error")

@@ -104,6 +104,25 @@ class JetsonTransportTests(unittest.TestCase):
         self.assertTrue(transport.response_complete)
         self.assertIn(b"timed out", transport.response_bytes)
 
+    def test_request_timeout_reports_uart_activity_summary(self):
+        from pico.jetson_transport import JetsonTransport
+
+        uart = FakeUart()
+        clock = FakeClock()
+        transport = JetsonTransport(
+            uart,
+            request_timeout_s=5.0,
+            max_request_retries=0,
+            time_source=clock,
+        )
+        transport.start_request("summarize this")
+
+        clock.advance(6.0)
+        transport.poll()
+
+        self.assertIn(b"reads=0", transport.response_bytes)
+        self.assertIn(b"response_len=0", transport.response_bytes)
+
     def test_timeout_uses_last_chunk_activity_before_failing(self):
         from pico.jetson_transport import JetsonTransport
 
@@ -178,6 +197,23 @@ class JetsonTransportTests(unittest.TestCase):
 
         self.assertEqual(len(uart.writes), 1)
         self.assertEqual(transport.response_bytes, b"Partial ")
+
+    def test_debug_hook_receives_send_read_and_done_events(self):
+        from pico.jetson_transport import JetsonTransport
+
+        uart = FakeUart()
+        events = []
+        transport = JetsonTransport(uart, debug_hook=events.append)
+
+        transport.start_request("summarize this")
+        uart.queue_read(build_summarize_chunk("Partial ") + build_summarize_done())
+        transport.poll(256)
+
+        event_names = [event["event"] for event in events]
+        self.assertIn("start_request", event_names)
+        self.assertIn("send_request", event_names)
+        self.assertIn("uart_read", event_names)
+        self.assertIn("recv_done", event_names)
 
 
 if __name__ == "__main__":

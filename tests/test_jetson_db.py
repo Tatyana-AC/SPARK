@@ -37,7 +37,8 @@ class JetsonDBTests(unittest.TestCase):
         self.db = JetsonDB(str(self.db_path))
 
     def tearDown(self):
-        self.db.close()
+        if self.db is not None:
+            self.db.close()
         self._tmpdir.cleanup()
 
     def test_context_new_creates_rich_session_row(self):
@@ -73,6 +74,21 @@ class JetsonDBTests(unittest.TestCase):
 
         self.assertEqual(row["button_id"], 2)
         self.assertIsNotNone(row["session_id"])
+
+    def test_reopen_restores_most_recent_session_as_active(self):
+        payload = make_payload(app_name="Code", window_title="Current Window")
+        self.db.on_context_new(payload)
+        self.db.close()
+        self.db = None
+
+        reopened = JetsonDB(str(self.db_path))
+        try:
+            row = reopened.get_active_session()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["app_name"], "Code")
+            self.assertEqual(row["window_title"], "Current Window")
+        finally:
+            reopened.close()
 
 
 if __name__ == "__main__":

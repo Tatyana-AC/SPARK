@@ -6,6 +6,7 @@ BUTTON_POLL_SLEEP_S = 0.002
 CDC_RELAY_SLICE_BYTES = 64
 ERROR_LOG_PATH = "runtime_error.txt"
 STARTUP_TRACE_PATH = "startup_trace.txt"
+UART_DIAG_LOG_PATH = "uart_diag.txt"
 
 jetson_transport = None
 _last_response_signature = None
@@ -83,6 +84,14 @@ def _find_custom_hid_device(usb_hid, raw_usage_page, raw_usage_id):
         if device.usage_page == raw_usage_page and device.usage == raw_usage_id:
             return device
     raise RuntimeError("SPARK custom HID device not enabled")
+
+
+def _record_uart_diag(event):
+    try:
+        with open(UART_DIAG_LOG_PATH, "a") as handle:
+            handle.write(f"{event}\n")
+    except OSError:
+        return
 
 
 def _drain_button_events(buttons, lcd_ui, now):
@@ -175,7 +184,11 @@ def _main(record_step):
     record_step("buttons ready")
 
     serial_bridge = SerialBridge(usb_cdc.data, uart)
-    jetson_transport = JetsonTransport(uart, max_request_retries=0)
+    jetson_transport = JetsonTransport(
+        uart,
+        max_request_retries=0,
+        debug_hook=lambda event: _record_uart_diag(repr(event)),
+    )
     record_step("transport ready")
 
     lcd_ui = initialize_lcd_ui()
