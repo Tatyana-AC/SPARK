@@ -20,6 +20,7 @@ PKT_SUMMARIZE_CHUNK = 0x04
 PKT_BUTTON_PRESS = 0x05
 PKT_SUMMARIZE_DONE = 0x06
 PKT_ERROR = 0x07
+PKT_DEBUG = 0x08
 
 _HEADER_FMT = "<2sBH"
 _CRC_FMT = "<B"
@@ -34,6 +35,7 @@ _JSON_PACKET_TYPES = {
     PKT_SUMMARIZE_CHUNK,
     PKT_SUMMARIZE_DONE,
     PKT_ERROR,
+    PKT_DEBUG,
 }
 
 
@@ -67,6 +69,10 @@ def _build_json_packet(pkt_type, payload):
 
 def build_summarize_request(request_text):
     return _build_json_packet(PKT_SUMMARIZE_REQUEST, {"request": request_text})
+
+
+def build_debug(message):
+    return _build_json_packet(PKT_DEBUG, {"msg": message})
 
 
 def build_button_press(button_id):

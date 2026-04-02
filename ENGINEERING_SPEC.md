@@ -121,6 +121,7 @@ Current framed packet families:
 - `BUTTON_PRESS (0x05)`
 - `SUMMARIZE_DONE (0x06)`
 - `ERROR (0x07)`
+- `DEBUG (0x08)`
 
 ---
 
@@ -486,6 +487,7 @@ python spark_app_v2.py
 | `0x05` | `BUTTON_PRESS` | Pico -> Jetson | `uint8 button_id` |
 | `0x06` | `SUMMARIZE_DONE` | Jetson -> Pico | versioned JSON completion marker |
 | `0x07` | `ERROR` | Jetson -> Pico | versioned JSON error payload |
+| `0x08` | `DEBUG` | Pico -> Host | versioned JSON debug message (`{"msg": "..."}`) |
 
 ### 8.2 Custom Raw HID Protocol
 

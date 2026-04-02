@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from serial.tools import list_ports
 
-from core.protocol import build_context_new, build_context_update
+from core.protocol import build_context_new, build_context_update, PKT_DEBUG, PacketParser
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,8 @@ class SerialSender:
         self._stop_reader = threading.Event()
         self._paused = threading.Event()
         self._last_connect_attempt: float = 0.0
+        self._debug_parser = PacketParser(on_packet=self._on_pico_packet)
+        self._debug_logger = logging.getLogger("pico.debug")
 
     @staticmethod
     def _find_pico_port() -> Optional[str]:
@@ -165,8 +167,10 @@ class SerialSender:
                 return b""
 
         filtered = bytes(byte for byte in chunk if byte != ACK[0])
-        if filtered and self._stream_callback:
-            self._stream_callback(filtered)
+        if filtered:
+            self._debug_parser.feed(filtered)
+            if self._stream_callback:
+                self._stream_callback(filtered)
         return filtered
 
     def start_reader(self) -> None:
@@ -185,13 +189,29 @@ class SerialSender:
             if not chunk:
                 time.sleep(0.01)
 
+    def _on_pico_packet(self, pkt: dict) -> None:
+        if pkt.get("type") == PKT_DEBUG:
+            self._debug_logger.info("[PICO] %s", pkt.get("msg", ""))
+
     def pause(self) -> None:
-        """Suppress context sends while a HID upload is in progress."""
+        """Suppress context sends and release the serial port so other tools can use it."""
         self._paused.set()
+        self._stop_reader.set()
+        with self._lock:
+            if self._serial:
+                try:
+                    self._serial.close()
+                except Exception:
+                    pass
+                self._serial = None
+        logger.info("SerialSender: paused and port released")
 
     def resume(self) -> None:
-        """Re-enable context sends after a HID upload completes."""
+        """Re-enable context sends and reopen the serial port."""
         self._paused.clear()
+        self._stop_reader.clear()
+        self.connect()
+        logger.info("SerialSender: resumed")
 
     @staticmethod
     def _snapshot_payload(snapshot) -> dict:
