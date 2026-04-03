@@ -2,6 +2,35 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot '..\setup_spark.ps1')
 
+Describe 'Get-JetsonMount' {
+    It 'returns only the existing mount whose provider matches the requested remote path' {
+        function script:Get-CimInstance {
+            @(
+                [pscustomobject]@{
+                    DriveType = 4
+                    DeviceID = 'Y:'
+                    ProviderName = '\\sshfs.r\sidac@192.168.55.1'
+                    VolumeName = ''
+                }
+                [pscustomobject]@{
+                    DriveType = 4
+                    DeviceID = 'Z:'
+                    ProviderName = '\\sshfs.r\sidac@192.168.55.1\mnt\usb_drive'
+                    VolumeName = ''
+                }
+            )
+        }
+
+        $result = Get-JetsonMount `
+            -JetsonHostValue '192.168.55.1' `
+            -JetsonUserValue 'sidac' `
+            -RemotePathValue '/mnt/usb_drive'
+
+        $result.Drive | Should Be 'Z:'
+        $result.Provider | Should Be '\\sshfs.r\sidac@192.168.55.1\mnt\usb_drive'
+    }
+}
+
 Describe 'Ensure-JetsonMount' {
     It 'returns the mounted drive without waiting for the mount process to exit' {
         $script:mountChecks = 0

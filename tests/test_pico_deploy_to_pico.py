@@ -41,6 +41,9 @@ class DeployToPicoTests(unittest.TestCase):
     def test_firmware_bundle_includes_runtime_runner_module(self):
         self.assertIn("runtime_runner.py", deploy_to_pico.FIRMWARE_FILES)
 
+    def test_firmware_bundle_includes_pico_debug_module(self):
+        self.assertIn("pico_debug.py", deploy_to_pico.FIRMWARE_FILES)
+
     def test_firmware_sources_copy_code_py_last_for_safe_autoreload(self):
         repo_root = self._workspace_tempdir("deploy-order-sources")
         pico_dir = repo_root / "pico"
@@ -68,6 +71,37 @@ class DeployToPicoTests(unittest.TestCase):
 
         self.assertEqual(copies[-1][0].name, "code.py")
         self.assertEqual(copies[-1][1].name, "code.py")
+
+    def test_copy_firmware_files_retries_transient_device_missing_error(self):
+        root = self._workspace_tempdir("deploy-copy-retry")
+        repo_root = root / "repo"
+        pico_dir = repo_root / "pico"
+        pico_dir.mkdir(parents=True)
+        target_root = root / "target"
+        target_root.mkdir()
+
+        for name in deploy_to_pico.FIRMWARE_FILES:
+            (pico_dir / name).write_text(name, encoding="utf-8")
+
+        attempts = {"count": 0}
+        real_copy2 = shutil.copy2
+
+        def flaky_copy(source, destination, *args, **kwargs):
+            if Path(destination).name == "lcd_ui.py" and attempts["count"] == 0:
+                attempts["count"] += 1
+                error = OSError("device missing")
+                error.winerror = 433
+                raise error
+            return real_copy2(source, destination, *args, **kwargs)
+
+        with mock.patch("pico.deploy_to_pico.shutil.copy2", side_effect=flaky_copy), mock.patch(
+            "pico.deploy_to_pico.time.sleep"
+        ):
+            copies = deploy_to_pico.copy_firmware_files(target_root, repo=repo_root, dry_run=False)
+
+        self.assertEqual(attempts["count"], 1)
+        self.assertEqual(copies[-1][1].name, "code.py")
+        self.assertTrue((target_root / "lcd_ui.py").exists())
 
     def test_find_local_adafruit_hid_prefers_explicit_library_source(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -272,11 +306,11 @@ class DeployToPicoTests(unittest.TestCase):
             self.assertTrue((target / "lib" / "adafruit_display_text" / "__init__.py").exists())
             self.assertTrue((target / "lib" / "adafruit_ili9341.py").exists())
 
-    def test_runtime_code_enables_circuitpython_autoreload(self):
+    def test_runtime_code_disables_circuitpython_autoreload(self):
         code_py = Path(deploy_to_pico.__file__).resolve().with_name("code.py")
         code_text = code_py.read_text(encoding="utf-8")
 
-        self.assertIn("supervisor.runtime.autoreload = True", code_text)
+        self.assertIn("supervisor.runtime.autoreload = False", code_text)
 
 
 if __name__ == "__main__":

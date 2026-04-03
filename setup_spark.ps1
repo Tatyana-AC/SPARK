@@ -107,15 +107,28 @@ function Get-PicoMount {
 function Get-JetsonMount {
     param(
         [string]$JetsonHostValue,
-        [string]$JetsonUserValue
+        [string]$JetsonUserValue,
+        [string]$RemotePathValue
     )
+
+    $remoteWindowsPath = $null
+    if (-not [string]::IsNullOrWhiteSpace($RemotePathValue)) {
+        $remoteWindowsPath = (($RemotePathValue -replace "^/", "") -replace "/", "\").Trim("\")
+    }
 
     $expectedFragments = @(
         "\\sshfs.kr\$JetsonUserValue@$JetsonHostValue",
         "\\sshfs.r\$JetsonUserValue@$JetsonHostValue",
         "\\sshfs.k\$JetsonUserValue@$JetsonHostValue",
         "\\sshfs\$JetsonUserValue@$JetsonHostValue"
-    )
+    ) | ForEach-Object {
+        if ($remoteWindowsPath) {
+            "$_\$remoteWindowsPath"
+        }
+        else {
+            $_
+        }
+    }
 
     $networkDrives = Get-CimInstance Win32_LogicalDisk | Where-Object {
         $_.DriveType -eq 4 -and $_.ProviderName
@@ -123,7 +136,7 @@ function Get-JetsonMount {
 
     foreach ($drive in $networkDrives) {
         foreach ($fragment in $expectedFragments) {
-            if ($drive.ProviderName -like "$fragment*") {
+            if ($drive.ProviderName.TrimEnd("\") -ieq $fragment.TrimEnd("\")) {
                 return [pscustomobject]@{
                     Drive      = $drive.DeviceID
                     Provider   = $drive.ProviderName
@@ -145,7 +158,7 @@ function Ensure-JetsonMount {
         [int]$MountCommandTimeoutSeconds
     )
 
-    $existing = Get-JetsonMount -JetsonHostValue $JetsonHostValue -JetsonUserValue $JetsonUserValue
+    $existing = Get-JetsonMount -JetsonHostValue $JetsonHostValue -JetsonUserValue $JetsonUserValue -RemotePathValue $RemotePath
     if ($null -ne $existing) {
         Write-Status "Jetson mount" "$($existing.Drive) already mapped to $($existing.Provider)"
         return $existing
@@ -185,7 +198,7 @@ function Ensure-JetsonMount {
         -WindowStyle Hidden
 
     for ($attempt = 1; $attempt -le 20; $attempt++) {
-        $mounted = Get-JetsonMount -JetsonHostValue $JetsonHostValue -JetsonUserValue $JetsonUserValue
+        $mounted = Get-JetsonMount -JetsonHostValue $JetsonHostValue -JetsonUserValue $JetsonUserValue -RemotePathValue $RemotePath
         if ($null -ne $mounted) {
             Write-Status "Jetson mount" "$($mounted.Drive) mapped to $($mounted.Provider)"
             return $mounted

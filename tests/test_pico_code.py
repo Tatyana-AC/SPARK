@@ -35,10 +35,13 @@ class _FakeButtons:
 
 
 class _FakeLcdUi:
-    def __init__(self):
+    def __init__(self, call_log=None):
         self.presses = []
+        self.call_log = call_log
 
     def handle_press(self, index, *, now):
+        if self.call_log is not None:
+            self.call_log.append(("lcd", index, now))
         self.presses.append((index, now))
 
 
@@ -61,10 +64,12 @@ class PicoCodeTests(unittest.TestCase):
                 sys.modules["runtime_runner"] = prior_runtime_runner
         return module
 
-    def test_drain_button_events_drains_press_and_release_without_touching_lcd(self):
+    def test_drain_button_events_updates_lcd_for_press_only_and_emits_debug_first(self):
         module = self._load_code_module()
-        lcd_ui = _FakeLcdUi()
+        call_log = []
+        lcd_ui = _FakeLcdUi(call_log=call_log)
         buttons = _FakeButtons([_FakeEvent(2), _FakeEvent(1, pressed=False)])
+        module._send_button_debug = lambda message: call_log.append(("debug", message))
 
         module._drain_button_events(
             buttons,
@@ -72,7 +77,15 @@ class PicoCodeTests(unittest.TestCase):
             now=123.0,
         )
 
-        self.assertEqual(lcd_ui.presses, [])
+        self.assertEqual(lcd_ui.presses, [(2, 123.0)])
+        self.assertEqual(
+            call_log,
+            [
+                ("debug", "PB3 pressed"),
+                ("lcd", 2, 123.0),
+                ("debug", "PB3 done"),
+            ],
+        )
         self.assertIsNone(buttons.events.get())
 
     def test_record_uart_diag_appends_line_to_log_file(self):
@@ -86,6 +99,21 @@ class PicoCodeTests(unittest.TestCase):
             module._record_uart_diag("event-2")
 
             self.assertEqual(log_path.read_text(encoding="utf-8"), "event-1\nevent-2\n")
+
+    def test_configure_runtime_disables_autoreload(self):
+        module = self._load_code_module()
+        steps = []
+        supervisor = types.SimpleNamespace(runtime=types.SimpleNamespace(autoreload=True))
+
+        module._configure_runtime(supervisor, steps.append)
+
+        self.assertFalse(supervisor.runtime.autoreload)
+        self.assertEqual(steps, ["autoreload disabled"])
+
+    def test_lcd_debug_checkpoint_targets_after_press_time(self):
+        module = self._load_code_module()
+
+        self.assertEqual(module.LCD_DEBUG_CHECKPOINT, "after_press_time")
 
 
 if __name__ == "__main__":

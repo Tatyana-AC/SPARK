@@ -7,6 +7,8 @@ CDC_RELAY_SLICE_BYTES = 64
 ERROR_LOG_PATH = "runtime_error.txt"
 STARTUP_TRACE_PATH = "startup_trace.txt"
 UART_DIAG_LOG_PATH = "uart_diag.txt"
+LCD_DEBUG_CHECKPOINT = "after_press_time"
+LCD_SKIP_PALETTE_WRITE = True
 
 jetson_transport = None
 _last_response_signature = None
@@ -94,11 +96,29 @@ def _record_uart_diag(event):
         return
 
 
+def _send_button_debug(message):
+    try:
+        from pico.pico_debug import dbg
+    except ImportError:
+        try:
+            from pico_debug import dbg
+        except ImportError:
+            return
+
+    dbg(message)
+
+
 def _drain_button_events(buttons, lcd_ui, now):
     while True:
         event = buttons.events.get()
         if event is None:
             return
+        if not event.pressed:
+            continue
+        index = event.key_number
+        _send_button_debug(f"PB{index + 1} pressed")
+        lcd_ui.handle_press(index, now=now)
+        _send_button_debug(f"PB{index + 1} done")
 
 
 def _drain_hid_reports(custom_hid, protocol_handler, raw_report_id):
@@ -109,6 +129,11 @@ def _drain_hid_reports(custom_hid, protocol_handler, raw_report_id):
         reply = protocol_handler.handle_report(report)
         if reply is not None:
             custom_hid.send_report(reply, raw_report_id)
+
+
+def _configure_runtime(supervisor, record_step):
+    supervisor.runtime.autoreload = False
+    record_step("autoreload disabled")
 
 
 def _sync_response_state(protocol_handler, transport):
@@ -160,8 +185,7 @@ def _main(record_step):
 
     record_step("spark modules ready")
 
-    supervisor.runtime.autoreload = True
-    record_step("autoreload enabled")
+    _configure_runtime(supervisor, record_step)
 
     button_pins = tuple(getattr(board, f"GP{pin}") for pin in BUTTON_PIN_NUMBERS)
     protocol_handler = UploadProtocolHandler(
@@ -191,7 +215,11 @@ def _main(record_step):
     )
     record_step("transport ready")
 
-    lcd_ui = initialize_lcd_ui()
+    lcd_ui = initialize_lcd_ui(
+        debug_hook=_send_button_debug,
+        debug_checkpoint=LCD_DEBUG_CHECKPOINT,
+        skip_palette_write=LCD_SKIP_PALETTE_WRITE,
+    )
     record_step("lcd ready")
 
     while True:

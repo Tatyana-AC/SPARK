@@ -58,15 +58,32 @@ def build_display(bus, *, display_driver_class):
 
 
 class SparkLcdUi:
-    def __init__(self, *, displayio_module, label_module, font):
+    def __init__(self, *, displayio_module, label_module, font, debug_hook=None, debug_checkpoint=None, skip_palette_write=False):
         self._displayio = displayio_module
         self._label = label_module
         self._font = font
+        self._debug_hook = debug_hook
+        self._debug_checkpoint = debug_checkpoint
+        self._skip_palette_write = skip_palette_write
         self.root_group = displayio_module.Group()
         self.cell_palettes = []
         self.active_cell = None
         self.press_time = 0.0
+        self._highlight_grid = None
         self._build_idle_screen()
+
+    def _debug(self, message):
+        if self._debug_hook is None:
+            return
+        try:
+            self._debug_hook(message)
+        except Exception:
+            return
+
+    def _debug_checkpoint_message(self, checkpoint, index):
+        if self._debug_checkpoint != checkpoint:
+            return
+        self._debug(f"lcd:handle_press:{checkpoint} index={index}")
 
     def _build_idle_screen(self):
         root = self.root_group
@@ -107,13 +124,47 @@ class SparkLcdUi:
                 )
             )
 
+        bitmap = self._displayio.Bitmap(CELL_WIDTH, CELL_HEIGHT, 1)
+        palette = self._displayio.Palette(1)
+        palette[0] = ACTIVE
+        self._highlight_grid = self._displayio.TileGrid(bitmap, pixel_shader=palette, x=0, y=0)
+
+    def _set_highlight(self, index):
+        if self._highlight_grid is None:
+            return
+        if self._highlight_grid in self.root_group:
+            self.root_group.remove(self._highlight_grid)
+        if index is None:
+            return
+        x, y = cell_origin(index)
+        self._highlight_grid.x = x
+        self._highlight_grid.y = y
+        self.root_group.append(self._highlight_grid)
+
     def handle_press(self, index, *, now):
+        self._debug_checkpoint_message("start", index)
         if self.active_cell is not None:
+            self._debug_checkpoint_message("clear_prev", self.active_cell)
             self.cell_palettes[self.active_cell][0] = SURFACE
 
-        self.cell_palettes[index][0] = ACTIVE
+        self._debug_checkpoint_message("before_palette_write", index)
+        if self._skip_palette_write:
+            self._debug_checkpoint_message("palette_write_skipped", index)
+        else:
+            try:
+                self.cell_palettes[index][0] = ACTIVE
+                self._debug_checkpoint_message("after_palette_write", index)
+            except Exception as exc:
+                self._debug(f"lcd:handle_press:palette_error {type(exc).__name__}: {exc}")
+                self.active_cell = index
+                self.press_time = now
+                return
+        self._set_highlight(index)
         self.active_cell = index
+        self._debug_checkpoint_message("after_active_cell", index)
         self.press_time = now
+        self._debug_checkpoint_message("after_press_time", index)
+        self._debug_checkpoint_message("done", index)
 
     def tick(self, *, now):
         if self.active_cell is None:
@@ -121,10 +172,11 @@ class SparkLcdUi:
         if (now - self.press_time) <= HIGHLIGHT_SEC:
             return
         self.cell_palettes[self.active_cell][0] = SURFACE
+        self._set_highlight(None)
         self.active_cell = None
 
 
-def initialize_lcd_ui():
+def initialize_lcd_ui(debug_hook=None, debug_checkpoint=None, skip_palette_write=False):
     import board
     import busio
     import displayio
@@ -147,6 +199,13 @@ def initialize_lcd_ui():
     rst = DigitalInOut(pin_rst)
     bus = build_display_bus(spi, dc, cs, rst, fourwire_class=FourWire)
     display = build_display(bus, display_driver_class=adafruit_ili9341.ILI9341)
-    ui = SparkLcdUi(displayio_module=displayio, label_module=label, font=terminalio.FONT)
+    ui = SparkLcdUi(
+        displayio_module=displayio,
+        label_module=label,
+        font=terminalio.FONT,
+        debug_hook=debug_hook,
+        debug_checkpoint=debug_checkpoint,
+        skip_palette_write=skip_palette_write,
+    )
     display.root_group = ui.root_group
     return ui

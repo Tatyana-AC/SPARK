@@ -6,6 +6,7 @@ import os
 import shutil
 import string
 import sys
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -15,6 +16,7 @@ FIRMWARE_FILES = (
     "boot.py",
     "jetson_transport.py",
     "lcd_ui.py",
+    "pico_debug.py",
     "pin_config.py",
     "protocol.py",
     "runtime_runner.py",
@@ -35,6 +37,8 @@ RUNTIME_LIBRARY_PATHS = (
 GITHUB_LATEST_BUNDLE_API = (
     "https://api.github.com/repos/adafruit/Adafruit_CircuitPython_Bundle/releases/latest"
 )
+TRANSIENT_COPY_RETRIES = 5
+TRANSIENT_COPY_SLEEP_S = 1.0
 
 
 class DeployError(RuntimeError):
@@ -392,9 +396,22 @@ def copy_firmware_files(target_root, repo=None, dry_run=False):
 
     for source, destination in copies:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        _copy_with_retry(source, destination)
 
     return copies
+
+
+def _copy_with_retry(source, destination):
+    attempt = 0
+    while True:
+        try:
+            shutil.copy2(source, destination)
+            return
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != 433 or attempt >= TRANSIENT_COPY_RETRIES:
+                raise
+            attempt += 1
+            time.sleep(TRANSIENT_COPY_SLEEP_S)
 
 
 def run_deploy(target=None, library_source=None, dry_run=False):

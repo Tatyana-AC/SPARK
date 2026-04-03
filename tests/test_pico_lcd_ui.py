@@ -90,6 +90,73 @@ class SparkLcdUiTests(unittest.TestCase):
         self.ui.tick(now=5.0 + self.HIGHLIGHT_SEC + 0.01)
         self.assertEqual(self.ui.cell_palettes[2][0], self.SURFACE)
 
+    def test_handle_press_emits_only_selected_debug_checkpoint(self):
+        from pico.lcd_ui import SparkLcdUi
+
+        messages = []
+        ui = SparkLcdUi(
+            displayio_module=FakeDisplayIOModule,
+            label_module=FakeLabelModule,
+            font=object(),
+            debug_hook=messages.append,
+            debug_checkpoint="after_press_time",
+        )
+
+        ui.handle_press(1, now=10.0)
+
+        self.assertEqual(
+            messages,
+            [
+                "lcd:handle_press:after_press_time index=1",
+            ],
+        )
+
+    def test_handle_press_emits_palette_write_error_if_it_fails(self):
+        from pico.lcd_ui import SparkLcdUi
+
+        class BadPalette:
+            def __setitem__(self, key, value):
+                raise RuntimeError("palette write failed")
+
+        messages = []
+        ui = SparkLcdUi(
+            displayio_module=FakeDisplayIOModule,
+            label_module=FakeLabelModule,
+            font=object(),
+            debug_hook=messages.append,
+            debug_checkpoint="palette_error",
+        )
+        ui.cell_palettes = [BadPalette()]
+
+        ui.handle_press(0, now=5.0)
+
+        self.assertEqual(len(messages), 1)
+        self.assertTrue(messages[0].startswith("lcd:handle_press:palette_error"))
+
+    def test_handle_press_skips_palette_write_when_disabled(self):
+        from pico.lcd_ui import SparkLcdUi
+
+        messages = []
+        ui = SparkLcdUi(
+            displayio_module=FakeDisplayIOModule,
+            label_module=FakeLabelModule,
+            font=object(),
+            debug_hook=messages.append,
+            debug_checkpoint="palette_write_skipped",
+            skip_palette_write=True,
+        )
+
+        ui.handle_press(0, now=5.0)
+
+        self.assertEqual(
+            messages,
+            [
+                "lcd:handle_press:palette_write_skipped index=0",
+            ],
+        )
+        self.assertEqual(ui.active_cell, 0)
+        self.assertEqual(ui.press_time, 5.0)
+
     def test_build_display_bus_uses_supplied_fourwire_class(self):
         from pico.lcd_ui import build_display_bus
 
