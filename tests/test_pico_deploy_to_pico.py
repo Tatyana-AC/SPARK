@@ -66,6 +66,7 @@ class DeployToPicoTests(unittest.TestCase):
         manifest = deploy_to_pico.default_runtime_manifest()
 
         self.assertNotIn("lcd_smoke_test.py", manifest)
+        self.assertNotIn("typeback.py", manifest)
         self.assertEqual(manifest[-1], "code.py")
 
     def test_default_desired_target_paths_from_source_plan_includes_library_files(self):

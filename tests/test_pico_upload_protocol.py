@@ -129,7 +129,6 @@ class UploadProtocolTests(unittest.TestCase):
         self.assertEqual(self._u32(reply, 6), len(payload))
         self.assertEqual(self._u32(reply, 10), 0)
         self.assertEqual(self.prepared, [(self.AppCommand.SUBMIT_TEXT, payload.decode("utf-8"))])
-        self.assertFalse(self.handler.has_pending_typeback())
 
     def test_upload_chunk_rejects_invalid_index(self):
         self.handler.handle_report(self._begin_report(message_id=4, payload=b"abc"))

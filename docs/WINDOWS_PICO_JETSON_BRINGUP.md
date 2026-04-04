@@ -42,7 +42,6 @@ That updates:
 - `protocol.py`
 - `upload_protocol.py`
 - `serial_bridge.py`
-- `typeback.py`
 - `usb_config.py`
 - `lib\adafruit_hid`
 

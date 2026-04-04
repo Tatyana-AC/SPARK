@@ -22,7 +22,6 @@ FIRMWARE_FILES = (
     "runtime_runner.py",
     "upload_protocol.py",
     "serial_bridge.py",
-    "typeback.py",
     "usb_config.py",
     "code.py",
 )

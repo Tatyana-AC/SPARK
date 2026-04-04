@@ -261,6 +261,19 @@ The next cleanup pass should:
 
 If a visual button indication is still needed after the `skip_highlight_clear` test, the remaining safe direction is to drop integrated-runtime LCD feedback entirely or redesign it around an even less dynamic path than current `displayio` tile movement.
 
+## Removed Worktree Note
+
+An unmerged experimental worktree named `pico-lcd-redesign` was later inspected and intentionally discarded.
+
+That abandoned worktree contained:
+
+- a larger LCD-state / renderer refactor in `pico/lcd_ui.py`
+- startup and button debug changes in `pico/code.py` that re-enabled more CDC logging
+- broader test rewrites in `tests/test_pico_code.py` and `tests/test_pico_lcd_ui.py`
+- a small fake-serial helper adjustment in `tests/test_serial_sender.py`
+
+It was not merged because the work was incomplete, unverified on hardware, and diverged from the narrower step-by-step hardware investigation documented above.
+
 ## Files Touched During Investigation
 
 - `pico/code.py`

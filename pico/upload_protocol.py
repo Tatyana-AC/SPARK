@@ -58,7 +58,6 @@ VALID_APP_COMMANDS = {
 class UploadProtocolHandler:
     def __init__(self, text_preparer=None):
         self._text_preparer = text_preparer or self._default_prepare_text
-        self._pending_typeback = []
         self._response_bytes = b""
         self._response_complete = False
         self._response_active = False
@@ -108,14 +107,6 @@ class UploadProtocolHandler:
             "skipped_count": 0,
             "detail": "accepted",
         }
-
-    def has_pending_typeback(self):
-        return bool(self._pending_typeback)
-
-    def dequeue_typeback_text(self):
-        if not self._pending_typeback:
-            return None
-        return self._pending_typeback.pop(0)
 
     def handle_report(self, report):
         if len(report) == REPORT_SIZE + 1:

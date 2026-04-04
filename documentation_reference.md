@@ -242,6 +242,6 @@ The tracker keeps:
 
 - `spark_app.py` and `host_pc/hid/keyboard_hid.py` are legacy paths kept for reference.
 - `host_pc/raw_hid_example.py` does not reflect the current `SparkHIDClient` API.
-- `tools/pico/deploy_to_pico.py` still copies `pico/typeback.py`, but the active `pico/code.py` runtime does not import it.
+- `pico/typeback.py` and its old typeback queue path were removed from the active CircuitPython runtime.
 - The currently verified summarize path is Raw HID host<->Pico plus UART Pico<->Jetson.
 - The current Jetson deployment target is the `demo/pico_bridge` folder. The repo `jetson/` directory is structured to be copied there directly.

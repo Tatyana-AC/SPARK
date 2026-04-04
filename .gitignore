@@ -33,6 +33,7 @@ AGENTS.md
 # Logs
 *.log
 .tmp/
+.worktrees/
 
 # Distribution / packaging
 dist/
