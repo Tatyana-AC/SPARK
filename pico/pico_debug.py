@@ -11,8 +11,9 @@ _data = usb_cdc.data
 def dbg(msg):
     """Send a debug message to the host over CDC data."""
     if _data is None:
-        return
+        return "no-data"
     try:
-        _data.write(build_debug(str(msg)))
-    except Exception:
-        pass
+        written = _data.write(build_debug(str(msg)))
+        return f"sent:{written}"
+    except Exception as exc:
+        return f"write:{type(exc).__name__}"

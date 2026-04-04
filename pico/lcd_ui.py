@@ -58,13 +58,24 @@ def build_display(bus, *, display_driver_class):
 
 
 class SparkLcdUi:
-    def __init__(self, *, displayio_module, label_module, font, debug_hook=None, debug_checkpoint=None, skip_palette_write=False):
+    def __init__(
+        self,
+        *,
+        displayio_module,
+        label_module,
+        font,
+        debug_hook=None,
+        debug_checkpoint=None,
+        skip_palette_write=False,
+        skip_highlight_update=False,
+    ):
         self._displayio = displayio_module
         self._label = label_module
         self._font = font
         self._debug_hook = debug_hook
         self._debug_checkpoint = debug_checkpoint
         self._skip_palette_write = skip_palette_write
+        self._skip_highlight_update = skip_highlight_update
         self.root_group = displayio_module.Group()
         self.cell_palettes = []
         self.active_cell = None
@@ -132,6 +143,8 @@ class SparkLcdUi:
     def _set_highlight(self, index):
         if self._highlight_grid is None:
             return
+        if self._skip_highlight_update:
+            return
         if self._highlight_grid in self.root_group:
             self.root_group.remove(self._highlight_grid)
         if index is None:
@@ -145,7 +158,8 @@ class SparkLcdUi:
         self._debug_checkpoint_message("start", index)
         if self.active_cell is not None:
             self._debug_checkpoint_message("clear_prev", self.active_cell)
-            self.cell_palettes[self.active_cell][0] = SURFACE
+            if not self._skip_palette_write:
+                self.cell_palettes[self.active_cell][0] = SURFACE
 
         self._debug_checkpoint_message("before_palette_write", index)
         if self._skip_palette_write:
@@ -171,12 +185,18 @@ class SparkLcdUi:
             return
         if (now - self.press_time) <= HIGHLIGHT_SEC:
             return
-        self.cell_palettes[self.active_cell][0] = SURFACE
+        if not self._skip_palette_write:
+            self.cell_palettes[self.active_cell][0] = SURFACE
         self._set_highlight(None)
         self.active_cell = None
 
 
-def initialize_lcd_ui(debug_hook=None, debug_checkpoint=None, skip_palette_write=False):
+def initialize_lcd_ui(
+    debug_hook=None,
+    debug_checkpoint=None,
+    skip_palette_write=False,
+    skip_highlight_update=False,
+):
     import board
     import busio
     import displayio
@@ -206,6 +226,7 @@ def initialize_lcd_ui(debug_hook=None, debug_checkpoint=None, skip_palette_write
         debug_hook=debug_hook,
         debug_checkpoint=debug_checkpoint,
         skip_palette_write=skip_palette_write,
+        skip_highlight_update=skip_highlight_update,
     )
     display.root_group = ui.root_group
     return ui

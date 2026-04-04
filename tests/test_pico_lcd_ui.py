@@ -44,6 +44,14 @@ class FakeLabelModule:
         return FakeLabel(font, **kwargs)
 
 
+class BadCellPalette(list):
+    def __init__(self):
+        super().__init__([None])
+
+    def __setitem__(self, key, value):
+        raise RuntimeError("palette write failed")
+
+
 class FakeFourWire:
     def __init__(self, spi, **kwargs):
         self.spi = spi
@@ -154,6 +162,58 @@ class SparkLcdUiTests(unittest.TestCase):
                 "lcd:handle_press:palette_write_skipped index=0",
             ],
         )
+        self.assertEqual(ui.active_cell, 0)
+        self.assertEqual(ui.press_time, 5.0)
+
+    def test_skip_mode_second_press_avoids_previous_cell_palette_write(self):
+        from pico.lcd_ui import SparkLcdUi
+
+        ui = SparkLcdUi(
+            displayio_module=FakeDisplayIOModule,
+            label_module=FakeLabelModule,
+            font=object(),
+            skip_palette_write=True,
+        )
+        ui.cell_palettes = [BadCellPalette() for _ in range(4)]
+
+        ui.handle_press(0, now=5.0)
+        ui.handle_press(1, now=5.1)
+
+        self.assertEqual(ui.active_cell, 1)
+        self.assertEqual(ui.press_time, 5.1)
+
+    def test_skip_mode_tick_avoids_timeout_palette_clear(self):
+        from pico.lcd_ui import SparkLcdUi
+
+        ui = SparkLcdUi(
+            displayio_module=FakeDisplayIOModule,
+            label_module=FakeLabelModule,
+            font=object(),
+            skip_palette_write=True,
+        )
+        ui.cell_palettes = [BadCellPalette() for _ in range(4)]
+
+        ui.handle_press(0, now=5.0)
+        ui.tick(now=5.0 + self.HIGHLIGHT_SEC + 0.01)
+
+        self.assertIsNone(ui.active_cell)
+
+    def test_disable_highlight_update_avoids_root_group_mutation_on_press(self):
+        from pico.lcd_ui import SparkLcdUi
+
+        ui = SparkLcdUi(
+            displayio_module=FakeDisplayIOModule,
+            label_module=FakeLabelModule,
+            font=object(),
+            skip_palette_write=True,
+            skip_highlight_update=True,
+        )
+        initial_len = len(ui.root_group)
+
+        ui.handle_press(0, now=5.0)
+
+        self.assertEqual(len(ui.root_group), initial_len)
+        self.assertNotIn(ui._highlight_grid, ui.root_group)
         self.assertEqual(ui.active_cell, 0)
         self.assertEqual(ui.press_time, 5.0)
 

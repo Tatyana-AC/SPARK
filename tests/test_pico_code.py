@@ -44,6 +44,26 @@ class _FakeLcdUi:
             self.call_log.append(("lcd", index, now))
         self.presses.append((index, now))
 
+    def tick(self, *, now):
+        if self.call_log is not None:
+            self.call_log.append(("tick", now))
+
+
+class _FakeSerialBridge:
+    def __init__(self, call_log):
+        self.call_log = call_log
+
+    def relay_once(self, *, max_chunk_size):
+        self.call_log.append(("serial", max_chunk_size))
+
+
+class _FakeJetsonTransport:
+    def __init__(self, call_log):
+        self.call_log = call_log
+
+    def poll(self, *, max_chunk_size):
+        self.call_log.append(("transport", max_chunk_size))
+
 
 class PicoCodeTests(unittest.TestCase):
     def _load_code_module(self):
@@ -69,6 +89,7 @@ class PicoCodeTests(unittest.TestCase):
         call_log = []
         lcd_ui = _FakeLcdUi(call_log=call_log)
         buttons = _FakeButtons([_FakeEvent(2), _FakeEvent(1, pressed=False)])
+        module.BUTTON_EVENT_DEBUG_ENABLED = True
         module._send_button_debug = lambda message: call_log.append(("debug", message))
 
         module._drain_button_events(
@@ -87,6 +108,23 @@ class PicoCodeTests(unittest.TestCase):
             ],
         )
         self.assertIsNone(buttons.events.get())
+
+    def test_drain_button_events_skips_debug_when_button_debug_disabled(self):
+        module = self._load_code_module()
+        call_log = []
+        lcd_ui = _FakeLcdUi(call_log=call_log)
+        buttons = _FakeButtons([_FakeEvent(0)])
+        module.BUTTON_EVENT_DEBUG_ENABLED = False
+        module._send_button_debug = lambda message: call_log.append(("debug", message))
+
+        module._drain_button_events(
+            buttons,
+            lcd_ui,
+            now=456.0,
+        )
+
+        self.assertEqual(lcd_ui.presses, [(0, 456.0)])
+        self.assertEqual(call_log, [("lcd", 0, 456.0)])
 
     def test_record_uart_diag_appends_line_to_log_file(self):
         module = self._load_code_module()
@@ -114,6 +152,70 @@ class PicoCodeTests(unittest.TestCase):
         module = self._load_code_module()
 
         self.assertEqual(module.LCD_DEBUG_CHECKPOINT, "after_press_time")
+
+    def test_run_main_loop_iteration_records_post_step_checkpoints(self):
+        module = self._load_code_module()
+        call_log = []
+        serial_bridge = _FakeSerialBridge(call_log)
+        lcd_ui = _FakeLcdUi(call_log=call_log)
+        jetson_transport = _FakeJetsonTransport(call_log)
+        protocol_handler = object()
+        custom_hid = object()
+        buttons = object()
+        sleeps = []
+
+        module._send_button_debug = lambda message: call_log.append(("debug", message))
+        module._drain_button_events = lambda buttons_arg, lcd_ui_arg, now: call_log.append(("buttons", now))
+        module._sync_response_state = lambda protocol_handler_arg, transport_arg: call_log.append(("sync", None))
+        module._drain_hid_reports = (
+            lambda custom_hid_arg, protocol_handler_arg, raw_report_id: call_log.append(("hid", raw_report_id))
+        )
+
+        last_debug_heartbeat = module._run_main_loop_iteration(
+            now=5.0,
+            last_debug_heartbeat=0.0,
+            serial_bridge=serial_bridge,
+            buttons=buttons,
+            lcd_ui=lcd_ui,
+            jetson_transport=jetson_transport,
+            protocol_handler=protocol_handler,
+            custom_hid=custom_hid,
+            raw_report_id=9,
+            time_sleep=sleeps.append,
+        )
+
+        self.assertEqual(last_debug_heartbeat, 5.0)
+        self.assertEqual(module._last_loop_checkpoint, "after_sleep")
+        self.assertEqual(
+            call_log,
+            [
+                ("debug", "heartbeat"),
+                ("serial", module.CDC_RELAY_SLICE_BYTES),
+                ("buttons", 5.0),
+                ("transport", module.CDC_RELAY_SLICE_BYTES),
+                ("sync", None),
+                ("hid", 9),
+                ("tick", 5.0),
+            ],
+        )
+        self.assertEqual(sleeps, [module.BUTTON_POLL_SLEEP_S])
+
+    def test_prepare_upload_result_includes_last_loop_checkpoint(self):
+        module = self._load_code_module()
+        module._last_cdc_debug_status = "heartbeat|sent:27"
+        module._last_loop_checkpoint = "after_button_events"
+
+        result = module._prepare_upload_result(
+            1,
+            "probe",
+            AppCommand=types.SimpleNamespace(FEATURE_1=99),
+            StatusCode=types.SimpleNamespace(INTERNAL_ERROR=9, BUSY=1),
+        )
+
+        self.assertEqual(
+            result["response_text"],
+            "PICO ECHO: probe\nCDC DEBUG: heartbeat|sent:27\nLOOP CHECKPOINT: after_button_events",
+        )
 
 
 if __name__ == "__main__":

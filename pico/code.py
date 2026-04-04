@@ -9,13 +9,21 @@ STARTUP_TRACE_PATH = "startup_trace.txt"
 UART_DIAG_LOG_PATH = "uart_diag.txt"
 LCD_DEBUG_CHECKPOINT = "after_press_time"
 LCD_SKIP_PALETTE_WRITE = True
+# Dynamic highlight group mutation crashes the integrated runtime on real hardware.
+LCD_SKIP_HIGHLIGHT_UPDATE = True
+CDC_DEBUG_HEARTBEAT_S = 2.0
+BUTTON_EVENT_DEBUG_ENABLED = False
 
 jetson_transport = None
 _last_response_signature = None
+_last_cdc_debug_status = "never"
+_last_loop_checkpoint = "startup"
 
 
 def _prepare_upload_result(app_command, text, *, AppCommand, StatusCode):
     global jetson_transport
+    global _last_cdc_debug_status
+    global _last_loop_checkpoint
 
     if app_command == AppCommand.FEATURE_1:
         try:
@@ -76,7 +84,11 @@ def _prepare_upload_result(app_command, text, *, AppCommand, StatusCode):
         "accepted_count": len(text),
         "skipped_count": 0,
         "detail": "accepted",
-        "response_text": f"PICO ECHO: {text}",
+        "response_text": (
+            f"PICO ECHO: {text}\n"
+            f"CDC DEBUG: {_last_cdc_debug_status}\n"
+            f"LOOP CHECKPOINT: {_last_loop_checkpoint}"
+        ),
         "app_command": int(app_command),
     }
 
@@ -97,15 +109,21 @@ def _record_uart_diag(event):
 
 
 def _send_button_debug(message):
+    global _last_cdc_debug_status
+
     try:
         from pico.pico_debug import dbg
     except ImportError:
         try:
             from pico_debug import dbg
         except ImportError:
+            _last_cdc_debug_status = "import:fail"
             return
 
-    dbg(message)
+    result = dbg(message)
+    if result is None:
+        result = "unknown"
+    _last_cdc_debug_status = f"{message}|{result}"
 
 
 def _drain_button_events(buttons, lcd_ui, now):
@@ -116,9 +134,11 @@ def _drain_button_events(buttons, lcd_ui, now):
         if not event.pressed:
             continue
         index = event.key_number
-        _send_button_debug(f"PB{index + 1} pressed")
+        if BUTTON_EVENT_DEBUG_ENABLED:
+            _send_button_debug(f"PB{index + 1} pressed")
         lcd_ui.handle_press(index, now=now)
-        _send_button_debug(f"PB{index + 1} done")
+        if BUTTON_EVENT_DEBUG_ENABLED:
+            _send_button_debug(f"PB{index + 1} done")
 
 
 def _drain_hid_reports(custom_hid, protocol_handler, raw_report_id):
@@ -153,6 +173,43 @@ def _sync_response_state(protocol_handler, transport):
         active=transport.request_active,
     )
     _last_response_signature = signature
+
+
+def _run_main_loop_iteration(
+    *,
+    now,
+    last_debug_heartbeat,
+    serial_bridge,
+    buttons,
+    lcd_ui,
+    jetson_transport,
+    protocol_handler,
+    custom_hid,
+    raw_report_id,
+    time_sleep,
+):
+    global _last_loop_checkpoint
+
+    if (now - last_debug_heartbeat) >= CDC_DEBUG_HEARTBEAT_S:
+        _send_button_debug("heartbeat")
+        last_debug_heartbeat = now
+        _last_loop_checkpoint = "after_heartbeat"
+
+    serial_bridge.relay_once(max_chunk_size=CDC_RELAY_SLICE_BYTES)
+    _last_loop_checkpoint = "after_serial_bridge"
+    _drain_button_events(buttons, lcd_ui, now)
+    _last_loop_checkpoint = "after_button_events"
+    jetson_transport.poll(max_chunk_size=CDC_RELAY_SLICE_BYTES)
+    _last_loop_checkpoint = "after_transport_poll"
+    _sync_response_state(protocol_handler, jetson_transport)
+    _last_loop_checkpoint = "after_response_sync"
+    _drain_hid_reports(custom_hid, protocol_handler, raw_report_id)
+    _last_loop_checkpoint = "after_hid_drain"
+    lcd_ui.tick(now=now)
+    _last_loop_checkpoint = "after_lcd_tick"
+    time_sleep(BUTTON_POLL_SLEEP_S)
+    _last_loop_checkpoint = "after_sleep"
+    return last_debug_heartbeat
 
 
 def _main(record_step):
@@ -219,18 +276,25 @@ def _main(record_step):
         debug_hook=_send_button_debug,
         debug_checkpoint=LCD_DEBUG_CHECKPOINT,
         skip_palette_write=LCD_SKIP_PALETTE_WRITE,
+        skip_highlight_update=LCD_SKIP_HIGHLIGHT_UPDATE,
     )
     record_step("lcd ready")
+    last_debug_heartbeat = 0.0
 
     while True:
         now = time.monotonic()
-        serial_bridge.relay_once(max_chunk_size=CDC_RELAY_SLICE_BYTES)
-        _drain_button_events(buttons, lcd_ui, now)
-        jetson_transport.poll(max_chunk_size=CDC_RELAY_SLICE_BYTES)
-        _sync_response_state(protocol_handler, jetson_transport)
-        _drain_hid_reports(custom_hid, protocol_handler, RAW_REPORT_ID)
-        lcd_ui.tick(now=now)
-        time.sleep(BUTTON_POLL_SLEEP_S)
+        last_debug_heartbeat = _run_main_loop_iteration(
+            now=now,
+            last_debug_heartbeat=last_debug_heartbeat,
+            serial_bridge=serial_bridge,
+            buttons=buttons,
+            lcd_ui=lcd_ui,
+            jetson_transport=jetson_transport,
+            protocol_handler=protocol_handler,
+            custom_hid=custom_hid,
+            raw_report_id=RAW_REPORT_ID,
+            time_sleep=time.sleep,
+        )
 
 
 run_with_diagnostics(
