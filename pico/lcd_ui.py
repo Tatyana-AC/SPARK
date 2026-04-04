@@ -19,6 +19,8 @@ CELL_WIDTH = (WIDTH - 2 * PADDING - GAP) // 2
 CELL_HEIGHT = (HEIGHT - BAR_HEIGHT - 2 * PADDING - GAP) // 2
 HIGHLIGHT_SEC = 0.4
 DISPLAY_ROTATION = 180
+HIGHLIGHT_HIDDEN_X = WIDTH
+HIGHLIGHT_HIDDEN_Y = HEIGHT
 
 ACTIONS = ("SYNTHESIS", "REFORMAT", "SEARCH", "RESPOND")
 
@@ -68,6 +70,7 @@ class SparkLcdUi:
         debug_checkpoint=None,
         skip_palette_write=False,
         skip_highlight_update=False,
+        skip_highlight_clear=False,
     ):
         self._displayio = displayio_module
         self._label = label_module
@@ -76,6 +79,7 @@ class SparkLcdUi:
         self._debug_checkpoint = debug_checkpoint
         self._skip_palette_write = skip_palette_write
         self._skip_highlight_update = skip_highlight_update
+        self._skip_highlight_clear = skip_highlight_clear
         self.root_group = displayio_module.Group()
         self.cell_palettes = []
         self.active_cell = None
@@ -138,21 +142,26 @@ class SparkLcdUi:
         bitmap = self._displayio.Bitmap(CELL_WIDTH, CELL_HEIGHT, 1)
         palette = self._displayio.Palette(1)
         palette[0] = ACTIVE
-        self._highlight_grid = self._displayio.TileGrid(bitmap, pixel_shader=palette, x=0, y=0)
+        self._highlight_grid = self._displayio.TileGrid(
+            bitmap,
+            pixel_shader=palette,
+            x=HIGHLIGHT_HIDDEN_X,
+            y=HIGHLIGHT_HIDDEN_Y,
+        )
+        root.append(self._highlight_grid)
 
     def _set_highlight(self, index):
         if self._highlight_grid is None:
             return
         if self._skip_highlight_update:
             return
-        if self._highlight_grid in self.root_group:
-            self.root_group.remove(self._highlight_grid)
         if index is None:
+            self._highlight_grid.x = HIGHLIGHT_HIDDEN_X
+            self._highlight_grid.y = HIGHLIGHT_HIDDEN_Y
             return
         x, y = cell_origin(index)
         self._highlight_grid.x = x
         self._highlight_grid.y = y
-        self.root_group.append(self._highlight_grid)
 
     def handle_press(self, index, *, now):
         self._debug_checkpoint_message("start", index)
@@ -185,6 +194,8 @@ class SparkLcdUi:
             return
         if (now - self.press_time) <= HIGHLIGHT_SEC:
             return
+        if self._skip_highlight_clear:
+            return
         if not self._skip_palette_write:
             self.cell_palettes[self.active_cell][0] = SURFACE
         self._set_highlight(None)
@@ -196,6 +207,7 @@ def initialize_lcd_ui(
     debug_checkpoint=None,
     skip_palette_write=False,
     skip_highlight_update=False,
+    skip_highlight_clear=False,
 ):
     import board
     import busio
@@ -227,6 +239,7 @@ def initialize_lcd_ui(
         debug_checkpoint=debug_checkpoint,
         skip_palette_write=skip_palette_write,
         skip_highlight_update=skip_highlight_update,
+        skip_highlight_clear=skip_highlight_clear,
     )
     display.root_group = ui.root_group
     return ui

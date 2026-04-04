@@ -1,8 +1,8 @@
 # Pico Quickstart
 
-This folder contains the SPARK Pico Hub reference logic for the current CircuitPython firmware design.
+This document covers the SPARK Pico Hub runtime and bring-up flow for the current CircuitPython firmware design.
 
-Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` pair. [`main.py`](C:/SPARK/pico/main.py) is a readable behavioral reference for the same Pico role, not the literal runtime entrypoint.
+Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` pair. [`pico_reference/main.py`](C:/SPARK/pico_reference/main.py) is a readable behavioral reference for the same Pico role, not the literal runtime entrypoint.
 
 Verified button wiring on the current board revision:
 
@@ -13,7 +13,7 @@ Verified button wiring on the current board revision:
 
 ## Current firmware files
 
-The current Pico Hub firmware in this folder is split into:
+The current Pico Hub firmware in `pico/` is split into:
 
 - `boot.py`: configure USB identity (`VID 0xC4C4` / `PID 0x5350`), enable USB CDC data, and expose the custom HID interface used by the host.
 - `code.py`: relay Host CDC bytes to Jetson UART, keep the LCD idle screen active, forward `FEATURE_1` summarize requests to Jetson, buffer streamed Jetson responses, and handle custom Raw HID traffic.
@@ -61,7 +61,7 @@ If the onboard LED blinks, CircuitPython is installed correctly.
 Preferred path:
 
 ```bash
-python pico/deploy_to_pico.py
+python tools/pico/deploy_to_pico.py
 ```
 
 That script will:
@@ -69,14 +69,17 @@ That script will:
 - detect the mounted `CIRCUITPY` volume on Windows or macOS
 - copy the SPARK firmware files to the root of the board
 - install the runtime libraries needed by the current Pico runtime, including `adafruit_hid`, `adafruit_bus_device`, `adafruit_display_text`, and `adafruit_ili9341.py`
+- remove stale non-preserved files from `CIRCUITPY` so the default deployed runtime exactly matches the repo-owned runtime set
 
 Useful flags:
 
 ```bash
-python pico/deploy_to_pico.py --dry-run
-python pico/deploy_to_pico.py --target /Volumes/CIRCUITPY
-python pico/deploy_to_pico.py --library-source /path/to/lib
+python tools/pico/deploy_to_pico.py --dry-run
+python tools/pico/deploy_to_pico.py --target /Volumes/CIRCUITPY
+python tools/pico/deploy_to_pico.py --library-source /path/to/lib
 ```
+
+Use `--dry-run` before deploying if you want to review planned deletions and copies without mutating the board.
 
 Manual path if needed:
 
@@ -124,6 +127,6 @@ The active firmware contract is V2 upload-only:
 - `FEATURE_1` forwards a structured summarize request to Jetson over UART and buffers the streamed Jetson response for host polling
 - `Summarize Window` is now verified as a Jetson-backed streamed path
 - large Jetson summarize responses must be split across multiple framed UART packets; the Jetson bridge in `jetson/pico_llm_bridge.py` now does that explicitly for the real board
-- the current hardware-verified deployment flow is: copy the repo `jetson/` folder into the Jetson `demo/pico_bridge` directory, then deploy this `pico/` folder to `CIRCUITPY`
+- the current hardware-verified deployment flow is: copy the repo `jetson/` folder into the Jetson `demo/pico_bridge` directory, then run `python tools/pico/deploy_to_pico.py` to exact-sync the default `pico/` runtime onto `CIRCUITPY`
 
 Legacy `0xA0` / `0xA1` / `0xB0` keyboard-trigger/status reports are not part of the current CircuitPython firmware.

@@ -29,8 +29,10 @@ On the Jetson:
 From the repo root on Windows:
 
 ```powershell
-.\.venv\Scripts\python.exe .\pico\deploy_to_pico.py --target D:\
+.\.venv\Scripts\python.exe .\tools\pico\deploy_to_pico.py --target D:\
 ```
+
+This deploy now exact-syncs the default Pico runtime and removes stale non-preserved files from `CIRCUITPY`. Use `--dry-run` first if you want to inspect planned deletions.
 
 That updates:
 

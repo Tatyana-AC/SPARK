@@ -102,8 +102,8 @@ Important: install `hidapi`, not the separate `hid` package.
 - `diagram.md`: high-level three-node system diagram for the current architecture
 - `docs/BRANCH_HANDOFF_2026-03-24.md`: summary of branch changes since Tatyana's last handoff
 - `docs/BRANCH_HANDOFF_2026-03-29.md`: follow-up handoff covering the LCD UI kit, browser extraction, and smoke-test additions
-- `pico/README.md`: Pico firmware notes and bring-up
-- `pico/HARDWARE_SMOKE_TEST.md`: post-deploy Pico verification checklist
+- `docs/pico/README.md`: Pico firmware notes and bring-up
+- `docs/pico/HARDWARE_SMOKE_TEST.md`: post-deploy Pico verification checklist
 - `ACCESSIBILITY_PERMISSIONS.md`: macOS accessibility setup
 - `documentation_reference.md`: current developer lookup for host behavior and extension points
 - `jetson/`: deployable Jetson bridge bundle intended to be copied into the Jetson-side `demo/pico_bridge` folder
@@ -114,10 +114,11 @@ Important: install `hidapi`, not the separate `hid` package.
 - `spark_app.py` is an older UI path and should be treated as secondary.
 - `lcd_screen_ui/` is a standalone React/Vite UI kit for the 320x240 LCD workflow screens.
 - The current Pico firmware target is CircuitPython.
-- `pico/main.py` is a readable behavioral reference for the Pico role, not the literal deployed `boot.py` / `code.py` pair.
+- `pico_reference/main.py` is a readable behavioral reference for the Pico role, not the literal deployed `boot.py` / `code.py` pair.
 - `pico/lcd_smoke_test.py` is a separate display/button bring-up script, not part of the default deploy flow.
 - Current auxiliary input wiring: EC11 encoder A/B/button/common -> GP10/GP11/GP9/GND, and three-position slide switch positions 1/2/3/common -> GP6/GP7/GP8/GND.
-- `python pico/deploy_to_pico.py` is the cross-platform helper to push the Pico firmware and `adafruit_hid` onto a mounted `CIRCUITPY` board.
+- `python tools/pico/deploy_to_pico.py` is the cross-platform helper to push the Pico firmware and `adafruit_hid` onto a mounted `CIRCUITPY` board.
+- Deploy now exact-syncs the default Pico runtime and removes stale non-preserved files from `CIRCUITPY`; use `--dry-run` to inspect planned deletions first.
 - `Release Text` uploads text to the Pico, waits for an acknowledgment, and updates the local `RELEASE OUTPUT` panel. It does not type text back into the currently focused external app.
 - `Summarize Window` now sends a structured active-window request to the Pico over Raw HID. The Pico forwards that request to Jetson over UART, and the host streams the Jetson response into `RELEASE OUTPUT`.
 - Browser polling can now use `host_pc/web_content.py` to extract visible text from supported Chrome/Safari tabs when the accessibility tree is sparse.

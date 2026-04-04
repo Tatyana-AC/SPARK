@@ -132,6 +132,73 @@ Conclusion:
 - disabling highlight updates made the integrated runtime stable
 - the board survived the first press and kept running the main loop
 
+### 7. Re-enable palette writes while keeping highlight mutation disabled
+
+To test whether visible feedback could safely come back through the existing cell palette, the runtime was changed to:
+
+- keep `skip_highlight_update=False`
+- temporarily set `LCD_SKIP_PALETTE_WRITE = False`
+
+Result on hardware:
+
+- pressing `PB1` crashed the Pico again
+- no visible LCD feedback was observed before the crash
+- CDC heartbeats stopped and the device later dropped off USB
+
+Conclusion:
+
+- first-press palette mutation is also unsafe in the integrated runtime
+
+### 8. Fix the PB2/PB3 logical order
+
+Observed hardware behavior showed that button indexes `1` and `2` were swapped relative to the physical labels.
+
+Change made:
+
+- `BUTTON_PIN_NUMBERS` updated from `(2, 4, 3, 5)` to `(2, 3, 4, 5)`
+
+Status:
+
+- code and tests were updated
+- this is not fully hardware-validated yet because `PB1` crash experiments still blocked broader button verification
+
+### 9. Replace append/remove with an always-attached highlight tile
+
+The next visual-feedback experiment kept palette writes disabled and changed the highlight overlay behavior so the tile is:
+
+- attached once during idle-screen construction
+- moved in-place with `x/y` on press
+- hidden offscreen instead of being removed from `root_group`
+
+Result on hardware:
+
+- pressing `PB1` produced `lcd:handle_press:after_press_time index=0`
+- one additional heartbeat arrived afterward
+- the LCD still did not visibly update before failure
+- roughly 20 seconds later the Pico disconnected from USB
+
+Conclusion:
+
+- the initial in-place highlight move is safer than append/remove or palette writes, because the handler returns and the loop advances at least once
+- however, the runtime still destabilizes later in the button-highlight lifecycle
+
+### 10. Current one-variable experiment
+
+The latest build on the branch keeps:
+
+- `LCD_SKIP_PALETTE_WRITE = True`
+- `LCD_SKIP_HIGHLIGHT_UPDATE = False`
+- `LCD_SKIP_HIGHLIGHT_CLEAR = True`
+
+Purpose:
+
+- isolate whether the delayed crash is caused by the timeout clear path in `lcd_ui.tick()` rather than the initial in-place highlight move
+
+Status:
+
+- code and tests are updated for this experiment
+- at the time of this note, this specific build had been deployed but not yet hardware-verified
+
 ## Final Finding
 
 This is not an app-level debounce issue.
@@ -141,28 +208,40 @@ There is no explicit debounce window in our firmware:
 - `pico/code.py` consumes `keypad.Keys(...)` events directly
 - no custom cooldown or duplicate suppression is applied in the runtime loop
 
-The real breakage is the runtime-time LCD highlight mutation, specifically dynamic `displayio` scene-graph mutation on button press.
+The real breakage is the runtime-time LCD feedback path, not debounce and not basic LCD startup.
 
-Most likely trigger:
+Confirmed unsafe operations:
 
-- `pico/lcd_ui.py:_set_highlight()` removing and appending `_highlight_grid` on `root_group`
+- cell palette mutation on press
+- highlight `root_group.append/remove` mutation on press
+
+Partially safer but still unresolved:
+
+- moving an always-attached highlight tile in-place lets `handle_press()` complete and the loop continue briefly, but the integrated runtime still later wedges
 
 What was ruled out:
 
 - basic LCD startup/init
 - standalone smoke-test bring-up
-- first-press palette writes
+- first-press palette writes as a safe solution
 - button-wrapper CDC debug messages
 - generic CDC heartbeat output
 - app-level debounce as the primary cause
 
 ## Current Runtime Workaround
 
-The current runtime diagnostic build keeps the device stable by avoiding runtime LCD mutations that were shown to crash the board:
+The most recently hardware-verified stable build keeps the device stable by avoiding runtime LCD mutations that were shown to crash the board:
 
 - `LCD_SKIP_PALETTE_WRITE = True`
 - `LCD_SKIP_HIGHLIGHT_UPDATE = True`
 - `BUTTON_EVENT_DEBUG_ENABLED = False`
+
+The current branch head is a newer experiment, not yet fully verified on hardware. It keeps:
+
+- `LCD_SKIP_PALETTE_WRITE = True`
+- `LCD_SKIP_HIGHLIGHT_UPDATE = False`
+- `LCD_SKIP_HIGHLIGHT_CLEAR = True`
+- `BUTTON_PIN_NUMBERS = (2, 3, 4, 5)`
 
 Temporary diagnostics currently remain in place:
 
@@ -174,12 +253,13 @@ Temporary diagnostics currently remain in place:
 
 The next cleanup pass should:
 
-1. remove the temporary heartbeat and loop-checkpoint diagnostics
-2. keep the runtime stable by leaving highlight updates disabled
-3. leave the standalone smoke test unchanged
-4. keep a short code comment explaining why runtime highlight updates are disabled on real hardware
+1. hardware-test the current `skip_highlight_clear` branch build
+2. if that still crashes, conclude that even the initial in-place highlight move is unsafe in the integrated runtime
+3. preserve the corrected `BUTTON_PIN_NUMBERS = (2, 3, 4, 5)` mapping regardless of LCD outcome
+4. remove the temporary heartbeat and loop-checkpoint diagnostics after the LCD path is settled
+5. leave the standalone smoke test unchanged
 
-If a visual button indication is needed later, redesign it so all display objects are attached at startup and only existing state changes at runtime. Avoid `root_group.append(...)` / `root_group.remove(...)` on press in the integrated runtime.
+If a visual button indication is still needed after the `skip_highlight_clear` test, the remaining safe direction is to drop integrated-runtime LCD feedback entirely or redesign it around an even less dynamic path than current `displayio` tile movement.
 
 ## Files Touched During Investigation
 

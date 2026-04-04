@@ -95,7 +95,7 @@ Operational note:
 | Change the Pico UART summarize transport | `pico/jetson_transport.py` and `pico/code.py` | `JetsonTransport.start_request()`, `JetsonTransport.poll()` |
 | Change the Jetson bridge or llama handoff | `jetson/pico_llm_bridge.py` | `handle_summarize_request()`, `_emit_summary_response()`, `run_bridge()` |
 | Change Pico USB identity or HID descriptor | `pico/usb_config.py` and `pico/boot.py` | USB constants and `usb_hid.enable(...)` |
-| Change deploy-to-board behavior | `pico/deploy_to_pico.py` | `FIRMWARE_FILES`, `run_deploy()` |
+| Change deploy-to-board behavior | `tools/pico/deploy_to_pico.py` | `FIRMWARE_FILES`, `run_deploy()` |
 | Change hotkeys | `host_pc/hotkeys.py` | `get_hotkey_config()` and `GlobalHotkeyManager` |
 
 Windows hotkey note:
@@ -128,8 +128,8 @@ Windows hotkey note:
 | `jetson/db_manager.py` | Rich-session Jetson SQLite store |
 | `pico/boot.py` | Pico USB identity and interface configuration |
 | `pico/code.py` | Active Pico runtime loop for CDC relay, button injection, and HID handling |
-| `pico/main.py` | Readable reference implementation, not the deployed entrypoint |
-| `pico/deploy_to_pico.py` | Cross-platform deploy helper for a mounted `CIRCUITPY` board |
+| `pico_reference/main.py` | Readable reference implementation, not the deployed entrypoint |
+| `tools/pico/deploy_to_pico.py` | Cross-platform deploy helper for a mounted `CIRCUITPY` board |
 
 ## Key Data Models
 
@@ -242,6 +242,6 @@ The tracker keeps:
 
 - `spark_app.py` and `host_pc/hid/keyboard_hid.py` are legacy paths kept for reference.
 - `host_pc/raw_hid_example.py` does not reflect the current `SparkHIDClient` API.
-- `pico/deploy_to_pico.py` still copies `pico/typeback.py`, but the active `pico/code.py` runtime does not import it.
+- `tools/pico/deploy_to_pico.py` still copies `pico/typeback.py`, but the active `pico/code.py` runtime does not import it.
 - The currently verified summarize path is Raw HID host<->Pico plus UART Pico<->Jetson.
 - The current Jetson deployment target is the `demo/pico_bridge` folder. The repo `jetson/` directory is structured to be copied there directly.

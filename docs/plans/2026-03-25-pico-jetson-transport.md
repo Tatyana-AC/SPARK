@@ -26,7 +26,7 @@
   - Cover response-info flags.
 - Test: `C:\SPARK\tests\test_host_raw_hid_client.py`
   - Cover streamed polling until completion.
-- Modify after verification: `C:\SPARK\README.md`, `C:\SPARK\ENGINEERING_SPEC.md`, `C:\SPARK\REPO_STRUCTURE.md`, `C:\SPARK\documentation_reference.md`, `C:\SPARK\pico\README.md`
+- Modify after verification: `C:\SPARK\README.md`, `C:\SPARK\ENGINEERING_SPEC.md`, `C:\SPARK\REPO_STRUCTURE.md`, `C:\SPARK\documentation_reference.md`, `C:\SPARK\docs\pico\README.md`
   - Sync docs to the verified Pico<->Jetson transport behavior.
 
 ### Task 1: Pico UART Transport Helper
@@ -166,11 +166,11 @@ Expected: PASS
 - Modify after verification: `C:\SPARK\ENGINEERING_SPEC.md`
 - Modify after verification: `C:\SPARK\REPO_STRUCTURE.md`
 - Modify after verification: `C:\SPARK\documentation_reference.md`
-- Modify after verification: `C:\SPARK\pico\README.md`
+- Modify after verification: `C:\SPARK\docs\pico\README.md`
 
 - [ ] **Step 1: Deploy firmware**
 
-Run: `.\.venv\Scripts\python.exe .\pico\deploy_to_pico.py --target G:\`
+Run: `.\.venv\Scripts\python.exe .\tools\pico\deploy_to_pico.py --target G:\`
 
 - [ ] **Step 2: Verify live path**
 

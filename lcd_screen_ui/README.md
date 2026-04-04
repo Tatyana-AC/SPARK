@@ -72,5 +72,5 @@ Each action button cell (148 × 96 px) contains, top to bottom:
 ## Hardware smoke test
 
 A separate CircuitPython script for validating the physical display is at
-`pico/lcd_smoke_test.py`. See `pico/HARDWARE_SMOKE_TEST.md` for wiring and
+`pico/lcd_smoke_test.py`. See `docs/pico/HARDWARE_SMOKE_TEST.md` for wiring and
 library setup.

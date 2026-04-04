@@ -81,13 +81,13 @@ Related files:
 
 This branch now includes a cross-platform deploy helper:
 
-- [`pico/deploy_to_pico.py`](C:/SPARK/pico/deploy_to_pico.py)
+- [`tools/pico/deploy_to_pico.py`](C:/SPARK/tools/pico/deploy_to_pico.py)
 
 It does the following:
 
 - auto-detects a mounted `CIRCUITPY` volume on Windows/macOS
 - copies the SPARK firmware files flat to the board root
-- caches `adafruit_hid` under [`pico/vendor`](C:/SPARK/pico/vendor)
+- caches `adafruit_hid` under [`tools/pico/vendor`](C:/SPARK/tools/pico/vendor)
 - installs that cached library bundle onto the board when needed
 
 ### 5. Release flow changed from keyboard injection to app-side output
@@ -145,8 +145,8 @@ The following docs were added or substantially rewritten after the handoff:
 - [`README.md`](C:/SPARK/README.md)
 - [`REPO_STRUCTURE.md`](C:/SPARK/REPO_STRUCTURE.md)
 - [`ENGINEERING_SPEC.md`](C:/SPARK/ENGINEERING_SPEC.md)
-- [`pico/README.md`](C:/SPARK/pico/README.md)
-- [`pico/HARDWARE_SMOKE_TEST.md`](C:/SPARK/pico/HARDWARE_SMOKE_TEST.md)
+- [`docs/pico/README.md`](C:/SPARK/docs/pico/README.md)
+- [`docs/pico/HARDWARE_SMOKE_TEST.md`](C:/SPARK/docs/pico/HARDWARE_SMOKE_TEST.md)
 - this file
 
 ## Test and Verification Coverage Added

@@ -291,7 +291,7 @@ Supporting modules:
 - `pico/serial_bridge.py`
 - `pico/usb_config.py`
 
-`pico/main.py` remains a behavioral reference, not the deployed runtime entrypoint.
+`pico_reference/main.py` remains a behavioral reference, not the deployed runtime entrypoint.
 
 ### 4.2 Hardware Routing
 

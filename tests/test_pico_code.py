@@ -153,6 +153,13 @@ class PicoCodeTests(unittest.TestCase):
 
         self.assertEqual(module.LCD_DEBUG_CHECKPOINT, "after_press_time")
 
+    def test_runtime_defaults_keep_palette_updates_but_disable_highlight_group_mutation(self):
+        module = self._load_code_module()
+
+        self.assertTrue(module.LCD_SKIP_PALETTE_WRITE)
+        self.assertFalse(module.LCD_SKIP_HIGHLIGHT_UPDATE)
+        self.assertTrue(module.LCD_SKIP_HIGHLIGHT_CLEAR)
+
     def test_run_main_loop_iteration_records_post_step_checkpoints(self):
         module = self._load_code_module()
         call_log = []

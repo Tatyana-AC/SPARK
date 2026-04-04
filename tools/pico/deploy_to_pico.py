@@ -34,6 +34,14 @@ RUNTIME_LIBRARY_PATHS = (
     "adafruit_ili9341.py",
 )
 
+PRESERVE_PATHS = (
+    "boot_out.txt",
+    "System Volume Information/",
+    ".Trashes/",
+    ".Spotlight-V100/",
+    ".fseventsd/",
+)
+
 GITHUB_LATEST_BUNDLE_API = (
     "https://api.github.com/repos/adafruit/Adafruit_CircuitPython_Bundle/releases/latest"
 )
@@ -46,7 +54,7 @@ class DeployError(RuntimeError):
 
 
 def repo_root():
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def pico_source_dir(repo=None):
@@ -54,7 +62,7 @@ def pico_source_dir(repo=None):
 
 
 def pico_vendor_dir(repo=None):
-    return pico_source_dir(repo) / "vendor"
+    return (repo or repo_root()) / "tools" / "pico" / "vendor"
 
 
 def cached_adafruit_hid_dir(repo=None):
@@ -68,6 +76,187 @@ def cached_bundle_zip_path(repo=None):
 def cached_runtime_library_paths(repo=None):
     vendor_dir = pico_vendor_dir(repo)
     return [vendor_dir / relative_path for relative_path in RUNTIME_LIBRARY_PATHS]
+
+
+def default_runtime_manifest():
+    return FIRMWARE_FILES
+
+
+def default_preserve_paths():
+    return PRESERVE_PATHS
+
+
+def normalize_target_relpath(path):
+    return str(path).replace("\\", "/").strip("/").lower()
+
+
+def is_preserved_path(path, preserve_paths=None):
+    normalized = normalize_target_relpath(path)
+    for preserve_path in preserve_paths or default_preserve_paths():
+        entry = str(preserve_path).replace("\\", "/")
+        is_dir = entry.endswith("/")
+        normalized_entry = normalize_target_relpath(entry)
+        if is_dir:
+            if normalized == normalized_entry or normalized.startswith(normalized_entry + "/"):
+                return True
+            continue
+        if normalized == normalized_entry:
+            return True
+    return False
+
+
+def _relative_target_path(path):
+    return Path(normalize_target_relpath(path)) if normalize_target_relpath(path) else Path()
+
+
+def iter_target_files_from_source(source_path, target_relative_root):
+    source_path = Path(source_path)
+    target_relative_root = _relative_target_path(target_relative_root)
+    if source_path.is_dir():
+        for child in sorted(source_path.rglob("*")):
+            if child.is_file():
+                yield normalize_target_relpath(target_relative_root / child.relative_to(source_path))
+        return
+    yield normalize_target_relpath(target_relative_root)
+
+
+def iter_library_target_files_from_sources(source_paths, target_paths):
+    for source_path, target_path in zip(source_paths, target_paths):
+        yield from iter_target_files_from_source(source_path, target_path)
+
+
+def build_source_plan(repo=None, library_source=None):
+    repo = repo or repo_root()
+    firmware = [(source, Path(source.name)) for source in firmware_sources(repo)]
+    source_paths, target_paths, mode = resolve_runtime_library_sources(repo=repo, library_source=library_source)
+    return {
+        "firmware": firmware,
+        "library_sources": source_paths,
+        "library_targets": [Path("lib") / Path(relative_path).name for relative_path in RUNTIME_LIBRARY_PATHS],
+        "library_mode": mode,
+    }
+
+
+def default_desired_target_paths_from_source_plan(source_plan):
+    desired = {
+        normalize_target_relpath(destination)
+        for _, destination in source_plan["firmware"]
+    }
+    desired.update(
+        iter_library_target_files_from_sources(
+            source_plan["library_sources"],
+            source_plan["library_targets"],
+        )
+    )
+    return desired
+
+
+def _desired_directory_paths(desired_paths):
+    directories = set()
+    for desired_path in desired_paths:
+        path = _relative_target_path(desired_path)
+        for parent in path.parents:
+            if str(parent) == ".":
+                continue
+            directories.add(normalize_target_relpath(parent))
+    return directories
+
+
+def find_stale_target_paths(target_root, desired_paths, preserve_paths=None):
+    target_root = Path(target_root)
+    desired_paths = {normalize_target_relpath(path) for path in desired_paths}
+    desired_directories = _desired_directory_paths(desired_paths)
+    stale_paths = []
+
+    for path in sorted(target_root.rglob("*")):
+        rel = normalize_target_relpath(path.relative_to(target_root))
+        if path.is_file():
+            if rel in desired_paths or is_preserved_path(rel, preserve_paths):
+                continue
+            stale_paths.append(path)
+
+    for path in sorted(target_root.rglob("*"), key=lambda entry: len(entry.relative_to(target_root).parts), reverse=True):
+        if not path.is_dir():
+            continue
+        rel = normalize_target_relpath(path.relative_to(target_root))
+        if not rel or rel in desired_directories or is_preserved_path(rel, preserve_paths):
+            continue
+        if any(child not in stale_paths and child.exists() for child in path.iterdir()):
+            continue
+        stale_paths.append(path)
+
+    return stale_paths
+
+
+def delete_stale_paths(stale_paths):
+    for path in stale_paths:
+        _remove_existing_path(path)
+
+
+def exact_sync_cleanup(target_root, desired_paths, preserve_paths=None):
+    stale_paths = find_stale_target_paths(target_root, desired_paths, preserve_paths)
+    delete_stale_paths(stale_paths)
+
+
+def _source_size_bytes(source_path):
+    source_path = Path(source_path)
+    if source_path.is_dir():
+        return sum(child.stat().st_size for child in source_path.rglob("*") if child.is_file())
+    return source_path.stat().st_size
+
+
+def plan_copy_bytes(source_plan):
+    total = 0
+    for source, _ in source_plan["firmware"]:
+        total += _source_size_bytes(source)
+    for source in source_plan["library_sources"]:
+        total += _source_size_bytes(source)
+    return total
+
+
+def target_free_bytes(target_path):
+    return shutil.disk_usage(target_path).free
+
+
+def needs_space_cleanup(target_path, source_plan):
+    return target_free_bytes(target_path) < plan_copy_bytes(source_plan)
+
+
+def still_insufficient_space(target_path, source_plan):
+    return target_free_bytes(target_path) < plan_copy_bytes(source_plan)
+
+
+def build_copy_plan(target_root, source_plan):
+    target_root = Path(target_root)
+    support_copies = []
+    code_copy = []
+
+    for source, relative_destination in source_plan["firmware"]:
+        copy = (source, target_root / relative_destination)
+        if Path(relative_destination).name == "code.py":
+            code_copy.append(copy)
+        else:
+            support_copies.append(copy)
+
+    support_copies.extend(
+        (source_path, target_root / target_path)
+        for source_path, target_path in zip(
+            source_plan["library_sources"],
+            source_plan["library_targets"],
+        )
+    )
+
+    return support_copies, code_copy
+
+
+def copy_planned_files(copies):
+    for source, destination in copies:
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if Path(source).is_dir():
+            copy_library_path(source, destination)
+            continue
+        _copy_with_retry(source, destination)
 
 
 def firmware_sources(repo=None):
@@ -346,24 +535,13 @@ def _resolve_library_source_paths(repo=None, library_source=None):
     return resolved
 
 
-def ensure_runtime_libraries(target_root, repo=None, library_source=None, dry_run=False):
-    target_root = Path(target_root)
+def resolve_runtime_library_sources(repo=None, library_source=None):
     repo = repo or repo_root()
-    lib_dir = target_root / "lib"
-    target_paths = [lib_dir / Path(relative_path).name for relative_path in RUNTIME_LIBRARY_PATHS]
-
     source_paths = _resolve_library_source_paths(repo=repo, library_source=library_source)
     if source_paths is not None:
-        if dry_run:
-            return source_paths, target_paths, "local"
-        for source_path, target_path in zip(source_paths, target_paths):
-            copy_library_path(source_path, target_path)
+        target_paths = [Path("lib") / Path(relative_path).name for relative_path in RUNTIME_LIBRARY_PATHS]
         return source_paths, target_paths, "local"
 
-    if dry_run:
-        return cached_runtime_library_paths(repo), target_paths, "download"
-
-    lib_dir.mkdir(parents=True, exist_ok=True)
     vendor_dir = pico_vendor_dir(repo)
     vendor_dir.mkdir(parents=True, exist_ok=True)
     bundle_zip = cached_bundle_zip_path(repo)
@@ -374,11 +552,26 @@ def ensure_runtime_libraries(target_root, repo=None, library_source=None, dry_ru
             vendor_dir,
             required_paths=RUNTIME_LIBRARY_PATHS,
         )
-        for source_path, target_path in zip(source_paths, target_paths):
-            copy_library_path(source_path, target_path)
     except Exception as exc:
-        raise DeployError(f"Could not install runtime libraries: {exc}") from exc
+        raise DeployError(f"Could not prepare runtime libraries: {exc}") from exc
+
+    target_paths = [Path("lib") / Path(relative_path).name for relative_path in RUNTIME_LIBRARY_PATHS]
     return source_paths, target_paths, "download"
+
+
+def ensure_runtime_libraries(target_root, repo=None, library_source=None, dry_run=False):
+    target_root = Path(target_root)
+    repo = repo or repo_root()
+    source_paths, relative_targets, mode = resolve_runtime_library_sources(repo=repo, library_source=library_source)
+    target_paths = [target_root / relative_target for relative_target in relative_targets]
+
+    if dry_run:
+        return source_paths, target_paths, mode
+
+    (target_root / "lib").mkdir(parents=True, exist_ok=True)
+    for source_path, target_path in zip(source_paths, target_paths):
+        copy_library_path(source_path, target_path)
+    return source_paths, target_paths, mode
 
 
 def copy_firmware_files(target_root, repo=None, dry_run=False):
@@ -414,17 +607,47 @@ def _copy_with_retry(source, destination):
             time.sleep(TRANSIENT_COPY_SLEEP_S)
 
 
-def run_deploy(target=None, library_source=None, dry_run=False):
-    repo = repo_root()
+def run_deploy(target=None, library_source=None, dry_run=False, repo=None):
+    repo = repo or repo_root()
     target_path = detect_target_path(target)
-    copies = copy_firmware_files(target_path, repo=repo, dry_run=dry_run)
-    library_result = ensure_runtime_libraries(
-        target_path,
-        repo=repo,
-        library_source=library_source,
-        dry_run=dry_run,
+    source_plan = build_source_plan(repo=repo, library_source=library_source)
+    desired_paths = default_desired_target_paths_from_source_plan(source_plan)
+    preserve_paths = set(default_preserve_paths())
+    stale_paths = find_stale_target_paths(target_path, desired_paths, preserve_paths)
+    support_copies, code_copy = build_copy_plan(target_path, source_plan)
+    all_copies = support_copies + code_copy
+    library_result = (
+        source_plan["library_sources"],
+        [target_path / target_path_rel for target_path_rel in source_plan["library_targets"]],
+        source_plan["library_mode"],
     )
-    return target_path, copies, library_result
+
+    if dry_run:
+        return target_path, all_copies, library_result, stale_paths
+
+    mutation_started = False
+    try:
+        if needs_space_cleanup(target_path, source_plan):
+            mutation_started = True
+            delete_stale_paths(stale_paths)
+            stale_paths = find_stale_target_paths(target_path, desired_paths, preserve_paths)
+            if still_insufficient_space(target_path, source_plan):
+                raise DeployError("Not enough space after stale cleanup; preserved and desired files were left untouched")
+
+        mutation_started = True
+        copy_planned_files(support_copies)
+        if stale_paths:
+            delete_stale_paths(stale_paths)
+        copy_planned_files(code_copy)
+        return target_path, all_copies, library_result, stale_paths
+    except DeployError as exc:
+        if mutation_started:
+            raise DeployError(f"{exc} Reconnect or reset the Pico and rerun deploy.") from exc
+        raise
+    except Exception as exc:
+        if mutation_started:
+            raise DeployError(f"Deployment failed after mutating CIRCUITPY: {exc}. Reconnect or reset the Pico and rerun deploy.") from exc
+        raise
 
 
 def build_parser():
@@ -443,7 +666,7 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
-        target_path, copies, library_result = run_deploy(
+        target_path, copies, library_result, stale_paths = run_deploy(
             target=args.target,
             library_source=args.library_source,
             dry_run=args.dry_run,
@@ -453,6 +676,13 @@ def main(argv=None):
         return 1
 
     print(f"Target: {target_path}")
+    for stale_path in stale_paths:
+        action = "Would delete" if args.dry_run else "Deleted"
+        try:
+            relative = stale_path.relative_to(target_path)
+        except ValueError:
+            relative = stale_path
+        print(f"{action}: {relative}")
     for source, destination in copies:
         action = "Would copy" if args.dry_run else "Copied"
         print(f"{action}: {source.name} -> {destination}")

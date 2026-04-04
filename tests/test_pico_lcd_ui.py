@@ -66,11 +66,13 @@ class FakeDisplayDriver:
 
 class SparkLcdUiTests(unittest.TestCase):
     def setUp(self):
-        from pico.lcd_ui import ACTIVE, HIGHLIGHT_SEC, SURFACE, SparkLcdUi
+        from pico.lcd_ui import ACTIVE, HEIGHT, HIGHLIGHT_SEC, SURFACE, WIDTH, SparkLcdUi
 
         self.ACTIVE = ACTIVE
+        self.HEIGHT = HEIGHT
         self.HIGHLIGHT_SEC = HIGHLIGHT_SEC
         self.SURFACE = SURFACE
+        self.WIDTH = WIDTH
         self.ui = SparkLcdUi(
             displayio_module=FakeDisplayIOModule,
             label_module=FakeLabelModule,
@@ -209,13 +211,57 @@ class SparkLcdUiTests(unittest.TestCase):
             skip_highlight_update=True,
         )
         initial_len = len(ui.root_group)
+        initial_position = (ui._highlight_grid.x, ui._highlight_grid.y)
 
         ui.handle_press(0, now=5.0)
 
         self.assertEqual(len(ui.root_group), initial_len)
-        self.assertNotIn(ui._highlight_grid, ui.root_group)
+        self.assertIn(ui._highlight_grid, ui.root_group)
+        self.assertEqual((ui._highlight_grid.x, ui._highlight_grid.y), initial_position)
         self.assertEqual(ui.active_cell, 0)
         self.assertEqual(ui.press_time, 5.0)
+
+    def test_highlight_grid_is_attached_once_and_moved_without_group_mutation(self):
+        from pico.lcd_ui import SparkLcdUi
+        from pico.lcd_ui import cell_origin
+
+        ui = SparkLcdUi(
+            displayio_module=FakeDisplayIOModule,
+            label_module=FakeLabelModule,
+            font=object(),
+            skip_palette_write=True,
+        )
+        initial_len = len(ui.root_group)
+        initial_hidden_position = (ui._highlight_grid.x, ui._highlight_grid.y)
+
+        ui.handle_press(1, now=5.0)
+
+        self.assertEqual(len(ui.root_group), initial_len)
+        self.assertIn(ui._highlight_grid, ui.root_group)
+        self.assertEqual(initial_hidden_position, (self.WIDTH, self.HEIGHT))
+        self.assertEqual((ui._highlight_grid.x, ui._highlight_grid.y), cell_origin(1))
+
+        ui.tick(now=5.0 + self.HIGHLIGHT_SEC + 0.01)
+
+        self.assertEqual((ui._highlight_grid.x, ui._highlight_grid.y), (self.WIDTH, self.HEIGHT))
+
+    def test_skip_highlight_clear_keeps_visible_highlight_after_timeout(self):
+        from pico.lcd_ui import SparkLcdUi
+        from pico.lcd_ui import cell_origin
+
+        ui = SparkLcdUi(
+            displayio_module=FakeDisplayIOModule,
+            label_module=FakeLabelModule,
+            font=object(),
+            skip_palette_write=True,
+            skip_highlight_clear=True,
+        )
+
+        ui.handle_press(2, now=5.0)
+        ui.tick(now=5.0 + self.HIGHLIGHT_SEC + 0.01)
+
+        self.assertEqual(ui.active_cell, 2)
+        self.assertEqual((ui._highlight_grid.x, ui._highlight_grid.y), cell_origin(2))
 
     def test_build_display_bus_uses_supplied_fourwire_class(self):
         from pico.lcd_ui import build_display_bus

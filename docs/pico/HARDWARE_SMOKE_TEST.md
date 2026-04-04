@@ -5,10 +5,10 @@ Use this checklist after deploying the CircuitPython firmware to the Pico.
 Recommended deploy command:
 
 ```bash
-python pico/deploy_to_pico.py
+python tools/pico/deploy_to_pico.py
 ```
 
-If `adafruit_hid` is not already available locally, the deploy script will cache it under `pico/vendor/adafruit_hid` before copying it to the board.
+If `adafruit_hid` is not already available locally, the deploy script will cache it under `tools/pico/vendor/adafruit_hid` before copying it to the board.
 
 Verified button wiring on the current board revision:
 

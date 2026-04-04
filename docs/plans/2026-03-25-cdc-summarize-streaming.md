@@ -43,7 +43,7 @@ working bidirectional app<->Pico transport and wire that into the existing UI.
   - Cover summarize prompt generation.
 - Modify after verification: `C:\SPARK\README.md`, `C:\SPARK\ENGINEERING_SPEC.md`,
   `C:\SPARK\REPO_STRUCTURE.md`, `C:\SPARK\documentation_reference.md`,
-  `C:\SPARK\pico\README.md`
+  `C:\SPARK\docs\pico\README.md`
   - Sync docs to the verified HID-only behavior.
 
 ## Execution Plan

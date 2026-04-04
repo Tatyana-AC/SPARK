@@ -29,7 +29,9 @@ SPARK/
 |  `- web_content.py               # Browser JavaScript extraction helper for supported tabs
 |- core/                           # Shared wire protocol builder/parser
 |- jetson/                         # Deployable Jetson bridge bundle and DB layer
-|- pico/                           # Pico relay reference implementation / firmware spec
+|- pico/                           # Pico-runnable CircuitPython runtime files and smoke helpers
+|- pico_reference/                 # Readable Pico reference code that is not part of the deployed runtime
+|- tools/pico/                     # Host-side Pico deploy tooling and vendor cache
 |- lcd_screen_ui/                  # React/Vite LCD workflow UI kit for the ILI9341 target
 |- tests/                          # Focused unit tests
 |- ENGINEERING_SPEC.md             # Best architecture source of truth
@@ -100,7 +102,7 @@ The host node is the user-facing desktop application.
   - Pure-Python implementation of the V2 upload protocol state machine and host-readable response buffer metadata.
 - `pico/serial_bridge.py`
   - CDC-to-UART relay helper and `BUTTON_PRESS` packet builder.
-- `pico/main.py`
+- `pico_reference/main.py`
   - Reference implementation and readable spec for the Pico relay behavior.
   - Treat this as documentation/reference code, not the literal deployed `boot.py` / `code.py` pair.
   - Describes the Pico’s job:
@@ -239,7 +241,7 @@ The main V2 app flow is now:
   - `jetson/pico_llm_bridge.py`
   - `jetson/receiver.py`
   - `jetson/db_manager.py`
-- Pico relay reference: `pico/main.py`
+- Pico relay reference: `pico_reference/main.py`
 - Architecture spec: `ENGINEERING_SPEC.md`
 
 ## Tests and Verification

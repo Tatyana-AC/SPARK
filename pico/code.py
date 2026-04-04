@@ -10,7 +10,8 @@ UART_DIAG_LOG_PATH = "uart_diag.txt"
 LCD_DEBUG_CHECKPOINT = "after_press_time"
 LCD_SKIP_PALETTE_WRITE = True
 # Dynamic highlight group mutation crashes the integrated runtime on real hardware.
-LCD_SKIP_HIGHLIGHT_UPDATE = True
+LCD_SKIP_HIGHLIGHT_UPDATE = False
+LCD_SKIP_HIGHLIGHT_CLEAR = True
 CDC_DEBUG_HEARTBEAT_S = 2.0
 BUTTON_EVENT_DEBUG_ENABLED = False
 
@@ -277,6 +278,7 @@ def _main(record_step):
         debug_checkpoint=LCD_DEBUG_CHECKPOINT,
         skip_palette_write=LCD_SKIP_PALETTE_WRITE,
         skip_highlight_update=LCD_SKIP_HIGHLIGHT_UPDATE,
+        skip_highlight_clear=LCD_SKIP_HIGHLIGHT_CLEAR,
     )
     record_step("lcd ready")
     last_debug_heartbeat = 0.0
