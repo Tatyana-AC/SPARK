@@ -261,6 +261,177 @@ The next cleanup pass should:
 
 If a visual button indication is still needed after the `skip_highlight_clear` test, the remaining safe direction is to drop integrated-runtime LCD feedback entirely or redesign it around an even less dynamic path than current `displayio` tile movement.
 
+## 2026-04-05 Baseline Reproduction Addendum
+
+The exact historical standalone smoke test from commit `766b8d8` was restored onto the current board to answer a narrower question: does the original smoke test still reproduce on today's CircuitPython environment before any integrated-runtime work is attempted?
+
+### Result
+
+- The exact restored `766b8d8` smoke test did **not** reproduce as-is on CircuitPython `10.1.4`.
+- The LCD stayed white.
+- PB1-PB4 showed no visible effect.
+- The Pico stayed connected and did not wedge.
+
+### Evidence gathered
+
+To avoid guessing, a wrapper and then a startup probe were used around the preserved historical script.
+
+The first probe trace showed:
+
+```text
+[1.481] === run start reset=ok ===
+[1.581] startup begin
+[2.148] imports ready
+[2.194] display release
+[2.244] SPI object ready
+[2.292] exception AttributeError: 'module' object has no attribute 'FourWire'
+```
+
+This proves the first reproduction failure happened before `ILI9341(...)` setup completed. The issue was not button handling, not display mutation, and not the later integrated runtime crash path.
+
+### Minimal compatibility test
+
+The smallest possible probe change was then applied:
+
+- keep the historical smoke-test structure and pins the same
+- replace `displayio.FourWire(...)` with `from fourwire import FourWire` and `FourWire(...)`
+
+Hardware result after that one API change:
+
+- the LCD UI appeared
+- PB1-PB4 highlighted correctly
+- the standalone path behaved like a working smoke test again
+
+### Clean deployable smoke demo
+
+After the compatibility finding was confirmed, a non-diagnostic current-compatible smoke demo was prepared for normal use:
+
+- `pico/lcd_smoke_test_current.py`
+- keeps the standalone 4-button UI behavior
+- uses `from fourwire import FourWire`
+- rotates the display clockwise by 90 degrees from the prior working probe angle, using `rotation=180`
+- removes the wrapper/probe trace logic that had temporarily taken ownership of the CIRCUITPY filesystem
+
+Hardware result with the clean smoke demo deployed as `code.py`:
+
+- the rotation is correct
+- PB1-PB4 still highlight correctly
+- the Pico remains writable from the host while the demo is running
+
+### Shared-module extraction step
+
+The next recovery-branch reintegration step extracted the clean standalone path into shared modules without touching the active runtime:
+
+- `pico/pin_config.py`
+- `pico/lcd_ui.py`
+- `pico/lcd_smoke_test_current.py` updated to import those modules
+- `pico/code.py` intentionally left unchanged
+- preserved historical baseline `pico/lcd_smoke_test.py` intentionally left unchanged
+
+Hardware result after deploying the refactored standalone bundle:
+
+- the rotated UI still looks correct
+- PB1-PB4 still highlight correctly
+- the Pico remains writable from the host while the refactored standalone bundle is running
+
+### Active runtime idle-screen rung
+
+The next reintegration rung reintroduced LCD initialization into `pico/code.py` without restoring button handling.
+
+Properties of this rung:
+
+- `pico/code.py` initializes the LCD once during startup
+- the active runtime loop remains transport/HID-only
+- no `keypad` import yet
+- no button-driven LCD feedback yet
+
+Hardware result after deploying the active runtime bundle manually to `CIRCUITPY`:
+
+- the idle LCD screen appears during runtime boot
+- PB1-PB4 do nothing, as intended for this rung
+- the board stays healthy after boot
+
+Host-side transport verification on the same rung:
+
+- Raw HID client connected successfully
+- `get_info()` returned protocol version `2`, chunk payload size `27`, max upload bytes `4096`
+- `ping()` returned `OK` with detail `spark ready`
+
+### Active runtime button-logging rung
+
+The next reintegration rung enabled PB1-PB4 queue draining inside the active runtime without restoring any LCD mutation or transport-side button injection.
+
+Properties of this rung:
+
+- `keypad` is initialized from `BUTTON_PIN_NUMBERS`
+- pressed buttons are emitted to the debug channel only
+- no `serial_bridge.inject_button_press()` path
+- no `lcd_ui.handle_press()` or `lcd_ui.tick()` calls in the runtime loop yet
+
+Hardware result after reset and PB1/PB2 presses:
+
+- the LCD stayed on the idle screen
+- the board remained healthy
+- Raw HID transport still answered `ping()` with `OK spark ready`
+
+CDC debug capture over `COM10` showed the button events directly:
+
+```text
+[12:51:53] DEBUG button:PB1
+[12:51:53] DEBUG button:PB2
+```
+
+This makes the button-logging-only rung the highest verified active-runtime state so far.
+
+### Active runtime visual-feedback rung
+
+The next reintegration rung threaded the shared LCD UI object into the active runtime loop and restored button-driven visual feedback:
+
+- `_drain_button_events(..., ui, now=...)` called `ui.handle_press(...)`
+- `_run_main_loop_iteration(..., ui=...)` called `ui.tick(now=...)`
+- transport-side button injection still remained disabled
+
+Observed result on hardware:
+
+- runtime boot still showed the idle screen correctly
+- pressing `PB1` disconnected or wedged the board immediately
+
+Additional evidence:
+
+- startup itself remained clean; no `runtime_error.txt` was produced
+- the device re-enumerated afterward and Raw HID became visible again
+- a post-repro Raw HID round-trip still worked once the board came back
+- a 10-second CDC debug capture with a deliberate `PB1` press showed only heartbeat packets and never emitted a visible `button:PB1` packet before disconnect
+
+This reproduces the same high-level failure boundary as the earlier LCD investigation: the active runtime remains stable until button-driven LCD feedback is reintroduced.
+
+### Runtime auto-visual probe
+
+One final isolating experiment removed the button path entirely and triggered the same LCD highlight automatically a short time after runtime boot.
+
+Observed result:
+
+- the LCD went full white on its own without any button input
+
+Follow-up state checks after that white-screen event:
+
+- `CIRCUITPY` still mounted
+- the Raw HID interface still enumerated
+- but `ping()` timed out instead of returning `spark ready`
+- a CDC debug capture showed no packets at all in the stalled white-screen state
+
+That is the strongest evidence gathered so far: on this hardware/software stack, active-runtime LCD mutation itself is sufficient to corrupt or stall the runtime even when button handling is removed from the triggering path.
+
+### Conclusion
+
+The restored standalone demo failed on today's board because of CircuitPython API drift, not because the LCD wiring or the original smoke-test concept was fundamentally broken.
+
+This changes the interpretation of the historical branch:
+
+- the coworker's standalone demo can still be treated as a real working baseline concept
+- reproducing it on the current board requires at least the `FourWire` API update
+- the separate integrated-runtime crashes investigated above remain a different problem from this baseline reproduction failure
+
 ## Removed Worktree Note
 
 An unmerged experimental worktree named `pico-lcd-redesign` was later inspected and intentionally discarded.
