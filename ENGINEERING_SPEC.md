@@ -51,7 +51,6 @@ Legacy `spark_app.py` and `host_pc/hid/keyboard_hid.py` remain in the repo for r
   - relayed framed host context packets
   - framed `SUMMARIZE_REQUEST` packets
   - framed `SUMMARIZE_CHUNK` / `SUMMARIZE_DONE` / `ERROR` packets
-  - locally injected `BUTTON_PRESS` packets
 
 ---
 
@@ -118,7 +117,6 @@ Current framed packet families:
 - `CONTEXT_UPDATE (0x02)`
 - `SUMMARIZE_REQUEST (0x03)`
 - `SUMMARIZE_CHUNK (0x04)`
-- `BUTTON_PRESS (0x05)`
 - `SUMMARIZE_DONE (0x06)`
 - `ERROR (0x07)`
 - `DEBUG (0x08)`
@@ -278,7 +276,6 @@ The Pico is a single CircuitPython device split into:
   - enables one custom Raw HID interface
 - `code.py`
   - initializes UART0 on `GP0`/`GP1` at `115200`
-  - scans four buttons on `GP14`-`GP17`
   - relays host CDC data to Jetson UART
   - forwards `FEATURE_1` summarize requests to Jetson UART
   - buffers streamed Jetson response bytes for host HID polling
@@ -300,29 +297,24 @@ Supporting modules:
 | USB D+/D- | USB connector | -> Host | CDC data + custom HID |
 | UART TX | `GP0` | -> Jetson | `115200`, 8N1 |
 | UART RX | `GP1` | <- Jetson | summarize response bytes |
-| Button 0 | `GP14` | -> GND via switch | active-low |
-| Button 1 | `GP15` | -> GND via switch | active-low |
-| Button 2 | `GP16` | -> GND via switch | active-low |
-| Button 3 | `GP17` | -> GND via switch | active-low |
 
 ### 4.3 Cooperative Loop
 
 The deployed runtime uses a short cooperative loop. Each iteration:
 
 1. relays any available CDC host bytes to UART in bounded reads
-2. drains button events from `keypad.Keys`
-3. polls the Jetson UART summarize transport
-4. updates the host-readable Raw HID response buffer state
-5. processes the latest custom HID report
-6. sleeps for roughly 2 ms
+2. polls the Jetson UART summarize transport
+3. updates the host-readable Raw HID response buffer state
+4. processes the latest custom HID report
+5. sleeps for roughly 2 ms
 
 This keeps summarize transport and HID acknowledgements responsive without any keyboard type-back path in the active runtime.
 
-### 4.4 Button Injection
+### 4.4 Serial Relay Behavior
 
-The Pico does not decode host CDC packets. It forwards the host byte stream verbatim to UART and injects framed `BUTTON_PRESS` packets between host packet writes.
+The Pico does not decode host CDC packets. It forwards the host byte stream verbatim to UART.
 
-Because all SPARK serial packets are self-framed with magic bytes, payload length, and CRC, the Jetson parser can recover packet boundaries correctly even when host packets and local button packets are interleaved.
+Because all SPARK serial packets are self-framed with magic bytes, payload length, and CRC, the Jetson parser can recover packet boundaries correctly across incremental CDC-to-UART writes.
 
 ### 4.5 Jetson State Model
 
@@ -330,7 +322,6 @@ Because all SPARK serial packets are self-framed with magic bytes, payload lengt
 
 - `CONTEXT_NEW` inserts a new rich session row and sets `active_session_id`
 - `CONTEXT_UPDATE` updates the active session text and metadata
-- `BUTTON_PRESS` inserts a button-event row, optionally associated with the active session
 
 ---
 
@@ -484,7 +475,6 @@ python spark_app_v2.py
 | `0x02` | `CONTEXT_UPDATE` | Host -> Pico -> Jetson | versioned JSON context payload |
 | `0x03` | `SUMMARIZE_REQUEST` | Host/Pico -> Jetson | versioned JSON summarize request |
 | `0x04` | `SUMMARIZE_CHUNK` | Jetson -> Pico | versioned JSON summarize response chunk |
-| `0x05` | `BUTTON_PRESS` | Pico -> Jetson | `uint8 button_id` |
 | `0x06` | `SUMMARIZE_DONE` | Jetson -> Pico | versioned JSON completion marker |
 | `0x07` | `ERROR` | Jetson -> Pico | versioned JSON error payload |
 | `0x08` | `DEBUG` | Pico -> Host | versioned JSON debug message (`{"msg": "..."}`) |

@@ -7,13 +7,7 @@ CDC_RELAY_SLICE_BYTES = 64
 ERROR_LOG_PATH = "runtime_error.txt"
 STARTUP_TRACE_PATH = "startup_trace.txt"
 UART_DIAG_LOG_PATH = "uart_diag.txt"
-LCD_DEBUG_CHECKPOINT = "after_press_time"
-LCD_SKIP_PALETTE_WRITE = True
-# Dynamic highlight group mutation crashes the integrated runtime on real hardware.
-LCD_SKIP_HIGHLIGHT_UPDATE = False
-LCD_SKIP_HIGHLIGHT_CLEAR = True
 CDC_DEBUG_HEARTBEAT_S = 2.0
-BUTTON_EVENT_DEBUG_ENABLED = False
 
 jetson_transport = None
 _last_response_signature = None
@@ -126,22 +120,6 @@ def _send_button_debug(message):
         result = "unknown"
     _last_cdc_debug_status = f"{message}|{result}"
 
-
-def _drain_button_events(buttons, lcd_ui, now):
-    while True:
-        event = buttons.events.get()
-        if event is None:
-            return
-        if not event.pressed:
-            continue
-        index = event.key_number
-        if BUTTON_EVENT_DEBUG_ENABLED:
-            _send_button_debug(f"PB{index + 1} pressed")
-        lcd_ui.handle_press(index, now=now)
-        if BUTTON_EVENT_DEBUG_ENABLED:
-            _send_button_debug(f"PB{index + 1} done")
-
-
 def _drain_hid_reports(custom_hid, protocol_handler, raw_report_id):
     while True:
         report = custom_hid.get_last_received_report(raw_report_id)
@@ -181,8 +159,6 @@ def _run_main_loop_iteration(
     now,
     last_debug_heartbeat,
     serial_bridge,
-    buttons,
-    lcd_ui,
     jetson_transport,
     protocol_handler,
     custom_hid,
@@ -198,16 +174,12 @@ def _run_main_loop_iteration(
 
     serial_bridge.relay_once(max_chunk_size=CDC_RELAY_SLICE_BYTES)
     _last_loop_checkpoint = "after_serial_bridge"
-    _drain_button_events(buttons, lcd_ui, now)
-    _last_loop_checkpoint = "after_button_events"
     jetson_transport.poll(max_chunk_size=CDC_RELAY_SLICE_BYTES)
     _last_loop_checkpoint = "after_transport_poll"
     _sync_response_state(protocol_handler, jetson_transport)
     _last_loop_checkpoint = "after_response_sync"
     _drain_hid_reports(custom_hid, protocol_handler, raw_report_id)
     _last_loop_checkpoint = "after_hid_drain"
-    lcd_ui.tick(now=now)
-    _last_loop_checkpoint = "after_lcd_tick"
     time_sleep(BUTTON_POLL_SLEEP_S)
     _last_loop_checkpoint = "after_sleep"
     return last_debug_heartbeat
@@ -219,7 +191,6 @@ def _main(record_step):
     import time
     import board
     import busio
-    import keypad
     import supervisor
     import usb_cdc
     import usb_hid
@@ -227,15 +198,11 @@ def _main(record_step):
     record_step("core imports ready")
 
     try:
-        from pico.lcd_ui import initialize_lcd_ui
-        from pico.pin_config import BUTTON_PIN_NUMBERS
         from pico.jetson_transport import JetsonTransport
         from pico.serial_bridge import SerialBridge
         from pico.upload_protocol import AppCommand, StatusCode, UploadProtocolHandler
         from pico.usb_config import RAW_REPORT_ID, RAW_USAGE_ID, RAW_USAGE_PAGE
     except ImportError:
-        from lcd_ui import initialize_lcd_ui
-        from pin_config import BUTTON_PIN_NUMBERS
         from jetson_transport import JetsonTransport
         from serial_bridge import SerialBridge
         from upload_protocol import AppCommand, StatusCode, UploadProtocolHandler
@@ -245,7 +212,6 @@ def _main(record_step):
 
     _configure_runtime(supervisor, record_step)
 
-    button_pins = tuple(getattr(board, f"GP{pin}") for pin in BUTTON_PIN_NUMBERS)
     protocol_handler = UploadProtocolHandler(
         text_preparer=lambda app_command, text: _prepare_upload_result(
             app_command,
@@ -262,9 +228,6 @@ def _main(record_step):
     uart = busio.UART(board.GP0, board.GP1, baudrate=UART_BAUDRATE, timeout=0, receiver_buffer_size=256)
     record_step("uart ready")
 
-    buttons = keypad.Keys(button_pins, value_when_pressed=False, pull=True)
-    record_step("buttons ready")
-
     serial_bridge = SerialBridge(usb_cdc.data, uart)
     jetson_transport = JetsonTransport(
         uart,
@@ -272,15 +235,6 @@ def _main(record_step):
         debug_hook=lambda event: _record_uart_diag(repr(event)),
     )
     record_step("transport ready")
-
-    lcd_ui = initialize_lcd_ui(
-        debug_hook=_send_button_debug,
-        debug_checkpoint=LCD_DEBUG_CHECKPOINT,
-        skip_palette_write=LCD_SKIP_PALETTE_WRITE,
-        skip_highlight_update=LCD_SKIP_HIGHLIGHT_UPDATE,
-        skip_highlight_clear=LCD_SKIP_HIGHLIGHT_CLEAR,
-    )
-    record_step("lcd ready")
     last_debug_heartbeat = 0.0
 
     while True:
@@ -289,8 +243,6 @@ def _main(record_step):
             now=now,
             last_debug_heartbeat=last_debug_heartbeat,
             serial_bridge=serial_bridge,
-            buttons=buttons,
-            lcd_ui=lcd_ui,
             jetson_transport=jetson_transport,
             protocol_handler=protocol_handler,
             custom_hid=custom_hid,

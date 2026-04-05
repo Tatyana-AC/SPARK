@@ -64,8 +64,8 @@ before integrating with the full firmware.
 | RST | GP20 |
 | BL | 3V3 (always on) |
 | PB1 | GP2 |
-| PB2 | GP4 |
-| PB3 | GP3 |
+| PB2 | GP3 |
+| PB3 | GP4 |
 | PB4 | GP5 |
 | EC11 A | GP10 |
 | EC11 B | GP11 |
@@ -228,7 +228,7 @@ Reference for the smoke test pin constants in `pico/lcd_smoke_test.py`.
 ## Known Notes / Open Items
 
 - **Confirmed LCD/button pinout:** DIN/MOSI → GP19, CLK/SCK → GP18, CS → GP17,
-  DC → GP16, RST → GP20, BL → 3V3, and PB1/PB2/PB3/PB4 → GP2/GP4/GP3/GP5.
+  DC → GP16, RST → GP20, BL → 3V3, and PB1/PB2/PB3/PB4 → GP2/GP3/GP4/GP5.
 - **Confirmed encoder/switch pinout:** EC11 A → GP10, EC11 B → GP11, EC11 push
   button → GP9, EC11 common → GND, and slide-switch positions 1/2/3 → GP6/GP7/GP8
   with switch common → GND.

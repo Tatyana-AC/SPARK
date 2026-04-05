@@ -1,79 +1,34 @@
 """
-SPARK Pico Hub - serial relay behavioral reference.
+SPARK Pico Hub - transport-only behavioral reference.
 
-This file documents the relay and local button-feedback logic that runs on the
-single Pico Hub device (RP2040, CircuitPython firmware target,
-VID 0xC4C4 / PID 0x5350).
-The deployed firmware is a CircuitPython `boot.py` + `code.py` pair.
-This file remains a readable Python reference for the expected Pico-side
-behavior and protocol handling.
+This file documents the reduced Pico role after the LCD and physical-button
+runtime were removed from the active firmware. The deployed firmware is still a
+CircuitPython `boot.py` + `code.py` pair; this file remains a readable sketch of
+the same relay-oriented behavior.
 
-Role: sit between the Host PC (USB CDC) and the Jetson Brain (UART),
-forwarding all Host context packets transparently while keeping
-physical button feedback local to the LCD UI.
-Host uploads are handled separately via the custom Raw HID interface of
-the same CircuitPython device. `SUBMIT_TEXT` uploads are validated and
-acknowledged over Raw HID only. The host app renders released text
-locally after a successful upload. `PING` uploads respond with a short
-status string.
+Role: sit between the Host PC (USB CDC + custom Raw HID) and the Jetson Brain
+(UART), forwarding host CDC bytes to UART, servicing Raw HID upload commands,
+and polling the summarize transport.
 
 Wiring (single Pico Hub)
 ------------------------
   USB  <-> Host PC  - CDC serial   (context relay, /dev/tty.usbmodem*)
                     - Custom HID   (GET_INFO/BEGIN_UPLOAD/.../STATUS)
   GP0 (TX) -> Jetson RX   (UART0, 115200 baud)
-  GP1 (RX) <- Jetson TX   (reserved, future ACK)
-  GP2  - Button 0  (active-low, internal pull-up)
-  GP4  - Button 1
-  GP3  - Button 2
-  GP5  - Button 3
+  GP1 (RX) <- Jetson TX   (summarize response bytes)
 
-This file is reference logic, not the literal deployed CircuitPython
-firmware file set.
+This file is reference logic, not the literal deployed CircuitPython firmware
+file set.
 """
 
 import sys
 import select
-import struct
 import machine
 import utime
 
-try:
-    from pico.pin_config import BUTTON_PIN_NUMBERS
-except ImportError:
-    from pin_config import BUTTON_PIN_NUMBERS
 
-# UART to Jetson Brain
 uart = machine.UART(0, baudrate=115200, tx=machine.Pin(0), rx=machine.Pin(1))
 
-# Physical buttons (active-low, pulled high internally)
-BUTTON_PINS = list(BUTTON_PIN_NUMBERS)
-buttons = [machine.Pin(p, machine.Pin.IN, machine.Pin.PULL_UP) for p in BUTTON_PINS]
-btn_prev = [1] * len(buttons)  # 1 = released
-
-
-# CRC-8/MAXIM (mirrored from core/protocol.py, no imports needed)
-def _crc8(data):
-    crc = 0
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 0x01:
-                crc = (crc >> 1) ^ 0x8C
-            else:
-                crc >>= 1
-    return crc & 0xFF
-
-
-def _build_button_press(button_id):
-    """Build a BUTTON_PRESS (0x05) wire packet."""
-    payload = struct.pack("<B", button_id)  # uint8_t
-    header = struct.pack("<2sBH", b"SP", 0x05, len(payload))  # magic + type + len
-    body = header + payload
-    return body + struct.pack("<B", _crc8(body))  # CRC8
-
-
-# USB -> UART passthrough
 _usb_poll = select.poll()
 _usb_poll.register(sys.stdin, select.POLLIN)
 
@@ -87,18 +42,6 @@ def _relay_usb_to_uart():
             uart.write(chunk)
 
 
-# Button edge detection
-def _check_buttons():
-    """Detect falling edge (button pressed) and send BUTTON_PRESS packet."""
-    for i, pin in enumerate(buttons):
-        current = pin.value()
-        if btn_prev[i] == 1 and current == 0:  # falling edge -> pressed
-            uart.write(_build_button_press(i))
-        btn_prev[i] = current
-
-
-# Main loop
 while True:
     _relay_usb_to_uart()
-    _check_buttons()
-    utime.sleep_ms(10)  # ~100 Hz polling; well above button debounce needs
+    utime.sleep_ms(10)

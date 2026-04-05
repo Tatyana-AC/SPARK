@@ -69,8 +69,7 @@ Each action button cell (148 × 96 px) contains, top to bottom:
 3. Label in JetBrains Mono 14 px / 700 / tracking-wider
 4. Four corner-bracket decorations (8 × 8 px L-shapes, 1 px border, 60% opacity)
 
-## Hardware smoke test
+## Runtime status
 
-A separate CircuitPython script for validating the physical display is at
-`pico/lcd_smoke_test.py`. See `docs/pico/HARDWARE_SMOKE_TEST.md` for wiring and
-library setup.
+This folder is a standalone browser prototype for the LCD workflow screens. It
+is not part of the current Pico firmware deploy bundle.

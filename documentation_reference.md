@@ -127,7 +127,7 @@ Windows hotkey note:
 | `jetson/receiver.py` | Compatibility wrapper to the active Jetson bridge entrypoint |
 | `jetson/db_manager.py` | Rich-session Jetson SQLite store |
 | `pico/boot.py` | Pico USB identity and interface configuration |
-| `pico/code.py` | Active Pico runtime loop for CDC relay, button injection, and HID handling |
+| `pico/code.py` | Active Pico runtime loop for CDC relay, Jetson summarize transport, and HID handling |
 | `pico_reference/main.py` | Readable reference implementation, not the deployed entrypoint |
 | `tools/pico/deploy_to_pico.py` | Cross-platform deploy helper for a mounted `CIRCUITPY` board |
 

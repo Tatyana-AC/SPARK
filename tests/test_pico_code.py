@@ -1,3 +1,4 @@
+import builtins
 import importlib.util
 import sys
 import tempfile
@@ -5,48 +6,13 @@ import types
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 
 class _FakeRuntimeRunnerModule:
     @staticmethod
     def run_with_diagnostics(callback, *, error_log_path, trace_log_path):
         return None
-
-
-class _FakeEvent:
-    def __init__(self, key_number, pressed=True):
-        self.key_number = key_number
-        self.pressed = pressed
-
-
-class _FakeEvents:
-    def __init__(self, events):
-        self._events = list(events)
-
-    def get(self):
-        if self._events:
-            return self._events.pop(0)
-        return None
-
-
-class _FakeButtons:
-    def __init__(self, events):
-        self.events = _FakeEvents(events)
-
-
-class _FakeLcdUi:
-    def __init__(self, call_log=None):
-        self.presses = []
-        self.call_log = call_log
-
-    def handle_press(self, index, *, now):
-        if self.call_log is not None:
-            self.call_log.append(("lcd", index, now))
-        self.presses.append((index, now))
-
-    def tick(self, *, now):
-        if self.call_log is not None:
-            self.call_log.append(("tick", now))
 
 
 class _FakeSerialBridge:
@@ -60,9 +26,47 @@ class _FakeSerialBridge:
 class _FakeJetsonTransport:
     def __init__(self, call_log):
         self.call_log = call_log
+        self.request_active = False
+        self.response_len = 0
+        self.response_complete = False
+        self.response_bytes = b""
 
     def poll(self, *, max_chunk_size):
         self.call_log.append(("transport", max_chunk_size))
+
+
+class _InitOnlyJetsonTransport:
+    def __init__(self, uart, *, max_request_retries, debug_hook):
+        self.uart = uart
+        self.max_request_retries = max_request_retries
+        self.debug_hook = debug_hook
+        self.request_active = False
+        self.response_len = 0
+        self.response_complete = False
+        self.response_bytes = b""
+
+    def poll(self, *, max_chunk_size):
+        return None
+
+
+class _InitOnlySerialBridge:
+    def __init__(self, cdc_data, uart):
+        self.cdc_data = cdc_data
+        self.uart = uart
+
+    def relay_once(self, *, max_chunk_size):
+        return 0
+
+
+class _FakeUploadProtocolHandler:
+    def __init__(self, text_preparer):
+        self.text_preparer = text_preparer
+
+    def handle_report(self, report):
+        return None
+
+    def update_response_state(self, response_bytes, *, complete, active):
+        return None
 
 
 class PicoCodeTests(unittest.TestCase):
@@ -83,48 +87,6 @@ class PicoCodeTests(unittest.TestCase):
             else:
                 sys.modules["runtime_runner"] = prior_runtime_runner
         return module
-
-    def test_drain_button_events_updates_lcd_for_press_only_and_emits_debug_first(self):
-        module = self._load_code_module()
-        call_log = []
-        lcd_ui = _FakeLcdUi(call_log=call_log)
-        buttons = _FakeButtons([_FakeEvent(2), _FakeEvent(1, pressed=False)])
-        module.BUTTON_EVENT_DEBUG_ENABLED = True
-        module._send_button_debug = lambda message: call_log.append(("debug", message))
-
-        module._drain_button_events(
-            buttons,
-            lcd_ui,
-            now=123.0,
-        )
-
-        self.assertEqual(lcd_ui.presses, [(2, 123.0)])
-        self.assertEqual(
-            call_log,
-            [
-                ("debug", "PB3 pressed"),
-                ("lcd", 2, 123.0),
-                ("debug", "PB3 done"),
-            ],
-        )
-        self.assertIsNone(buttons.events.get())
-
-    def test_drain_button_events_skips_debug_when_button_debug_disabled(self):
-        module = self._load_code_module()
-        call_log = []
-        lcd_ui = _FakeLcdUi(call_log=call_log)
-        buttons = _FakeButtons([_FakeEvent(0)])
-        module.BUTTON_EVENT_DEBUG_ENABLED = False
-        module._send_button_debug = lambda message: call_log.append(("debug", message))
-
-        module._drain_button_events(
-            buttons,
-            lcd_ui,
-            now=456.0,
-        )
-
-        self.assertEqual(lcd_ui.presses, [(0, 456.0)])
-        self.assertEqual(call_log, [("lcd", 0, 456.0)])
 
     def test_record_uart_diag_appends_line_to_log_file(self):
         module = self._load_code_module()
@@ -148,31 +110,86 @@ class PicoCodeTests(unittest.TestCase):
         self.assertFalse(supervisor.runtime.autoreload)
         self.assertEqual(steps, ["autoreload disabled"])
 
-    def test_lcd_debug_checkpoint_targets_after_press_time(self):
+    def test_runtime_module_no_longer_exports_lcd_flags(self):
         module = self._load_code_module()
 
-        self.assertEqual(module.LCD_DEBUG_CHECKPOINT, "after_press_time")
+        self.assertFalse(hasattr(module, "LCD_DEBUG_CHECKPOINT"))
+        self.assertFalse(hasattr(module, "LCD_SKIP_PALETTE_WRITE"))
+        self.assertFalse(hasattr(module, "LCD_SKIP_HIGHLIGHT_UPDATE"))
+        self.assertFalse(hasattr(module, "LCD_SKIP_HIGHLIGHT_CLEAR"))
 
-    def test_runtime_defaults_keep_palette_updates_but_disable_highlight_group_mutation(self):
+    def test_runtime_module_no_longer_exports_button_debug_toggle(self):
         module = self._load_code_module()
 
-        self.assertTrue(module.LCD_SKIP_PALETTE_WRITE)
-        self.assertFalse(module.LCD_SKIP_HIGHLIGHT_UPDATE)
-        self.assertTrue(module.LCD_SKIP_HIGHLIGHT_CLEAR)
+        self.assertFalse(hasattr(module, "BUTTON_EVENT_DEBUG_ENABLED"))
+
+    def test_runtime_module_no_longer_exports_button_drain_helper(self):
+        module = self._load_code_module()
+
+        self.assertFalse(hasattr(module, "_drain_button_events"))
+
+    def test_main_runtime_no_longer_imports_lcd_or_button_modules(self):
+        module = self._load_code_module()
+        steps = []
+        stop_error = RuntimeError("stop after setup")
+
+        fake_time = types.SimpleNamespace(monotonic=mock.Mock(side_effect=stop_error), sleep=lambda _: None)
+        fake_board = types.SimpleNamespace(GP0=object(), GP1=object())
+        fake_busio = types.SimpleNamespace(UART=lambda *args, **kwargs: object())
+        fake_supervisor = types.SimpleNamespace(runtime=types.SimpleNamespace(autoreload=True))
+        fake_usb_cdc = types.SimpleNamespace(data=object())
+        fake_hid_device = types.SimpleNamespace(usage_page=0xFF60, usage=0x61)
+        fake_usb_hid = types.SimpleNamespace(devices=[fake_hid_device])
+
+        fake_jetson_transport_module = types.SimpleNamespace(JetsonTransport=_InitOnlyJetsonTransport)
+        fake_serial_bridge_module = types.SimpleNamespace(SerialBridge=_InitOnlySerialBridge)
+        fake_upload_protocol_module = types.SimpleNamespace(
+            AppCommand=types.SimpleNamespace(FEATURE_1=99),
+            StatusCode=types.SimpleNamespace(INTERNAL_ERROR=9, BUSY=1),
+            UploadProtocolHandler=_FakeUploadProtocolHandler,
+        )
+        fake_usb_config_module = types.SimpleNamespace(RAW_REPORT_ID=9, RAW_USAGE_ID=0x61, RAW_USAGE_PAGE=0xFF60)
+
+        import_overrides = {
+            "time": fake_time,
+            "board": fake_board,
+            "busio": fake_busio,
+            "supervisor": fake_supervisor,
+            "usb_cdc": fake_usb_cdc,
+            "usb_hid": fake_usb_hid,
+            "pico.jetson_transport": fake_jetson_transport_module,
+            "pico.serial_bridge": fake_serial_bridge_module,
+            "pico.upload_protocol": fake_upload_protocol_module,
+            "pico.usb_config": fake_usb_config_module,
+        }
+        blocked_imports = {"keypad", "pico.lcd_ui", "lcd_ui", "pico.pin_config", "pin_config"}
+        original_import = builtins.__import__
+
+        def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name in blocked_imports:
+                raise AssertionError(f"unexpected import: {name}")
+            if name in import_overrides:
+                return import_overrides[name]
+            return original_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=tracking_import):
+            with self.assertRaisesRegex(RuntimeError, "stop after setup"):
+                module._main(steps.append)
+
+        self.assertIn("core imports ready", steps)
+        self.assertIn("spark modules ready", steps)
+        self.assertIn("transport ready", steps)
 
     def test_run_main_loop_iteration_records_post_step_checkpoints(self):
         module = self._load_code_module()
         call_log = []
         serial_bridge = _FakeSerialBridge(call_log)
-        lcd_ui = _FakeLcdUi(call_log=call_log)
         jetson_transport = _FakeJetsonTransport(call_log)
         protocol_handler = object()
         custom_hid = object()
-        buttons = object()
         sleeps = []
 
         module._send_button_debug = lambda message: call_log.append(("debug", message))
-        module._drain_button_events = lambda buttons_arg, lcd_ui_arg, now: call_log.append(("buttons", now))
         module._sync_response_state = lambda protocol_handler_arg, transport_arg: call_log.append(("sync", None))
         module._drain_hid_reports = (
             lambda custom_hid_arg, protocol_handler_arg, raw_report_id: call_log.append(("hid", raw_report_id))
@@ -182,8 +199,6 @@ class PicoCodeTests(unittest.TestCase):
             now=5.0,
             last_debug_heartbeat=0.0,
             serial_bridge=serial_bridge,
-            buttons=buttons,
-            lcd_ui=lcd_ui,
             jetson_transport=jetson_transport,
             protocol_handler=protocol_handler,
             custom_hid=custom_hid,
@@ -198,11 +213,9 @@ class PicoCodeTests(unittest.TestCase):
             [
                 ("debug", "heartbeat"),
                 ("serial", module.CDC_RELAY_SLICE_BYTES),
-                ("buttons", 5.0),
                 ("transport", module.CDC_RELAY_SLICE_BYTES),
                 ("sync", None),
                 ("hid", 9),
-                ("tick", 5.0),
             ],
         )
         self.assertEqual(sleeps, [module.BUTTON_POLL_SLEEP_S])

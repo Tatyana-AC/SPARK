@@ -16,7 +16,7 @@ flowchart LR
 
     subgraph Pico["Pico Hub (CircuitPython)"]
         Boot["boot.py\nUSB identity + interfaces"]
-        Code["code.py\nCDC relay + button scan + HID handler"]
+        Code["code.py\nCDC relay + summarize transport + HID handler"]
         Upload["upload_protocol.py"]
         Bridge["serial_bridge.py"]
     end

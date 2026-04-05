@@ -2,23 +2,15 @@
 
 This document covers the SPARK Pico Hub runtime and bring-up flow for the current CircuitPython firmware design.
 
-Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` pair. [`pico_reference/main.py`](C:/SPARK/pico_reference/main.py) is a readable behavioral reference for the same Pico role, not the literal runtime entrypoint.
-
-Verified button wiring on the current board revision:
-
-- `PB1 -> GP2`
-- `PB2 -> GP4`
-- `PB3 -> GP3`
-- `PB4 -> GP5`
+Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` pair. [`pico_reference/main.py`](C:/SPARK/pico_reference/main.py) is a readable behavioral reference for the same relay-oriented role, not the literal runtime entrypoint.
 
 ## Current firmware files
 
 The current Pico Hub firmware in `pico/` is split into:
 
 - `boot.py`: configure USB identity (`VID 0xC4C4` / `PID 0x5350`), enable USB CDC data, and expose the custom HID interface used by the host.
-- `code.py`: relay Host CDC bytes to Jetson UART, keep the LCD idle screen active, forward `FEATURE_1` summarize requests to Jetson, buffer streamed Jetson responses, and handle custom Raw HID traffic.
+- `code.py`: relay Host CDC bytes to Jetson UART, forward `FEATURE_1` summarize requests to Jetson, buffer streamed Jetson responses, and handle custom Raw HID traffic.
 - `jetson_transport.py`: transport-only UART helper for framed summarize requests and streamed Jetson responses.
-- `lcd_ui.py`: shared ILI9341 display setup plus the persistent idle-screen UI and button-highlight behavior.
 - `upload_protocol.py`: V2 upload state machine shared between tests and the device runtime.
 - `serial_bridge.py`: CDC relay helper for the Host-to-Jetson runtime path.
 - `usb_config.py`: shared USB constants and the custom HID descriptor.
@@ -68,7 +60,7 @@ That script will:
 
 - detect the mounted `CIRCUITPY` volume on Windows or macOS
 - copy the SPARK firmware files to the root of the board
-- install the runtime libraries needed by the current Pico runtime, including `adafruit_hid`, `adafruit_bus_device`, `adafruit_display_text`, and `adafruit_ili9341.py`
+- install the runtime libraries needed by the current Pico runtime, currently `adafruit_hid`
 - remove stale non-preserved files from `CIRCUITPY` so the default deployed runtime exactly matches the repo-owned runtime set
 
 Useful flags:
@@ -87,16 +79,12 @@ Manual path if needed:
 2. Copy [`code.py`](C:/SPARK/pico/code.py) to the root of `CIRCUITPY` as `code.py`.
 3. Copy these helper modules to the root of `CIRCUITPY`:
    - [`jetson_transport.py`](C:/SPARK/pico/jetson_transport.py)
-   - [`lcd_ui.py`](C:/SPARK/pico/lcd_ui.py)
    - [`protocol.py`](C:/SPARK/pico/protocol.py)
    - [`upload_protocol.py`](C:/SPARK/pico/upload_protocol.py)
    - [`serial_bridge.py`](C:/SPARK/pico/serial_bridge.py)
    - [`usb_config.py`](C:/SPARK/pico/usb_config.py)
 4. Copy these runtime libraries into `CIRCUITPY/lib/`:
    - `adafruit_hid/`
-   - `adafruit_bus_device/`
-   - `adafruit_display_text/`
-   - `adafruit_ili9341.py`
 5. Reboot the Pico so the USB configuration in `boot.py` is applied.
 
 Runtime reload behavior:
@@ -105,17 +93,6 @@ Runtime reload behavior:
 - The deploy helper copies `code.py` last so the runtime restarts after the updated support files are already in place.
 - On Windows, give CircuitPython a few seconds after deployment before probing the new runtime. The board can briefly continue serving the previous code during file-write completion.
 - Changes to `boot.py` still require a full board reboot / reconnect because USB configuration is established during boot.
-
-Physical button behavior in the current runtime:
-
-- `PB1` through `PB4` only update the LCD highlight state locally.
-- They do not send `BUTTON_PRESS` packets to the host app or the Jetson.
-
-Separate display bring-up:
-
-- [`lcd_smoke_test.py`](C:/SPARK/pico/lcd_smoke_test.py) is a standalone ILI9341 + button smoke test for the 320x240 LCD workflow UI.
-- Use it when validating wiring before integrating the full runtime loop.
-- It now shares the same [`lcd_ui.py`](C:/SPARK/pico/lcd_ui.py) screen builder used by the runtime firmware.
 
 The active firmware contract is V2 upload-only:
 

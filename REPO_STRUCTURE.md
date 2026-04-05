@@ -74,7 +74,6 @@ The host node is the user-facing desktop application.
     - `CONTEXT_UPDATE` (`0x02`)
     - `SUMMARIZE_REQUEST` (`0x03`)
     - `SUMMARIZE_CHUNK` (`0x04`)
-    - `BUTTON_PRESS` (`0x05`)
     - `SUMMARIZE_DONE` (`0x06`)
     - `ERROR` (`0x07`)
   - Implements packet framing:
@@ -101,14 +100,13 @@ The host node is the user-facing desktop application.
 - `pico/upload_protocol.py`
   - Pure-Python implementation of the V2 upload protocol state machine and host-readable response buffer metadata.
 - `pico/serial_bridge.py`
-  - CDC-to-UART relay helper and `BUTTON_PRESS` packet builder.
+  - CDC-to-UART relay helper.
 - `pico_reference/main.py`
   - Reference implementation and readable spec for the Pico relay behavior.
   - Treat this as documentation/reference code, not the literal deployed `boot.py` / `code.py` pair.
   - Describes the Pico’s job:
-    - relay host CDC serial bytes to Jetson UART
-    - inject button-press packets
-    - coexist with custom Raw HID control traffic on the same physical device
+  - relay host CDC serial bytes to Jetson UART
+  - coexist with custom Raw HID control traffic on the same physical device
 - `ENGINEERING_SPEC.md`
   - The real source of truth for the distributed architecture and the CircuitPython-based single-Pico design.
 

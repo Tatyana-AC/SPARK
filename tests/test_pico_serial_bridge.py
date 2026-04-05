@@ -1,7 +1,5 @@
 import unittest
 
-from core.protocol import build_button_press
-
 
 class FakeCDC:
     def __init__(self, payload=b""):
@@ -47,11 +45,6 @@ class FailingUART(FakeUART):
 
 
 class SerialBridgeTests(unittest.TestCase):
-    def test_build_button_press_packet_matches_shared_protocol(self):
-        from pico.serial_bridge import build_button_press_packet
-
-        self.assertEqual(build_button_press_packet(3), build_button_press(3))
-
     def test_relay_once_forwards_cdc_bytes_to_uart_in_bounded_chunk(self):
         from pico.serial_bridge import SerialBridge
 
@@ -78,25 +71,12 @@ class SerialBridgeTests(unittest.TestCase):
         self.assertEqual(cdc.writes, [])
         self.assertEqual(uart.in_waiting, 7)
 
-    def test_inject_button_press_writes_framed_packet_to_uart(self):
+    def test_serial_bridge_has_no_button_injection_helper(self):
         from pico.serial_bridge import SerialBridge
 
-        uart = FakeUART()
-        bridge = SerialBridge(FakeCDC(), uart)
+        bridge = SerialBridge(FakeCDC(), FakeUART())
 
-        written = bridge.inject_button_press(2)
-
-        self.assertEqual(written, len(build_button_press(2)))
-        self.assertEqual(uart.writes, [build_button_press(2)])
-
-    def test_inject_button_press_tolerates_uart_write_failure(self):
-        from pico.serial_bridge import SerialBridge
-
-        bridge = SerialBridge(FakeCDC(), FailingUART())
-
-        written = bridge.inject_button_press(2)
-
-        self.assertEqual(written, 0)
+        self.assertFalse(hasattr(bridge, "inject_button_press"))
 
 
 if __name__ == "__main__":

@@ -93,15 +93,21 @@ class SerialSenderTests(unittest.TestCase):
     def test_pause_blocks_context_packets_until_resume(self):
         sender = serial_sender.SerialSender(port="COM7")
         sender._serial = FakeSerialPort()
+        resumed_serial = FakeSerialPort()
 
-        sender.pause()
-        paused_ok = sender.send_context_new(make_snapshot())
-        sender.resume()
+        def fake_connect():
+            sender._serial = resumed_serial
+            return True
+
+        with mock.patch.object(sender, "connect", side_effect=fake_connect):
+            sender.pause()
+            paused_ok = sender.send_context_new(make_snapshot())
+            sender.resume()
         resumed_ok = sender.send_context_new(make_snapshot())
 
         self.assertFalse(paused_ok)
         self.assertTrue(resumed_ok)
-        self.assertEqual(len(sender._serial.writes), 1)
+        self.assertEqual(len(resumed_serial.writes), 1)
 
     def test_read_once_filters_ack_and_notifies_callback(self):
         sender = serial_sender.SerialSender(port="COM7")

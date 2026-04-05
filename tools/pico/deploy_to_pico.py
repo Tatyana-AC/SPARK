@@ -15,9 +15,7 @@ from pathlib import Path
 FIRMWARE_FILES = (
     "boot.py",
     "jetson_transport.py",
-    "lcd_ui.py",
     "pico_debug.py",
-    "pin_config.py",
     "protocol.py",
     "runtime_runner.py",
     "upload_protocol.py",
@@ -28,9 +26,6 @@ FIRMWARE_FILES = (
 
 RUNTIME_LIBRARY_PATHS = (
     "adafruit_hid",
-    "adafruit_bus_device",
-    "adafruit_display_text",
-    "adafruit_ili9341.py",
 )
 
 PRESERVE_PATHS = (

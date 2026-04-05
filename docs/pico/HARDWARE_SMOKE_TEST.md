@@ -10,13 +10,6 @@ python tools/pico/deploy_to_pico.py
 
 If `adafruit_hid` is not already available locally, the deploy script will cache it under `tools/pico/vendor/adafruit_hid` before copying it to the board.
 
-Verified button wiring on the current board revision:
-
-- `PB1 -> GP2`
-- `PB2 -> GP4`
-- `PB3 -> GP3`
-- `PB4 -> GP5`
-
 ## USB enumeration
 
 1. Plug in the Pico.
@@ -64,11 +57,11 @@ python3 -u pico_llm_bridge.py --port /dev/ttyTHS0 --baud 115200 --db /mnt/usb_dr
 5. Verify the Jetson sees valid `CONTEXT_NEW` and `CONTEXT_UPDATE` packets and continues parsing them without framing errors.
 6. Verify the Jetson database updates in `/mnt/usb_drive/demo/pico_bridge/jetson_spark.db`.
 
-## Button UI
+## PB1-PB4 inactivity
 
-1. Press `PB1` through `PB4` using the verified mapping above.
-2. Verify the corresponding LCD cell highlights locally.
-3. Verify no button-triggered action is sent to the host app or the Jetson.
+1. Press `PB1` through `PB4` on the board.
+2. Verify nothing new appears on the device itself.
+3. Verify no host-side or Jetson-side action is triggered by those presses.
 
 ## Summarize path
 
