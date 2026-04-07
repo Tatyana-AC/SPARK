@@ -50,17 +50,30 @@ class DeployToPicoTests(unittest.TestCase):
 
             self.assertEqual(deploy_to_pico.firmware_sources(repo_root), expected)
 
-    def test_firmware_bundle_excludes_removed_pin_config(self):
-        self.assertNotIn("pin_config.py", deploy_to_pico.FIRMWARE_FILES)
+    def test_firmware_bundle_includes_shared_pin_config(self):
+        self.assertIn("pin_config.py", deploy_to_pico.FIRMWARE_FILES)
 
-    def test_firmware_bundle_excludes_removed_lcd_ui_module(self):
-        self.assertNotIn("lcd_ui.py", deploy_to_pico.FIRMWARE_FILES)
+    def test_firmware_bundle_includes_lcd_ui_module(self):
+        self.assertIn("lcd_ui.py", deploy_to_pico.FIRMWARE_FILES)
 
     def test_firmware_bundle_includes_runtime_runner_module(self):
         self.assertIn("runtime_runner.py", deploy_to_pico.FIRMWARE_FILES)
 
     def test_firmware_bundle_includes_pico_debug_module(self):
         self.assertIn("pico_debug.py", deploy_to_pico.FIRMWARE_FILES)
+
+    def test_firmware_bundle_includes_bridge_lcd_runtime_modules(self):
+        required = {
+            "bridge_app.py",
+            "bridge_runtime.py",
+            "button_input.py",
+            "lcd_renderer_spi.py",
+            "lcd_state.py",
+            "lcd_ui.py",
+            "pin_config.py",
+        }
+
+        self.assertTrue(required.issubset(set(deploy_to_pico.FIRMWARE_FILES)))
 
     def test_default_runtime_manifest_excludes_lcd_smoke_test(self):
         manifest = deploy_to_pico.default_runtime_manifest()
@@ -69,7 +82,7 @@ class DeployToPicoTests(unittest.TestCase):
         self.assertNotIn("typeback.py", manifest)
         self.assertEqual(manifest[-1], "code.py")
 
-    def test_default_desired_target_paths_from_source_plan_excludes_removed_lcd_assets(self):
+    def test_default_desired_target_paths_from_source_plan_includes_bridge_lcd_assets(self):
         root = self._workspace_tempdir("desired-target-paths")
         repo_root = root / "repo"
         self._populate_firmware_repo(repo_root)
@@ -79,10 +92,10 @@ class DeployToPicoTests(unittest.TestCase):
         desired = deploy_to_pico.default_desired_target_paths_from_source_plan(source_plan)
 
         self.assertIn("code.py", desired)
+        self.assertIn("pin_config.py", desired)
+        self.assertIn("lcd_ui.py", desired)
         self.assertIn("lib/adafruit_hid/__init__.py", desired)
         self.assertIn("lib/adafruit_hid/keyboard.py", desired)
-        self.assertNotIn("pin_config.py", desired)
-        self.assertNotIn("lcd_ui.py", desired)
         self.assertNotIn("lib/adafruit_bus_device/__init__.py", desired)
         self.assertNotIn("lib/adafruit_display_text/__init__.py", desired)
         self.assertNotIn("lib/adafruit_ili9341.py", desired)
@@ -432,7 +445,7 @@ class DeployToPicoTests(unittest.TestCase):
             self.assertFalse((target / "lib" / "adafruit_display_text").exists())
             self.assertFalse((target / "lib" / "adafruit_ili9341.py").exists())
 
-    def test_exact_sync_cleanup_removes_stale_lcd_firmware_and_libraries(self):
+    def test_exact_sync_cleanup_keeps_bridge_lcd_firmware_and_removes_old_libraries(self):
         root = self._workspace_tempdir("stale-lcd-assets")
         repo_root = root / "repo"
         self._populate_firmware_repo(repo_root)
@@ -454,8 +467,8 @@ class DeployToPicoTests(unittest.TestCase):
             preserve_paths=set(deploy_to_pico.default_preserve_paths()),
         )
 
-        self.assertFalse((target_root / "lcd_ui.py").exists())
-        self.assertFalse((target_root / "pin_config.py").exists())
+        self.assertTrue((target_root / "lcd_ui.py").exists())
+        self.assertTrue((target_root / "pin_config.py").exists())
         self.assertFalse((target_root / "lib" / "adafruit_ili9341.py").exists())
         self.assertFalse((target_root / "lib" / "adafruit_display_text").exists())
         self.assertFalse((target_root / "lib" / "adafruit_bus_device").exists())

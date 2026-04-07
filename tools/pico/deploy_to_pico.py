@@ -14,7 +14,14 @@ from pathlib import Path
 
 FIRMWARE_FILES = (
     "boot.py",
+    "bridge_app.py",
+    "bridge_runtime.py",
+    "button_input.py",
     "jetson_transport.py",
+    "lcd_renderer_spi.py",
+    "lcd_state.py",
+    "lcd_ui.py",
+    "pin_config.py",
     "pico_debug.py",
     "protocol.py",
     "runtime_runner.py",

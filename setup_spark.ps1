@@ -91,14 +91,26 @@ function Get-PicoMount {
     }
 
     if (-not $drives) {
-        return $null
+        $drives = Get-CimInstance Win32_LogicalDisk | Where-Object {
+            $_.DriveType -eq 2 -and
+            (Test-Path (Join-Path $_.DeviceID "boot.py")) -and
+            (Test-Path (Join-Path $_.DeviceID "code.py"))
+        }
+        if (-not $drives) {
+            return $null
+        }
     }
 
     $drive = $drives | Select-Object -First 1
+    $providerName = $null
+    if ($drive.PSObject.Properties['ProviderName']) {
+        $providerName = $drive.ProviderName
+    }
+
     [pscustomobject]@{
         Drive       = $drive.DeviceID
         VolumeName  = $drive.VolumeName
-        Provider    = $drive.ProviderName
+        Provider    = $providerName
         CodePath    = Join-Path $drive.DeviceID "code.py"
         BootPath    = Join-Path $drive.DeviceID "boot.py"
     }

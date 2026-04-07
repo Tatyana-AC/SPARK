@@ -31,6 +31,31 @@ Describe 'Get-JetsonMount' {
     }
 }
 
+Describe 'Get-PicoMount' {
+    It 'falls back to an unlabeled removable drive that contains boot.py and code.py' {
+        function script:Get-CimInstance {
+            @(
+                [pscustomobject]@{
+                    DriveType = 2
+                    DeviceID = 'D:'
+                    VolumeName = ''
+                }
+            )
+        }
+
+        function script:Test-Path {
+            param([string]$Path)
+            return $Path -in @('D:\boot.py', 'D:\code.py')
+        }
+
+        $result = Get-PicoMount
+
+        $result.Drive | Should Be 'D:'
+        $result.CodePath | Should Be 'D:\code.py'
+        $result.BootPath | Should Be 'D:\boot.py'
+    }
+}
+
 Describe 'Ensure-JetsonMount' {
     It 'returns the mounted drive without waiting for the mount process to exit' {
         $script:mountChecks = 0
