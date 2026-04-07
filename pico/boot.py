@@ -22,8 +22,8 @@ supervisor.set_usb_identification(
 
 print("boot: usb identification set")
 
-usb_cdc.enable(console=False, data=True)
-print("boot: usb_cdc enabled console=False data=True")
+usb_cdc.enable(console=True, data=True)
+print("boot: usb_cdc enabled console=True data=True")
 
 usb_midi.disable()
 print("boot: usb_midi disabled")

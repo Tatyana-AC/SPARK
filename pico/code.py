@@ -9,84 +9,6 @@ STARTUP_TRACE_PATH = "startup_trace.txt"
 UART_DIAG_LOG_PATH = "uart_diag.txt"
 CDC_DEBUG_HEARTBEAT_S = 2.0
 
-jetson_transport = None
-_last_response_signature = None
-_last_cdc_debug_status = "never"
-_last_loop_checkpoint = "startup"
-
-
-def _prepare_upload_result(app_command, text, *, AppCommand, StatusCode):
-    global jetson_transport
-    global _last_cdc_debug_status
-    global _last_loop_checkpoint
-
-    if app_command == AppCommand.FEATURE_1:
-        try:
-            if jetson_transport is None:
-                return {
-                    "status_code": StatusCode.INTERNAL_ERROR,
-                    "detail": "uart unavailable",
-                    "accepted_count": 0,
-                    "skipped_count": 0,
-                }
-            if jetson_transport.request_active:
-                return {
-                    "status_code": StatusCode.BUSY,
-                    "detail": "busy",
-                    "accepted_count": 0,
-                    "skipped_count": 0,
-                }
-
-            try:
-                payload = text.encode("utf-8")
-            except Exception as exc:
-                return {
-                    "status_code": StatusCode.INTERNAL_ERROR,
-                    "detail": f"encode:{type(exc).__name__}"[:18],
-                    "accepted_count": 0,
-                    "skipped_count": 0,
-                }
-
-            try:
-                jetson_transport.start_request(payload)
-            except Exception as exc:
-                return {
-                    "status_code": StatusCode.INTERNAL_ERROR,
-                    "detail": f"start:{type(exc).__name__}"[:18],
-                    "accepted_count": 0,
-                    "skipped_count": 0,
-                }
-            return {
-                "accepted_text": text,
-                "accepted_count": len(text),
-                "skipped_count": 0,
-                "detail": "forwarded",
-                "response_text": "",
-                "response_active": True,
-                "response_complete": False,
-                "app_command": int(app_command),
-            }
-        except Exception as exc:
-            return {
-                "status_code": StatusCode.INTERNAL_ERROR,
-                "detail": f"outer:{type(exc).__name__}"[:18],
-                "accepted_count": 0,
-                "skipped_count": 0,
-            }
-
-    return {
-        "accepted_text": text,
-        "accepted_count": len(text),
-        "skipped_count": 0,
-        "detail": "accepted",
-        "response_text": (
-            f"PICO ECHO: {text}\n"
-            f"CDC DEBUG: {_last_cdc_debug_status}\n"
-            f"LOOP CHECKPOINT: {_last_loop_checkpoint}"
-        ),
-        "app_command": int(app_command),
-    }
-
 
 def _find_custom_hid_device(usb_hid, raw_usage_page, raw_usage_id):
     for device in usb_hid.devices:
@@ -104,30 +26,18 @@ def _record_uart_diag(event):
 
 
 def _send_button_debug(message):
-    global _last_cdc_debug_status
-
     try:
         from pico.pico_debug import dbg
     except ImportError:
         try:
             from pico_debug import dbg
         except ImportError:
-            _last_cdc_debug_status = "import:fail"
-            return
+            return "import:fail"
 
     result = dbg(message)
     if result is None:
         result = "unknown"
-    _last_cdc_debug_status = f"{message}|{result}"
-
-def _drain_hid_reports(custom_hid, protocol_handler, raw_report_id):
-    while True:
-        report = custom_hid.get_last_received_report(raw_report_id)
-        if report is None:
-            return
-        reply = protocol_handler.handle_report(report)
-        if reply is not None:
-            custom_hid.send_report(reply, raw_report_id)
+    return result
 
 
 def _configure_runtime(supervisor, record_step):
@@ -135,59 +45,7 @@ def _configure_runtime(supervisor, record_step):
     record_step("autoreload disabled")
 
 
-def _sync_response_state(protocol_handler, transport):
-    global _last_response_signature
-
-    signature = (
-        transport.response_len,
-        transport.response_complete,
-        transport.request_active,
-    )
-    if signature == _last_response_signature:
-        return
-
-    protocol_handler.update_response_state(
-        transport.response_bytes,
-        complete=transport.response_complete,
-        active=transport.request_active,
-    )
-    _last_response_signature = signature
-
-
-def _run_main_loop_iteration(
-    *,
-    now,
-    last_debug_heartbeat,
-    serial_bridge,
-    jetson_transport,
-    protocol_handler,
-    custom_hid,
-    raw_report_id,
-    time_sleep,
-):
-    global _last_loop_checkpoint
-
-    if (now - last_debug_heartbeat) >= CDC_DEBUG_HEARTBEAT_S:
-        _send_button_debug("heartbeat")
-        last_debug_heartbeat = now
-        _last_loop_checkpoint = "after_heartbeat"
-
-    serial_bridge.relay_once(max_chunk_size=CDC_RELAY_SLICE_BYTES)
-    _last_loop_checkpoint = "after_serial_bridge"
-    jetson_transport.poll(max_chunk_size=CDC_RELAY_SLICE_BYTES)
-    _last_loop_checkpoint = "after_transport_poll"
-    _sync_response_state(protocol_handler, jetson_transport)
-    _last_loop_checkpoint = "after_response_sync"
-    _drain_hid_reports(custom_hid, protocol_handler, raw_report_id)
-    _last_loop_checkpoint = "after_hid_drain"
-    time_sleep(BUTTON_POLL_SLEEP_S)
-    _last_loop_checkpoint = "after_sleep"
-    return last_debug_heartbeat
-
-
 def _main(record_step):
-    global jetson_transport
-
     import time
     import board
     import busio
@@ -198,29 +56,27 @@ def _main(record_step):
     record_step("core imports ready")
 
     try:
+        from pico.bridge_app import build_text_preparer
+        from pico.bridge_runtime import BridgeRuntime
+        from pico.button_input import build_button_input
         from pico.jetson_transport import JetsonTransport
+        from pico.lcd_ui import initialize_lcd_ui
         from pico.serial_bridge import SerialBridge
-        from pico.upload_protocol import AppCommand, StatusCode, UploadProtocolHandler
+        from pico.upload_protocol import UploadProtocolHandler
         from pico.usb_config import RAW_REPORT_ID, RAW_USAGE_ID, RAW_USAGE_PAGE
     except ImportError:
+        from bridge_app import build_text_preparer
+        from bridge_runtime import BridgeRuntime
+        from button_input import build_button_input
         from jetson_transport import JetsonTransport
+        from lcd_ui import initialize_lcd_ui
         from serial_bridge import SerialBridge
-        from upload_protocol import AppCommand, StatusCode, UploadProtocolHandler
+        from upload_protocol import UploadProtocolHandler
         from usb_config import RAW_REPORT_ID, RAW_USAGE_ID, RAW_USAGE_PAGE
 
     record_step("spark modules ready")
 
     _configure_runtime(supervisor, record_step)
-
-    protocol_handler = UploadProtocolHandler(
-        text_preparer=lambda app_command, text: _prepare_upload_result(
-            app_command,
-            text,
-            AppCommand=AppCommand,
-            StatusCode=StatusCode,
-        )
-    )
-    record_step("protocol handler ready")
 
     custom_hid = _find_custom_hid_device(usb_hid, RAW_USAGE_PAGE, RAW_USAGE_ID)
     record_step("custom hid ready")
@@ -235,20 +91,34 @@ def _main(record_step):
         debug_hook=lambda event: _record_uart_diag(repr(event)),
     )
     record_step("transport ready")
-    last_debug_heartbeat = 0.0
-
-    while True:
-        now = time.monotonic()
-        last_debug_heartbeat = _run_main_loop_iteration(
-            now=now,
-            last_debug_heartbeat=last_debug_heartbeat,
-            serial_bridge=serial_bridge,
+    runtime = None
+    protocol_handler = UploadProtocolHandler(
+        text_preparer=build_text_preparer(
             jetson_transport=jetson_transport,
-            protocol_handler=protocol_handler,
-            custom_hid=custom_hid,
-            raw_report_id=RAW_REPORT_ID,
-            time_sleep=time.sleep,
+            runtime_status=lambda: runtime.current_status(),
         )
+    )
+    record_step("protocol handler ready")
+    ui = initialize_lcd_ui(mode="bridge")
+    record_step("lcd ui ready")
+    button_input = build_button_input()
+    record_step("button input ready")
+    runtime = BridgeRuntime(
+        serial_bridge=serial_bridge,
+        jetson_transport=jetson_transport,
+        protocol_handler=protocol_handler,
+        custom_hid=custom_hid,
+        raw_report_id=RAW_REPORT_ID,
+        button_input=button_input,
+        ui=ui,
+        debug_sender=_send_button_debug,
+        time_sleep=time.sleep,
+        relay_chunk_size=CDC_RELAY_SLICE_BYTES,
+        button_poll_sleep_s=BUTTON_POLL_SLEEP_S,
+        heartbeat_interval_s=CDC_DEBUG_HEARTBEAT_S,
+    )
+    record_step("bridge runtime ready")
+    runtime.run_forever(time_module=time)
 
 
 run_with_diagnostics(

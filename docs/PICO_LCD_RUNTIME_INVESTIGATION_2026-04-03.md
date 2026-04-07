@@ -422,6 +422,23 @@ Follow-up state checks after that white-screen event:
 
 That is the strongest evidence gathered so far: on this hardware/software stack, active-runtime LCD mutation itself is sufficient to corrupt or stall the runtime even when button handling is removed from the triggering path.
 
+### Isolated bridge-mode renderer proof spike
+
+As the first redesign validation step, the recovery worktree introduced an isolated bridge-mode LCD proof spike that:
+
+- booted directly into a temporary `lcd_bridge_spike.py`
+- initialized a new bridge-mode SPI renderer backend instead of the integrated `displayio` runtime path
+- auto-triggered one visual update without involving the full bridge runtime or button input
+
+Observed result on hardware:
+
+- the LCD stayed stable after the automatic visual update
+- no immediate white-screen failure occurred
+- no visible disconnect occurred
+- the temporary proof spike did not yet render the action text labels, so the screen lost text during this minimal validation path
+
+This is the first positive hardware evidence that a non-`displayio` runtime renderer may avoid the earlier integrated-runtime failure boundary. It does not prove the full bridge + interactive LCD design yet, but it justifies continuing with the architecture redesign instead of abandoning the integrated target immediately.
+
 ### Conclusion
 
 The restored standalone demo failed on today's board because of CircuitPython API drift, not because the LCD wiring or the original smoke-test concept was fundamentally broken.
@@ -431,6 +448,145 @@ This changes the interpretation of the historical branch:
 - the coworker's standalone demo can still be treated as a real working baseline concept
 - reproducing it on the current board requires at least the `FourWire` API update
 - the separate integrated-runtime crashes investigated above remain a different problem from this baseline reproduction failure
+
+## 2026-04-07 Redesign Validation Addendum
+
+The later bridge-mode redesign initially looked stuck again because the new runtime would white-screen or appear to stop before bridge-mode validation could advance. That diagnosis was incomplete.
+
+### Actual first redesign blocker
+
+The first real blocker in the redesigned runtime was not SPI initialization, not the new bridge renderer, and not the first bridge-mode press render.
+
+It was a missing CircuitPython module:
+
+- `pico/lcd_state.py` imported `dataclasses`
+- this CircuitPython `10.1.4` build on the Pico does not provide `dataclasses`
+- importing `lcd_ui` therefore failed before the redesigned bridge runtime could finish booting
+
+This was proven with a minimal on-device import probe deployed as `code.py` and captured live over the USB console port:
+
+```text
+probe:version:lcd-ui-import-probe-v1
+probe:name:__main__
+probe:import:lcd_ui:start
+probe:import:lcd_ui:error:ImportError:no module named 'dataclasses'
+...
+File "lcd_state.py", line 1, in <module>
+ImportError: no module named 'dataclasses'
+```
+
+Minimal fix applied:
+
+- removed `from dataclasses import dataclass` from `pico/lcd_state.py`
+- replaced the frozen dataclass with a small plain `LcdStateChange` value object
+
+### Post-fix hardware ladder
+
+After removing the `dataclasses` dependency, the redesigned path was re-validated on real hardware in progressively larger rungs.
+
+Verified in order:
+
+1. `lcd_ui` import probe succeeded and stayed alive
+2. `initialize_lcd_ui(mode="bridge")` succeeded and stayed alive
+3. one synthetic `ui.handle_press(0, now=...)` succeeded and stayed alive
+4. one delayed `ui.tick(now=...)` clear after the synthetic press also succeeded and stayed alive
+
+Live renderer/debug evidence from the bridge-init probe included:
+
+```text
+lcd_ui:bridge:init:start
+lcd_ui:bridge:init:renderer-imported
+lcd_renderer:init:start
+lcd_renderer:init:spi
+lcd_renderer:init:pins
+lcd_renderer:init:target
+lcd_renderer:init:renderer
+lcd_renderer:init:idle-layout
+lcd_ui:bridge:init:renderer-ready
+```
+
+This proved that the redesigned bridge renderer can:
+
+- boot cleanly
+- render the idle layout
+- render a first highlighted button state
+- clear that highlight later through the normal tick path
+
+### Actual runtime restored
+
+After the probe ladder passed, the real redesigned runtime bundle was redeployed to the Pico:
+
+- `pico/code.py`
+- `pico/bridge_app.py`
+- `pico/bridge_runtime.py`
+- `pico/button_input.py`
+- `pico/lcd_ui.py`
+- `pico/lcd_renderer_spi.py`
+- `pico/lcd_state.py`
+- related support modules
+
+Hardware result after reset:
+
+- the board stayed up on the actual runtime
+- repeated `heartbeat` CDC debug packets arrived from `BridgeRuntime`
+- the LCD stayed initialized in bridge mode
+
+### End-to-end host communication validation
+
+With the actual runtime deployed, the host-side SPARK setup and smoke flow was rerun.
+
+Observed result from `setup_spark.ps1`:
+
+- `connected: true`
+- `ping_ok: true`
+- `smoke_ok: true`
+- streamed response updates arrived incrementally
+- `spark_app_v2.py` launched successfully
+
+This proves the redesigned runtime still supports the HID upload path and Jetson-backed response flow.
+
+### Concurrent UI + communication validation
+
+One final real-world validation window exercised both sides together:
+
+- actual runtime running on Pico
+- live host-side HID/Jetson request in progress
+- physical PB button presses during the same window
+
+Observed result:
+
+- host-side request succeeded and returned a full streamed response
+- the Pico stayed alive throughout
+- the LCD UI visibly reacted to the physical button presses
+
+This is the first full hardware confirmation that the redesign target is now working:
+
+- interactive LCD updates
+- active bridge/runtime loop
+- host app communication
+
+all coexist on the same Pico runtime without reproducing the old crash boundary.
+
+### Current status
+
+The redesigned runtime is now past the earlier failure boundary.
+
+What is now hardware-verified:
+
+- bridge-mode LCD init
+- bridge-mode idle render
+- runtime-driven highlight render
+- runtime-driven highlight clear
+- actual `BridgeRuntime` heartbeat loop
+- host `PING` / upload / streamed response path
+- visible physical button reaction while the runtime and host communication remain active
+
+Temporary debug-oriented changes still remain in the working runtime for observability, especially:
+
+- `boot.py` currently enables `usb_cdc.enable(console=True, data=True)`
+- several temporary probe scripts remain in the recovery worktree for rung-by-rung hardware checks
+
+The next cleanup phase should focus on reducing temporary diagnostics and deciding what should remain in the final runtime bundle.
 
 ## Removed Worktree Note
 
