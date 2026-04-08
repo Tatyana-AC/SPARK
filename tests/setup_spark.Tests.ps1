@@ -97,6 +97,91 @@ Describe 'Ensure-JetsonMount' {
     }
 }
 
+Describe 'Assert-JetsonWritableMount' {
+    It 'throws when the Jetson remote mount is read-only' {
+        function script:Invoke-JetsonSsh {
+            param([string]$ScriptText)
+            return 'ro,relatime'
+        }
+
+        {
+            Assert-JetsonWritableMount -RemotePath '/mnt/usb_drive'
+        } | Should Throw 'Jetson remote path /mnt/usb_drive is mounted read-only (ro,relatime). Repair the Jetson storage and remount it read-write before running setup_spark.ps1 again.'
+    }
+
+    It 'allows a read-write Jetson remote mount' {
+        function script:Invoke-JetsonSsh {
+            param([string]$ScriptText)
+            return 'rw,relatime'
+        }
+
+        {
+            Assert-JetsonWritableMount -RemotePath '/mnt/usb_drive'
+        } | Should Not Throw
+    }
+}
+
+Describe 'Invoke-SetupSpark' {
+    It 'falls back to SSH directory checks when the mapped Jetson path is inaccessible' {
+        $script:remoteChecks = @()
+        $script:servicesStarted = 0
+        $script:SkipSmokeTest = $true
+        $script:SkipAppLaunch = $true
+
+        function script:Write-Section {}
+        function script:Write-Status {}
+        function script:Get-RepoPython { 'python' }
+        function script:Get-PicoMount {
+            [pscustomobject]@{
+                Drive = 'D:'
+                CodePath = 'D:\code.py'
+                BootPath = 'D:\boot.py'
+            }
+        }
+        function script:Ensure-JetsonMount {
+            [pscustomobject]@{
+                Drive = 'Z:'
+                Provider = '\\sshfs.kr\sidac@192.168.55.1\mnt\usb_drive'
+                VolumeName = ''
+            }
+        }
+        function script:Test-Path {
+            param([string]$Path)
+
+            switch ($Path) {
+                'D:\code.py' { return $true }
+                'D:\boot.py' { return $true }
+                'Z:\demo\pico_bridge' {
+                    throw [System.UnauthorizedAccessException]::new('Access is denied')
+                }
+                'Z:\demo\llama_demo' { return $true }
+                default { throw "Unexpected path $Path" }
+            }
+        }
+        function script:Test-JetsonRemoteDirectory {
+            param([string]$RemoteDirectory)
+            $script:remoteChecks += $RemoteDirectory
+            return $true
+        }
+        function script:Assert-JetsonWritableMount {
+            param([string]$RemotePath)
+            return 'rw,relatime'
+        }
+        function script:Start-JetsonServices {
+            param([string]$RemotePath)
+            $script:servicesStarted += 1
+        }
+        function script:Wait-JetsonBridgeSettle {}
+
+        { Invoke-SetupSpark } | Should Not Throw
+        $script:remoteChecks | Should Be @(
+            '/mnt/usb_drive/demo/pico_bridge'
+            '/mnt/usb_drive/demo/llama_demo'
+        )
+        $script:servicesStarted | Should Be 1
+    }
+}
+
 Describe 'Run-SmokeTestWithRecovery' {
     It 'restarts the Jetson bridge before retrying and avoids Pico soft reload on summarize timeout' {
         $script:sections = @()

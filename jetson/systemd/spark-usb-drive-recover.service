@@ -1,0 +1,6 @@
+[Unit]
+Description=Recover /mnt/usb_drive after SSD reconnect
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/spark-usb-drive-recover

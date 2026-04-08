@@ -5,9 +5,12 @@ class SerialBridge:
 
     def relay_once(self, max_chunk_size=64):
         available = getattr(self._cdc_data, "in_waiting", 0)
-        if available > 0:
-            chunk = self._cdc_data.read(min(max_chunk_size, available))
-            if chunk:
-                self._uart.write(chunk)
-                return len(chunk)
+        if available <= 0:
+            return 0
+
+        read_size = min(max_chunk_size, available)
+        chunk = self._cdc_data.read(read_size)
+        if chunk:
+            self._uart.write(chunk)
+            return len(chunk)
         return 0

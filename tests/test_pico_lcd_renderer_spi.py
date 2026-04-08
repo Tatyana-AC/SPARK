@@ -1,6 +1,7 @@
 import importlib
 import importlib.util
 import unittest
+from unittest import mock
 
 
 def _load_module(name):
@@ -61,6 +62,14 @@ def _cell_calls(renderer_spi, index, fill_color):
 
 
 class PicoLcdRendererSpiTests(unittest.TestCase):
+    def test_renderer_with_blit_target_defers_pixel_buffer_builds_until_draw(self):
+        renderer_spi = _load_module("pico.lcd_renderer_spi")
+        target = _FakeBlitTarget()
+
+        with mock.patch.object(renderer_spi, "_build_header_pixels", side_effect=AssertionError("should not prebuild header")):
+            with mock.patch.object(renderer_spi, "_build_cell_pixels", side_effect=AssertionError("should not prebuild cells")):
+                renderer_spi.SpiLcdRenderer(target=target)
+
     def test_renderer_uses_prebuilt_blits_when_target_supports_it(self):
         renderer_spi = _load_module("pico.lcd_renderer_spi")
         target = _FakeBlitTarget()
@@ -179,6 +188,43 @@ class PicoLcdRendererSpiTests(unittest.TestCase):
         payload_writes = [payload for payload in target._spi.writes if len(payload) > 2]
         self.assertTrue(payload_writes)
         self.assertTrue(all(len(payload) <= target._chunk_pixels * 2 for payload in payload_writes))
+
+    def test_spi_target_blit_pixels_uses_single_window_setup(self):
+        renderer_spi = _load_module("pico.lcd_renderer_spi")
+
+        class _FakeSpi:
+            def __init__(self):
+                self.writes = []
+
+            def try_lock(self):
+                return True
+
+            def configure(self, **_kwargs):
+                return None
+
+            def write(self, payload):
+                self.writes.append(bytes(payload))
+
+            def unlock(self):
+                return None
+
+        class _FakePin:
+            def __init__(self):
+                self.value = None
+
+            def switch_to_output(self, value=False):
+                self.value = value
+
+        target = renderer_spi.Ili9341SpiTarget(_FakeSpi(), _FakePin(), _FakePin(), _FakePin())
+        target._spi.writes.clear()
+
+        pixels = bytes(range(32))
+        target.blit_pixels(10, 20, 4, 4, pixels)
+
+        self.assertEqual(target._spi.writes.count(bytes((renderer_spi._ILI9341_COLUMN_SET,))), 1)
+        self.assertEqual(target._spi.writes.count(bytes((renderer_spi._ILI9341_PAGE_SET,))), 1)
+        self.assertEqual(target._spi.writes.count(bytes((renderer_spi._ILI9341_RAM_WRITE,))), 1)
+        self.assertIn(pixels, target._spi.writes)
 
 
 if __name__ == "__main__":

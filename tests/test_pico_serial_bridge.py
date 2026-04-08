@@ -71,6 +71,32 @@ class SerialBridgeTests(unittest.TestCase):
         self.assertEqual(cdc.writes, [])
         self.assertEqual(uart.in_waiting, 7)
 
+    def test_relay_once_skips_read_when_cdc_in_waiting_is_zero(self):
+        from pico.serial_bridge import SerialBridge
+
+        class _ZeroWaitingCDC(FakeCDC):
+            def __init__(self, payload=b""):
+                super().__init__(payload)
+                self.read_calls = []
+
+            @property
+            def in_waiting(self):
+                return 0
+
+            def read(self, count):
+                self.read_calls.append(count)
+                return super().read(count)
+
+        cdc = _ZeroWaitingCDC(b"context-packet")
+        uart = FakeUART()
+        bridge = SerialBridge(cdc, uart)
+
+        written = bridge.relay_once(max_chunk_size=8)
+
+        self.assertEqual(written, 0)
+        self.assertEqual(uart.writes, [])
+        self.assertEqual(cdc.read_calls, [])
+
     def test_serial_bridge_has_no_button_injection_helper(self):
         from pico.serial_bridge import SerialBridge
 

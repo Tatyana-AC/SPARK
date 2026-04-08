@@ -167,14 +167,6 @@ class SpiLcdRenderer:
         self._target = target
         self._idle_drawn = False
         self._has_blit = hasattr(target, "blit_pixels")
-        if self._has_blit:
-            _record_stage("renderer:init:prebuild:start")
-            self._header_pixels = _build_header_pixels()
-            _record_stage("renderer:init:prebuild:header")
-            self._idle_cell_pixels = tuple(_build_cell_pixels(index, SURFACE) for index in range(4))
-            _record_stage("renderer:init:prebuild:idle-cells")
-            self._active_cell_pixels = tuple(_build_cell_pixels(index, ACTIVE) for index in range(4))
-            _record_stage("renderer:init:prebuild:active-cells")
 
     def draw_idle_layout(self):
         if self._idle_drawn:
@@ -184,11 +176,11 @@ class SpiLcdRenderer:
         self._target.fill(BG)
         _record_stage("renderer:draw_idle:after-fill")
         if self._has_blit:
-            self._target.blit_pixels(0, 0, W, BAR_H, self._header_pixels)
+            self._target.blit_pixels(0, 0, W, BAR_H, _build_header_pixels())
             _record_stage("renderer:draw_idle:after-header")
             for index in range(4):
                 x, y = cell_origin(index)
-                self._target.blit_pixels(x, y, CELL_W, CELL_H, self._idle_cell_pixels[index])
+                self._target.blit_pixels(x, y, CELL_W, CELL_H, _build_cell_pixels(index, SURFACE))
                 _record_stage(f"renderer:draw_idle:after-cell:{index}")
         else:
             self._target.fill_rect(0, 0, W, BAR_H, SURFACE)
@@ -205,14 +197,14 @@ class SpiLcdRenderer:
     def draw_pressed_cell(self, index):
         if self._has_blit:
             x, y = cell_origin(index)
-            self._target.blit_pixels(x, y, CELL_W, CELL_H, self._active_cell_pixels[index])
+            self._target.blit_pixels(x, y, CELL_W, CELL_H, _build_cell_pixels(index, ACTIVE))
             return
         self._draw_cell(index, ACTIVE)
 
     def draw_idle_cell(self, index):
         if self._has_blit:
             x, y = cell_origin(index)
-            self._target.blit_pixels(x, y, CELL_W, CELL_H, self._idle_cell_pixels[index])
+            self._target.blit_pixels(x, y, CELL_W, CELL_H, _build_cell_pixels(index, SURFACE))
             return
         self._draw_cell(index, SURFACE)
 
@@ -253,6 +245,15 @@ class Ili9341SpiTarget:
 
     def fill(self, color):
         self.fill_rect(0, 0, self.width, self.height, color)
+
+    def blit_pixels(self, x, y, width, height, pixel_bytes):
+        if not pixel_bytes:
+            return
+
+        self._write_window(x, y, width, height)
+        byte_chunk_size = self._chunk_pixels * 2
+        for offset in range(0, len(pixel_bytes), byte_chunk_size):
+            self._write(data=pixel_bytes[offset : offset + byte_chunk_size])
 
     def fill_rect(self, x, y, width, height, color):
         x = min(self.width - 1, max(0, x))

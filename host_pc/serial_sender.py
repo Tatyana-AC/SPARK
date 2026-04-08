@@ -31,6 +31,21 @@ RECONNECT_COOLDOWN_S = 3.0  # minimum seconds between connect() attempts
 class SerialSender:
     """Thread-safe serial bridge for the SPARK Pico CDC interface."""
 
+    @staticmethod
+    def _sort_port_candidates(devices: list[str]) -> list[str]:
+        if not sys.platform.startswith("win"):
+            return sorted(devices)
+
+        def sort_key(device: str):
+            upper = device.upper()
+            if upper.startswith("COM"):
+                suffix = upper[3:]
+                if suffix.isdigit():
+                    return (0, int(suffix))
+            return (1, upper)
+
+        return sorted(devices, key=sort_key)
+
     def __init__(self, port: Optional[str] = None, baud: int = DEFAULT_BAUD):
         self._port = port
         self._baud = baud
@@ -69,7 +84,7 @@ class SerialSender:
             fallback.append(device)
 
         if preferred:
-            return preferred[0]
+            return SerialSender._sort_port_candidates(preferred)[0]
 
         if sys.platform == "darwin":
             candidates = fallback or glob.glob("/dev/tty.usbmodem*")
@@ -78,7 +93,8 @@ class SerialSender:
         else:
             candidates = fallback or glob.glob("/dev/ttyACM*")
 
-        return candidates[0] if candidates else None
+        sorted_candidates = SerialSender._sort_port_candidates(candidates)
+        return sorted_candidates[0] if sorted_candidates else None
 
     def connect(self) -> bool:
         # Skip if already connected

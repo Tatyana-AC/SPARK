@@ -54,6 +54,18 @@ class SerialSenderTests(unittest.TestCase):
 
         self.assertEqual(port, "COM7")
 
+    def test_find_pico_port_prefers_lower_com_number_when_multiple_pico_ports_exist(self):
+        console_port = types.SimpleNamespace(device="COM10", vid=0xC4C4, pid=0x5350)
+        data_port = types.SimpleNamespace(device="COM5", vid=0xC4C4, pid=0x5350)
+
+        with (
+            mock.patch.object(serial_sender.sys, "platform", "win32"),
+            mock.patch("serial.tools.list_ports.comports", return_value=[console_port, data_port]),
+        ):
+            port = serial_sender.SerialSender._find_pico_port()
+
+        self.assertEqual(port, "COM5")
+
     def test_send_context_new_serializes_rich_snapshot_payload(self):
         sender = serial_sender.SerialSender(port="COM7")
         sender._serial = FakeSerialPort()

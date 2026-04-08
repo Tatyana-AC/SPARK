@@ -307,6 +307,8 @@ function Invoke-JetsonSsh {
     if ($exitCode -ne 0) {
         throw "SSH command failed with exit code $exitCode."
     }
+
+    return $stdout.TrimEnd("`r", "`n")
 }
 
 function Test-JetsonRemoteDirectory {
@@ -321,6 +323,35 @@ function Test-JetsonRemoteDirectory {
     )
     & ssh @sshArgs | Out-Null
     return ($LASTEXITCODE -eq 0)
+}
+
+function Assert-JetsonWritableMount {
+    param([string]$RemotePath)
+
+    $remoteScript = @'
+set -euo pipefail
+
+while IFS=' ' read -r device mountpoint fstype options rest; do
+    if [ "$mountpoint" = "__REMOTE_PATH__" ]; then
+        printf '%s\n' "$options"
+        exit 0
+    fi
+done </proc/mounts
+
+exit 1
+'@
+    $remoteScript = $remoteScript.Replace("__REMOTE_PATH__", $RemotePath)
+
+    $mountOptions = (Invoke-JetsonSsh -ScriptText $remoteScript).Trim()
+    if ([string]::IsNullOrWhiteSpace($mountOptions)) {
+        throw "Could not determine mount options for Jetson path $RemotePath."
+    }
+
+    if ($mountOptions -notmatch '(^|,)rw(,|$)') {
+        throw "Jetson remote path $RemotePath is mounted read-only ($mountOptions). Repair the Jetson storage and remount it read-write before running setup_spark.ps1 again."
+    }
+
+    return $mountOptions
 }
 
 function Start-JetsonServices {
@@ -672,16 +703,25 @@ function Invoke-SetupSpark {
         Write-Status "Jetson mount" ("Unavailable: " + $_.Exception.Message + " (continuing in SSH-only mode)")
     }
 
+    $useSshDirectoryChecks = ($null -eq $jetsonMount)
+
     if ($null -ne $jetsonMount) {
         Write-Status "Jetson drive" $jetsonMount.Drive
         Write-Status "Jetson path" $jetsonMount.Provider
 
         $bridgePath = Join-Path $jetsonMount.Drive "demo\pico_bridge"
         $llamaPath = Join-Path $jetsonMount.Drive "demo\llama_demo"
-        $bridgeExists = Test-Path $bridgePath
-        $llamaExists = Test-Path $llamaPath
+        try {
+            $bridgeExists = Test-Path $bridgePath
+            $llamaExists = Test-Path $llamaPath
+        }
+        catch {
+            Write-Status "Jetson mount" ("Local SSHFS path check failed: " + $_.Exception.Message + " (continuing in SSH-only mode)")
+            $useSshDirectoryChecks = $true
+        }
     }
-    else {
+
+    if ($useSshDirectoryChecks) {
         Write-Status "Jetson drive" "(ssh-only)"
         Write-Status "Jetson path" $JetsonRemotePath
 
@@ -699,6 +739,9 @@ function Invoke-SetupSpark {
     if (-not $llamaExists) {
         throw "Jetson llama folder was not found."
     }
+
+    $jetsonMountMode = Assert-JetsonWritableMount -RemotePath $JetsonRemotePath
+    Write-Status "Jetson mount mode" $jetsonMountMode
 
     Write-Section "Jetson Services"
     Start-JetsonServices -RemotePath $JetsonRemotePath
