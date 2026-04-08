@@ -210,6 +210,8 @@ Table: `button_events`
 | `session_id` | INTEGER | Optional active session foreign key |
 | `timestamp` | REAL | Event timestamp |
 
+Today this table is populated only by sources that emit `PKT_BUTTON_PRESS` into the Jetson bridge. The Pico-local LCD button summarize path forwards `{"command": "summarize"}` directly and does not create a `button_events` row.
+
 Host UI position is not stored in SQLite anymore. The active `spark_app_v2.py` path uses Qt `QSettings` for panel geometry.
 
 ## LLM Integration Notes

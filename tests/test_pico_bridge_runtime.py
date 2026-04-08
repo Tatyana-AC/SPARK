@@ -57,6 +57,225 @@ class BridgeRuntimeTests(unittest.TestCase):
             ],
         )
 
+    def test_bridge_runtime_button_zero_updates_ui_then_invokes_handler(self):
+        from pico.bridge_runtime import BridgeRuntime
+
+        call_log = []
+        runtime = BridgeRuntime(
+            serial_bridge=types.SimpleNamespace(relay_once=lambda *, max_chunk_size: None),
+            jetson_transport=types.SimpleNamespace(
+                poll=lambda *, max_chunk_size: None,
+                request_active=False,
+                response_len=0,
+                response_complete=False,
+                response_bytes=b"",
+            ),
+            protocol_handler=types.SimpleNamespace(
+                update_response_state=lambda response_bytes, *, complete, active: None,
+                handle_report=lambda report: None,
+            ),
+            custom_hid=types.SimpleNamespace(
+                get_last_received_report=lambda raw_report_id: None,
+                send_report=lambda reply, raw_report_id: None,
+            ),
+            raw_report_id=9,
+            button_input=types.SimpleNamespace(
+                drain_pressed_events=lambda: iter([types.SimpleNamespace(index=0)])
+            ),
+            ui=types.SimpleNamespace(
+                handle_press=lambda index, *, now: call_log.append(("ui", index, now)),
+                tick=lambda *, now: call_log.append(("tick", now)),
+            ),
+            button_press_handler=lambda index: call_log.append(("handler", index)) or {"detail": "forwarded"},
+            time_sleep=lambda delay: call_log.append(("sleep", delay)),
+            debug_sender=lambda message: call_log.append(("debug", message)) or "sent:9",
+            heartbeat_interval_s=99.0,
+        )
+
+        runtime.run_once(now=1.5)
+
+        self.assertEqual(
+            call_log,
+            [
+                ("debug", "button:0"),
+                ("ui", 0, 1.5),
+                ("handler", 0),
+                ("tick", 1.5),
+                ("sleep", 0.002),
+            ],
+        )
+
+    def test_bridge_runtime_non_zero_button_does_not_invoke_handler(self):
+        from pico.bridge_runtime import BridgeRuntime
+
+        call_log = []
+        runtime = BridgeRuntime(
+            serial_bridge=types.SimpleNamespace(relay_once=lambda *, max_chunk_size: None),
+            jetson_transport=types.SimpleNamespace(
+                poll=lambda *, max_chunk_size: None,
+                request_active=False,
+                response_len=0,
+                response_complete=False,
+                response_bytes=b"",
+            ),
+            protocol_handler=types.SimpleNamespace(
+                update_response_state=lambda response_bytes, *, complete, active: None,
+                handle_report=lambda report: None,
+            ),
+            custom_hid=types.SimpleNamespace(
+                get_last_received_report=lambda raw_report_id: None,
+                send_report=lambda reply, raw_report_id: None,
+            ),
+            raw_report_id=9,
+            button_input=types.SimpleNamespace(
+                drain_pressed_events=lambda: iter([types.SimpleNamespace(index=3)])
+            ),
+            ui=types.SimpleNamespace(
+                handle_press=lambda index, *, now: call_log.append(("ui", index, now)),
+                tick=lambda *, now: call_log.append(("tick", now)),
+            ),
+            button_press_handler=lambda index: call_log.append(("handler", index)),
+            time_sleep=lambda delay: call_log.append(("sleep", delay)),
+            debug_sender=lambda message: call_log.append(("debug", message)) or "sent:9",
+            heartbeat_interval_s=99.0,
+        )
+
+        runtime.run_once(now=1.5)
+
+        self.assertEqual(
+            call_log,
+            [
+                ("debug", "button:3"),
+                ("ui", 3, 1.5),
+                ("tick", 1.5),
+                ("sleep", 0.002),
+            ],
+        )
+
+    def test_bridge_runtime_continues_after_button_handler_failure_result(self):
+        from pico.bridge_runtime import BridgeRuntime
+
+        call_log = []
+        runtime = BridgeRuntime(
+            serial_bridge=types.SimpleNamespace(relay_once=lambda *, max_chunk_size: None),
+            jetson_transport=types.SimpleNamespace(
+                poll=lambda *, max_chunk_size: None,
+                request_active=False,
+                response_len=0,
+                response_complete=False,
+                response_bytes=b"",
+            ),
+            protocol_handler=types.SimpleNamespace(
+                update_response_state=lambda response_bytes, *, complete, active: None,
+                handle_report=lambda report: None,
+            ),
+            custom_hid=types.SimpleNamespace(
+                get_last_received_report=lambda raw_report_id: None,
+                send_report=lambda reply, raw_report_id: None,
+            ),
+            raw_report_id=9,
+            button_input=types.SimpleNamespace(
+                drain_pressed_events=lambda: iter([types.SimpleNamespace(index=0)])
+            ),
+            ui=types.SimpleNamespace(
+                handle_press=lambda index, *, now: call_log.append(("ui", index, now)),
+                tick=lambda *, now: call_log.append(("tick", now)),
+            ),
+            button_press_handler=lambda index: call_log.append(("handler", index)) or {
+                "status_code": 5,
+                "detail": "busy",
+                "accepted_count": 0,
+                "skipped_count": 0,
+            },
+            time_sleep=lambda delay: call_log.append(("sleep", delay)),
+            debug_sender=lambda message: call_log.append(("debug", message)) or "sent:9",
+            heartbeat_interval_s=99.0,
+        )
+
+        runtime.run_once(now=1.5)
+
+        self.assertEqual(
+            call_log,
+            [
+                ("debug", "button:0"),
+                ("ui", 0, 1.5),
+                ("handler", 0),
+                ("tick", 1.5),
+                ("sleep", 0.002),
+            ],
+        )
+        self.assertEqual(runtime.current_status().loop_checkpoint, "after_sleep")
+
+    def test_bridge_runtime_processes_at_most_one_button_event_per_run_with_handler(self):
+        from pico.bridge_runtime import BridgeRuntime
+
+        call_log = []
+        pending_events = iter([types.SimpleNamespace(index=0), types.SimpleNamespace(index=0)])
+
+        class _StatefulButtonInput:
+            def drain_pressed_events(self):
+                while True:
+                    try:
+                        yield next(pending_events)
+                    except StopIteration:
+                        return
+
+        runtime = BridgeRuntime(
+            serial_bridge=types.SimpleNamespace(relay_once=lambda *, max_chunk_size: None),
+            jetson_transport=types.SimpleNamespace(
+                poll=lambda *, max_chunk_size: None,
+                request_active=False,
+                response_len=0,
+                response_complete=False,
+                response_bytes=b"",
+            ),
+            protocol_handler=types.SimpleNamespace(
+                update_response_state=lambda response_bytes, *, complete, active: None,
+                handle_report=lambda report: None,
+            ),
+            custom_hid=types.SimpleNamespace(
+                get_last_received_report=lambda raw_report_id: None,
+                send_report=lambda reply, raw_report_id: None,
+            ),
+            raw_report_id=9,
+            button_input=_StatefulButtonInput(),
+            ui=types.SimpleNamespace(
+                handle_press=lambda index, *, now: call_log.append(("ui", index, now)),
+                tick=lambda *, now: call_log.append(("tick", now)),
+            ),
+            button_press_handler=lambda index: call_log.append(("handler", index)) or {"detail": "forwarded"},
+            time_sleep=lambda delay: call_log.append(("sleep", delay)),
+            debug_sender=lambda message: call_log.append(("debug", message)) or "sent:9",
+            heartbeat_interval_s=99.0,
+        )
+
+        runtime.run_once(now=1.5)
+
+        self.assertEqual(
+            call_log,
+            [
+                ("debug", "button:0"),
+                ("ui", 0, 1.5),
+                ("handler", 0),
+                ("tick", 1.5),
+                ("sleep", 0.002),
+            ],
+        )
+
+        call_log.clear()
+        runtime.run_once(now=1.6)
+
+        self.assertEqual(
+            call_log,
+            [
+                ("debug", "button:0"),
+                ("ui", 0, 1.6),
+                ("handler", 0),
+                ("tick", 1.6),
+                ("sleep", 0.002),
+            ],
+        )
+
     def test_bridge_runtime_run_once_orders_services_correctly(self):
         from pico.bridge_runtime import BridgeRuntime
 

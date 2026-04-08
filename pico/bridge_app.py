@@ -4,6 +4,9 @@ except ImportError:
     from upload_protocol import AppCommand, StatusCode
 
 
+SUMMARIZE_COMMAND_TEXT = '{"command": "summarize"}'
+
+
 class RuntimeStatus:
     def __init__(
         self,
@@ -46,6 +49,9 @@ class BridgeApp:
         }
 
     def _prepare_feature_1(self, text, status):
+        return self._forward_request_text(text, status)
+
+    def _forward_request_text(self, text, status):
         try:
             if self._jetson_transport is None:
                 return {
@@ -99,6 +105,19 @@ class BridgeApp:
                 "skipped_count": 0,
             }
 
+    def handle_button_press(self, index):
+        if index != 0:
+            return None
+
+        return self._forward_request_text(
+            SUMMARIZE_COMMAND_TEXT,
+            self._runtime_status(),
+        )
+
 
 def build_text_preparer(*, jetson_transport, runtime_status):
     return BridgeApp(jetson_transport=jetson_transport, runtime_status=runtime_status).prepare_upload_result
+
+
+def build_button_press_handler(*, jetson_transport, runtime_status):
+    return BridgeApp(jetson_transport=jetson_transport, runtime_status=runtime_status).handle_button_press

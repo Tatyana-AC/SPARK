@@ -14,6 +14,7 @@ class BridgeRuntime:
         custom_hid,
         raw_report_id,
         button_input,
+        button_press_handler=None,
         debug_sender=None,
         time_sleep,
         ui=None,
@@ -27,6 +28,7 @@ class BridgeRuntime:
         self._custom_hid = custom_hid
         self._raw_report_id = raw_report_id
         self._button_input = button_input
+        self._button_press_handler = button_press_handler
         self._debug_sender = debug_sender or (lambda message: None)
         self._time_sleep = time_sleep
         self._ui = ui
@@ -79,6 +81,8 @@ class BridgeRuntime:
             self._emit_debug(f"button:{button_event.index}")
             if self._ui is not None:
                 self._ui.handle_press(button_event.index, now=now)
+            if button_event.index == 0 and self._button_press_handler is not None:
+                self._button_press_handler(button_event.index)
             break
         self._last_loop_checkpoint = "after_button_events"
 

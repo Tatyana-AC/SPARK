@@ -91,6 +91,7 @@ class _FakeBridgeRuntime:
         button_input,
         debug_sender,
         time_sleep,
+        button_press_handler=None,
         ui=None,
         relay_chunk_size=64,
         button_poll_sleep_s=0.002,
@@ -102,6 +103,7 @@ class _FakeBridgeRuntime:
         self.custom_hid = custom_hid
         self.raw_report_id = raw_report_id
         self.button_input = button_input
+        self.button_press_handler = button_press_handler
         self.debug_sender = debug_sender
         self.time_sleep = time_sleep
         self.ui = ui
@@ -210,7 +212,10 @@ class PicoCodeTests(unittest.TestCase):
         fake_serial_bridge_module = types.SimpleNamespace(SerialBridge=_InitOnlySerialBridge)
         fake_upload_protocol_module = types.SimpleNamespace(UploadProtocolHandler=_FakeUploadProtocolHandler)
         fake_usb_config_module = types.SimpleNamespace(RAW_REPORT_ID=9, RAW_USAGE_ID=0x61, RAW_USAGE_PAGE=0xFF60)
-        fake_bridge_app_module = types.SimpleNamespace(build_text_preparer=lambda **kwargs: lambda *_: None)
+        fake_bridge_app_module = types.SimpleNamespace(
+            build_text_preparer=lambda **kwargs: lambda *_: None,
+            build_button_press_handler=lambda **kwargs: lambda *_: None,
+        )
         fake_bridge_runtime_module = types.SimpleNamespace(BridgeRuntime=_FakeBridgeRuntime)
         fake_button_input_module = types.SimpleNamespace(
             build_button_input=lambda: build_button_input_calls.append("called") or button_input
@@ -305,7 +310,8 @@ class PicoCodeTests(unittest.TestCase):
             build_text_preparer=lambda *, jetson_transport, runtime_status: bridge_app_calls.append(
                 {"jetson_transport": jetson_transport, "runtime_status": runtime_status}
             )
-            or "bridge-preparer"
+            or "bridge-preparer",
+            build_button_press_handler=lambda **kwargs: lambda *_: None,
         )
 
         import_overrides = {
@@ -348,6 +354,75 @@ class PicoCodeTests(unittest.TestCase):
         self.assertEqual(status.response_length, 0)
         self.assertFalse(status.response_complete)
 
+    def test_main_runtime_builds_button_press_handler_from_bridge_app(self):
+        module = self._load_code_module()
+        _FakeBridgeRuntime.instances = []
+        steps = []
+        bridge_app_calls = []
+        button_press_handler = object()
+
+        fake_time = types.SimpleNamespace(monotonic=mock.Mock(return_value=1.0), sleep=lambda _: None)
+        fake_board = types.SimpleNamespace(GP0=object(), GP1=object())
+        fake_busio = types.SimpleNamespace(UART=lambda *args, **kwargs: object())
+        fake_supervisor = types.SimpleNamespace(runtime=types.SimpleNamespace(autoreload=True))
+        fake_usb_cdc = types.SimpleNamespace(data=object())
+        fake_hid_device = types.SimpleNamespace(usage_page=0xFF60, usage=0x61)
+        fake_usb_hid = types.SimpleNamespace(devices=[fake_hid_device])
+
+        fake_jetson_transport_module = types.SimpleNamespace(JetsonTransport=_InitOnlyJetsonTransport)
+        fake_serial_bridge_module = types.SimpleNamespace(SerialBridge=_InitOnlySerialBridge)
+        fake_button_input_module = types.SimpleNamespace(build_button_input=lambda: object())
+        fake_bridge_runtime_module = types.SimpleNamespace(BridgeRuntime=_FakeBridgeRuntime)
+        fake_lcd_ui_module = types.SimpleNamespace(initialize_lcd_ui=lambda *, mode="standalone": object())
+        fake_upload_protocol_module = types.SimpleNamespace(UploadProtocolHandler=_FakeUploadProtocolHandler)
+        fake_usb_config_module = types.SimpleNamespace(RAW_REPORT_ID=9, RAW_USAGE_ID=0x61, RAW_USAGE_PAGE=0xFF60)
+        fake_bridge_app_module = types.SimpleNamespace(
+            build_text_preparer=lambda **kwargs: lambda *_: None,
+            build_button_press_handler=lambda *, jetson_transport, runtime_status: bridge_app_calls.append(
+                {"jetson_transport": jetson_transport, "runtime_status": runtime_status}
+            )
+            or button_press_handler,
+        )
+
+        import_overrides = {
+            "time": fake_time,
+            "board": fake_board,
+            "busio": fake_busio,
+            "supervisor": fake_supervisor,
+            "usb_cdc": fake_usb_cdc,
+            "usb_hid": fake_usb_hid,
+            "pico.bridge_app": fake_bridge_app_module,
+            "pico.jetson_transport": fake_jetson_transport_module,
+            "pico.serial_bridge": fake_serial_bridge_module,
+            "pico.upload_protocol": fake_upload_protocol_module,
+            "pico.usb_config": fake_usb_config_module,
+            "pico.bridge_runtime": fake_bridge_runtime_module,
+            "pico.button_input": fake_button_input_module,
+            "pico.lcd_ui": fake_lcd_ui_module,
+        }
+        original_import = builtins.__import__
+
+        def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name in import_overrides:
+                return import_overrides[name]
+            return original_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=tracking_import):
+            with self.assertRaisesRegex(RuntimeError, "stop after runtime start"):
+                module._main(steps.append)
+
+        self.assertEqual(len(bridge_app_calls), 1)
+        self.assertEqual(len(_FakeBridgeRuntime.instances), 1)
+        runtime = _FakeBridgeRuntime.instances[0]
+        self.assertIs(runtime.button_press_handler, button_press_handler)
+        self.assertIs(bridge_app_calls[0]["jetson_transport"], runtime.jetson_transport)
+        status = bridge_app_calls[0]["runtime_status"]()
+        self.assertEqual(status.cdc_debug_status, "never")
+        self.assertEqual(status.loop_checkpoint, "startup")
+        self.assertFalse(status.request_active)
+        self.assertEqual(status.response_length, 0)
+        self.assertFalse(status.response_complete)
+
     def test_main_runtime_initializes_bridge_mode_lcd_ui_and_passes_it_to_runtime(self):
         module = self._load_code_module()
         _FakeBridgeRuntime.instances = []
@@ -367,7 +442,10 @@ class PicoCodeTests(unittest.TestCase):
         fake_serial_bridge_module = types.SimpleNamespace(SerialBridge=_InitOnlySerialBridge)
         fake_upload_protocol_module = types.SimpleNamespace(UploadProtocolHandler=_FakeUploadProtocolHandler)
         fake_usb_config_module = types.SimpleNamespace(RAW_REPORT_ID=9, RAW_USAGE_ID=0x61, RAW_USAGE_PAGE=0xFF60)
-        fake_bridge_app_module = types.SimpleNamespace(build_text_preparer=lambda **kwargs: lambda *_: None)
+        fake_bridge_app_module = types.SimpleNamespace(
+            build_text_preparer=lambda **kwargs: lambda *_: None,
+            build_button_press_handler=lambda **kwargs: lambda *_: None,
+        )
         fake_bridge_runtime_module = types.SimpleNamespace(BridgeRuntime=_FakeBridgeRuntime)
         fake_button_input_module = types.SimpleNamespace(build_button_input=lambda: object())
         fake_lcd_ui_module = types.SimpleNamespace(

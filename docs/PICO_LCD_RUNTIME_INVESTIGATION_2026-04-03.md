@@ -588,6 +588,12 @@ Temporary debug-oriented changes still remain in the working runtime for observa
 
 The next cleanup phase should focus on reducing temporary diagnostics and deciding what should remain in the final runtime bundle.
 
+## 2026-04-08 Software Status Note
+
+- The current worktree software routes the Pico-local LCD `PB1` summarize action through the bridge runtime and forwards `{"command": "summarize"}` directly instead of relying on Jetson-side `PKT_BUTTON_PRESS` ingestion.
+- Targeted regression coverage for that path passed in this environment.
+- No fresh deploy or on-device hardware validation was performed here, so manual validation of the physical LCD/button summarize flow remains pending.
+
 ## Removed Worktree Note
 
 An unmerged experimental worktree named `pico-lcd-redesign` was later inspected and intentionally discarded.

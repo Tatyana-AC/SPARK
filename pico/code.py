@@ -56,7 +56,7 @@ def _main(record_step):
     record_step("core imports ready")
 
     try:
-        from pico.bridge_app import build_text_preparer
+        from pico.bridge_app import build_button_press_handler, build_text_preparer
         from pico.bridge_runtime import BridgeRuntime
         from pico.button_input import build_button_input
         from pico.jetson_transport import JetsonTransport
@@ -65,7 +65,7 @@ def _main(record_step):
         from pico.upload_protocol import UploadProtocolHandler
         from pico.usb_config import RAW_REPORT_ID, RAW_USAGE_ID, RAW_USAGE_PAGE
     except ImportError:
-        from bridge_app import build_text_preparer
+        from bridge_app import build_button_press_handler, build_text_preparer
         from bridge_runtime import BridgeRuntime
         from button_input import build_button_input
         from jetson_transport import JetsonTransport
@@ -92,6 +92,10 @@ def _main(record_step):
     )
     record_step("transport ready")
     runtime = None
+    button_press_handler = build_button_press_handler(
+        jetson_transport=jetson_transport,
+        runtime_status=lambda: runtime.current_status(),
+    )
     protocol_handler = UploadProtocolHandler(
         text_preparer=build_text_preparer(
             jetson_transport=jetson_transport,
@@ -110,6 +114,7 @@ def _main(record_step):
         custom_hid=custom_hid,
         raw_report_id=RAW_REPORT_ID,
         button_input=button_input,
+        button_press_handler=button_press_handler,
         ui=ui,
         debug_sender=_send_button_debug,
         time_sleep=time.sleep,

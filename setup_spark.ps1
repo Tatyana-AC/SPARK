@@ -16,6 +16,15 @@ Set-StrictMode -Version Latest
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $RepoRoot
 
+$JetsonBridgeDeployFiles = @(
+    'db_manager.py',
+    'pico_llm_bridge.py',
+    'protocol.py',
+    'receiver.py',
+    'requirements.txt',
+    'run_bridge.sh'
+)
+
 function Write-Section {
     param([string]$Title)
     Write-Host ""
@@ -77,12 +86,76 @@ function Get-RepoPython {
         return $venvPython
     }
 
+    $commonRepoRoot = Get-GitCommonRepoRoot
+    if ($commonRepoRoot -and $commonRepoRoot -ne $RepoRoot) {
+        $sharedVenvPython = Join-Path $commonRepoRoot ".venv\Scripts\python.exe"
+        if (Test-Path $sharedVenvPython) {
+            return $sharedVenvPython
+        }
+    }
+
     $python = Get-Command python -ErrorAction SilentlyContinue
     if ($null -ne $python) {
         return $python.Source
     }
 
     throw "Could not find a Python interpreter or .venv\Scripts\python.exe."
+}
+
+function Get-GitCommonRepoRoot {
+    try {
+        $commonGitDir = git -C $RepoRoot rev-parse --path-format=absolute --git-common-dir 2>$null
+        if (-not $commonGitDir) {
+            return $null
+        }
+
+        $commonGitDir = $commonGitDir.Trim()
+        if (-not $commonGitDir) {
+            return $null
+        }
+
+        return Split-Path -Parent $commonGitDir
+    }
+    catch {
+        return $null
+    }
+}
+
+function Deploy-PicoFirmware {
+    param(
+        [string]$PythonExe,
+        [string]$PicoDrive
+    )
+
+    $deployScript = Join-Path $RepoRoot "tools\pico\deploy_to_pico.py"
+    if (-not (Test-Path $deployScript)) {
+        throw "Could not find Pico deploy helper at $deployScript."
+    }
+
+    $targetDrive = if ($PicoDrive.EndsWith("\")) { $PicoDrive } else { "$PicoDrive\" }
+    Write-Status "Pico deploy" "Deploying firmware to $targetDrive"
+    Invoke-ProcessWithTimeout `
+        -FilePath $PythonExe `
+        -ArgumentList @($deployScript, '--target', $targetDrive) `
+        -TimeoutSeconds 120 `
+        -DisplayName 'Pico deploy'
+}
+
+function Sync-JetsonBridgeBundle {
+    param([string]$JetsonDrive)
+
+    $target = Join-Path $JetsonDrive "demo\pico_bridge"
+    if (-not (Test-Path $target)) {
+        throw "Jetson bridge deploy folder was not found at $target."
+    }
+
+    foreach ($file in $JetsonBridgeDeployFiles) {
+        Copy-Item -LiteralPath (Join-Path $RepoRoot "jetson\$file") `
+            -Destination (Join-Path $target $file) `
+            -Force
+    }
+
+    Write-Status "Jetson deploy" ("Synced {0} file(s) to {1}" -f $JetsonBridgeDeployFiles.Count, $target)
 }
 
 function Get-PicoMount {
@@ -740,8 +813,16 @@ function Invoke-SetupSpark {
         throw "Jetson llama folder was not found."
     }
 
+    if ($null -eq $jetsonMount) {
+        throw "Jetson deploy requires a mounted SSHFS drive. Re-run setup after the Jetson share is available."
+    }
+
     $jetsonMountMode = Assert-JetsonWritableMount -RemotePath $JetsonRemotePath
     Write-Status "Jetson mount mode" $jetsonMountMode
+
+    Write-Section "Deployment"
+    Deploy-PicoFirmware -PythonExe $pythonExe -PicoDrive $picoMount.Drive
+    Sync-JetsonBridgeBundle -JetsonDrive $jetsonMount.Drive
 
     Write-Section "Jetson Services"
     Start-JetsonServices -RemotePath $JetsonRemotePath
