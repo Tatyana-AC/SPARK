@@ -261,6 +261,49 @@ class UploadProtocolTests(unittest.TestCase):
         self.assertEqual(self._u16(info, 5), 1)
         self.assertEqual(info[7], 0b10)
 
+    def test_get_runtime_status_reports_compact_debug_text(self):
+        from pico.bridge_app import RuntimeStatus
+
+        self.handler.set_runtime_status_provider(
+            lambda: RuntimeStatus(
+                cdc_debug_status="button:0|sent:26",
+                loop_checkpoint="after_button_events",
+                request_active=True,
+                response_length=42,
+                response_complete=False,
+            )
+        )
+
+        report = bytearray(32)
+        report[0] = self.Command.GET_RUNTIME_STATUS
+        reply = self.handler.handle_report(bytes(report))
+
+        self.assertEqual(reply[0], self.Command.GET_RUNTIME_STATUS)
+        self.assertEqual(reply[1], 0b10)
+        self.assertEqual(
+            reply[2:32].split(b"\x00", 1)[0].decode("utf-8"),
+            "button:0|after_button_events",
+        )
+
+    def test_get_runtime_status_reports_complete_flag(self):
+        from pico.bridge_app import RuntimeStatus
+
+        self.handler.set_runtime_status_provider(
+            lambda: RuntimeStatus(
+                cdc_debug_status="heartbeat|sent:27",
+                loop_checkpoint="after_sleep",
+                request_active=False,
+                response_length=0,
+                response_complete=True,
+            )
+        )
+
+        report = bytearray(32)
+        report[0] = self.Command.GET_RUNTIME_STATUS
+        reply = self.handler.handle_report(bytes(report))
+
+        self.assertEqual(reply[1], 0b01)
+
 
 if __name__ == "__main__":
     unittest.main()

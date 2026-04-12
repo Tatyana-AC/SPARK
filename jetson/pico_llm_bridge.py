@@ -60,6 +60,51 @@ DEFAULT_DB_PATH = "jetson_spark.db"
 MAX_SUMMARIZE_CHARS_PER_PACKET = 64
 INTER_PACKET_DELAY_S = 0.01
 
+_PKT_NAMES = {
+    PKT_BUTTON_PRESS: "button_press",
+    PKT_CONTEXT_NEW: "context_new",
+    PKT_CONTEXT_UPDATE: "context_update",
+    PKT_SUMMARIZE_REQUEST: "summarize_request",
+}
+
+
+def _packet_name(pkt_type: int) -> str:
+    return _PKT_NAMES.get(pkt_type, f"pkt_{pkt_type}")
+
+
+def _log_inbound_packet(pkt: dict) -> None:
+    pkt_type = pkt.get("type")
+    if pkt_type == PKT_BUTTON_PRESS:
+        logger.info("[UART IN] button_press button_id=%s", pkt.get("button_id"))
+        return
+    if pkt_type == PKT_SUMMARIZE_REQUEST:
+        request = pkt.get("request") or ""
+        logger.info("[UART IN] summarize_request chars=%d", len(request))
+        return
+    if pkt_type == PKT_CONTEXT_NEW:
+        logger.debug("[UART IN] context_new text_chars=%d", len(pkt.get("text") or ""))
+        return
+    if pkt_type == PKT_CONTEXT_UPDATE:
+        logger.debug("[UART IN] context_update text_chars=%d", len(pkt.get("text") or ""))
+        return
+    logger.info("[UART IN] %s", _packet_name(pkt_type))
+
+
+def _log_parser_diagnostic(event: dict) -> None:
+    logger.warning(
+        "[UART IN] parser_%s pkt_type=%s reason=%s pkt_len=%s",
+        event.get("event"),
+        _packet_name(event.get("pkt_type")),
+        event.get("reason", "-"),
+        event.get("pkt_len", "-"),
+    )
+
+
+def _write_bridge_packet(ser, payload: bytes, *, label: str) -> None:
+    logger.info("[UART OUT] %s bytes=%d", label, len(payload))
+    ser.write(payload)
+    ser.flush()
+
 SUMMARY_JSON_SCHEMA = {
     "name": "summary",
     "strict": True,
@@ -197,9 +242,14 @@ def format_structured_summary(raw: str) -> str:
 def _emit_summary_response(ser, text: str) -> None:
     if not text:
         return
+    packet_count = (len(text) + MAX_SUMMARIZE_CHARS_PER_PACKET - 1) // MAX_SUMMARIZE_CHARS_PER_PACKET
+    logger.info("[UART OUT] summarize_response chars=%d packets=%d", len(text), packet_count)
     for start in range(0, len(text), MAX_SUMMARIZE_CHARS_PER_PACKET):
-        ser.write(build_summarize_chunk(text[start : start + MAX_SUMMARIZE_CHARS_PER_PACKET]))
-        ser.flush()
+        _write_bridge_packet(
+            ser,
+            build_summarize_chunk(text[start : start + MAX_SUMMARIZE_CHARS_PER_PACKET]),
+            label="summarize_chunk",
+        )
         time.sleep(INTER_PACKET_DELAY_S)
 
 
@@ -226,8 +276,7 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
         try:
             _emit_summary_response(ser, warning_msg)
             time.sleep(INTER_PACKET_DELAY_S)
-            ser.write(build_summarize_done())
-            ser.flush()
+            _write_bridge_packet(ser, build_summarize_done(), label="summarize_done")
         except Exception:
             logger.exception("Failed to send no-context warning back to Pico")
         return
@@ -270,13 +319,11 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
             _emit_summary_response(ser, response)
             logger.info("Summarize request completed with blocking response (%d chars)", len(response))
         time.sleep(INTER_PACKET_DELAY_S)
-        ser.write(build_summarize_done())
-        ser.flush()
+        _write_bridge_packet(ser, build_summarize_done(), label="summarize_done")
     except Exception as exc:
         logger.exception("LLM request failed")
         try:
-            ser.write(build_error(f"[ERROR] {exc}"))
-            ser.flush()
+            _write_bridge_packet(ser, build_error(f"[ERROR] {exc}"), label="error")
         except Exception:
             logger.exception("Failed to send error packet back to Pico")
 
@@ -328,6 +375,7 @@ def run_bridge(args) -> int:
 
     def handle_packet(pkt: dict) -> None:
         pkt_type = pkt["type"]
+        _log_inbound_packet(pkt)
         if pkt_type == PKT_CONTEXT_NEW:
             db.on_context_new(pkt)
             return
@@ -358,7 +406,7 @@ def run_bridge(args) -> int:
         while True:
             if ser is None:
                 ser = open_serial_with_retry(args.port, args.baud, args.reconnect_delay)
-                parser = PacketParser(on_packet=handle_packet)
+                parser = PacketParser(on_packet=handle_packet, diagnostic_hook=_log_parser_diagnostic)
                 logger.info("Packet parser reset after serial reconnect")
 
             try:

@@ -7,7 +7,8 @@ param(
     [int]$JetsonSshConnectTimeoutSeconds = 10,
     [int]$BridgeSettleSeconds = 10,
     [switch]$SkipSmokeTest,
-    [switch]$SkipAppLaunch
+    [switch]$SkipAppLaunch,
+    [switch]$HeadlessAppLaunch
 )
 
 $ErrorActionPreference = "Stop"
@@ -466,7 +467,7 @@ echo "Jetson host: $(hostname)"
 echo "Jetson user: $(whoami)"
 echo "Bridge dir: $BRIDGE_DIR"
 
-if pgrep -af 'llama-server' >/dev/null 2>&1; then
+if pgrep -af '[l]lama-server' >/dev/null 2>&1; then
     echo "llama-server status: already running"
 else
     echo "llama-server status: starting"
@@ -501,7 +502,7 @@ fi
 
 sudo chmod 666 /dev/ttyTHS0
 
-if pgrep -af 'pico_llm_bridge.py' >/dev/null 2>&1; then
+if pgrep -af '[p]ico_llm_bridge.py' >/dev/null 2>&1; then
     echo "bridge status: already running"
 else
     echo "bridge status: starting"
@@ -510,8 +511,15 @@ fi
 
 sleep 3
 
+if ! pgrep -af '[p]ico_llm_bridge.py' >/dev/null 2>&1; then
+    echo "bridge failed to start"
+    echo "bridge log tail:"
+    tail -n 20 "$BRIDGE_LOG" || true
+    exit 1
+fi
+
 echo "process status:"
-pgrep -af 'llama-server|pico_llm_bridge.py' || true
+pgrep -af '[l]lama-server|[p]ico_llm_bridge.py' || true
 echo "bridge log tail:"
 tail -n 20 "$BRIDGE_LOG" || true
 '@
@@ -529,13 +537,19 @@ set -euo pipefail
 BRIDGE_DIR="__REMOTE_PATH__/demo/pico_bridge"
 BRIDGE_LOG="$BRIDGE_DIR/bridge.log"
 
-pkill -f 'pico_llm_bridge.py' || true
+pkill -f '[p]ico_llm_bridge.py' || true
 sleep 2
 cd "$BRIDGE_DIR"
 nohup bash -lc "cd '$BRIDGE_DIR' && exec ./run_bridge.sh" >"$BRIDGE_LOG" 2>&1 < /dev/null &
 sleep 4
+if ! pgrep -af '[p]ico_llm_bridge.py' >/dev/null 2>&1; then
+    echo "bridge restart failed"
+    echo "bridge log tail:"
+    tail -n 20 "$BRIDGE_LOG" || true
+    exit 1
+fi
 echo "bridge restart status:"
-pgrep -af 'pico_llm_bridge.py' || true
+pgrep -af '[p]ico_llm_bridge.py' || true
 echo "bridge log tail:"
 tail -n 20 "$BRIDGE_LOG" || true
 '@
@@ -709,6 +723,13 @@ function Get-SparkAppProcesses {
     }
 }
 
+function Get-WatchFullStackProcesses {
+    Get-CimInstance Win32_Process | Where-Object {
+        $_.Name -match "^python(?:w)?(?:\.exe)?$" -and
+        $_.CommandLine -match "watch_full_stack\.py"
+    }
+}
+
 function Stop-SparkAppProcesses {
     $processes = @(Get-SparkAppProcesses)
     if ($processes.Count -eq 0) {
@@ -733,7 +754,10 @@ function Stop-SparkAppProcesses {
 }
 
 function Start-SparkApp {
-    param([string]$PythonExe)
+    param(
+        [string]$PythonExe,
+        [switch]$HeadlessLaunch
+    )
 
     $existing = @(Get-SparkAppProcesses)
 
@@ -743,8 +767,36 @@ function Start-SparkApp {
     }
 
     $scriptPath = Join-Path $RepoRoot "spark_app_v2.py"
-    Start-Process -FilePath $PythonExe -ArgumentList @($scriptPath) -WorkingDirectory $RepoRoot | Out-Null
-    Write-Status "App status" "spark_app_v2.py launched"
+
+    if ($HeadlessLaunch) {
+        Start-Process -FilePath $PythonExe -ArgumentList @($scriptPath) -WorkingDirectory $RepoRoot | Out-Null
+        Write-Status "App status" "spark_app_v2.py launched"
+        return
+    }
+
+    $escapedRepoRoot = $RepoRoot.Replace("'", "''")
+    $escapedPythonExe = $PythonExe.Replace("'", "''")
+    $escapedScriptPath = $scriptPath.Replace("'", "''")
+    $command = "Set-Location '$escapedRepoRoot'; & '$escapedPythonExe' '$escapedScriptPath'"
+
+    Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoExit", "-Command", $command) -WorkingDirectory $RepoRoot | Out-Null
+    Write-Status "App status" "spark_app_v2.py launched in a visible console"
+}
+
+function Start-FullStackWatcher {
+    param([string]$PythonExe)
+
+    $existing = @(Get-WatchFullStackProcesses)
+
+    if ($existing) {
+        Write-Status "Watcher status" "watch_full_stack.py is already running"
+        return
+    }
+
+    $command = 'cd /d "{0}" && "{1}" watch_full_stack.py' -f $RepoRoot, $PythonExe
+
+    Start-Process -FilePath "cmd.exe" -ArgumentList @('/k', $command) -WorkingDirectory $RepoRoot | Out-Null
+    Write-Status "Watcher status" "watch_full_stack.py launched in a visible console"
 }
 
 function Invoke-SetupSpark {
@@ -835,7 +887,8 @@ function Invoke-SetupSpark {
 
     if (-not $SkipAppLaunch) {
         Write-Section "Launch App"
-        Start-SparkApp -PythonExe $pythonExe
+        Start-SparkApp -PythonExe $pythonExe -HeadlessLaunch:$HeadlessAppLaunch
+        Start-FullStackWatcher -PythonExe $pythonExe
     }
 
     Write-Section "Done"

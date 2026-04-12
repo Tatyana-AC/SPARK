@@ -367,6 +367,41 @@ class BridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(status.response_length, 12)
         self.assertFalse(status.response_complete)
 
+    def test_bridge_runtime_heartbeats_only_after_full_interval(self):
+        from pico.bridge_runtime import BridgeRuntime
+
+        debug_messages = []
+        runtime = BridgeRuntime(
+            serial_bridge=types.SimpleNamespace(relay_once=lambda *, max_chunk_size: None),
+            jetson_transport=types.SimpleNamespace(
+                poll=lambda *, max_chunk_size: None,
+                request_active=False,
+                response_len=0,
+                response_complete=False,
+                response_bytes=b"",
+            ),
+            protocol_handler=types.SimpleNamespace(
+                update_response_state=lambda response_bytes, *, complete, active: None,
+                handle_report=lambda report: None,
+            ),
+            custom_hid=types.SimpleNamespace(
+                get_last_received_report=lambda raw_report_id: None,
+                send_report=lambda reply, raw_report_id: None,
+            ),
+            raw_report_id=9,
+            button_input=types.SimpleNamespace(drain_pressed_events=lambda: iter(())),
+            time_sleep=lambda _: None,
+            debug_sender=lambda message: debug_messages.append(message) or "sent:27",
+            heartbeat_interval_s=5.0,
+        )
+
+        runtime.run_once(now=4.999)
+        runtime.run_once(now=5.0)
+        runtime.run_once(now=9.999)
+        runtime.run_once(now=10.0)
+
+        self.assertEqual(debug_messages, ["heartbeat", "heartbeat"])
+
     def test_bridge_runtime_preserves_import_fail_debug_status_without_prefix(self):
         from pico.bridge_runtime import BridgeRuntime
 

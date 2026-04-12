@@ -95,6 +95,15 @@ They are already listed in `requirements.txt`.
 
 Important: install `hidapi`, not the separate `hid` package.
 
+## Windows setup helper
+
+`setup_spark.ps1` now brings up the normal Windows debugging session by launching:
+
+- `spark_app_v2.py`
+- `watch_full_stack.py`
+
+The watcher is monitor-only. It does not start additional app instances.
+
 ## Key docs
 
 - `ENGINEERING_SPEC.md`: current architecture and protocol reference
@@ -125,6 +134,7 @@ Important: install `hidapi`, not the separate `hid` package.
 - `spark_app_v2.py` no longer uses a host-local SQLite database in the active runtime. Context persistence now lives on Jetson, while host UI position is stored through `QSettings`.
 - The `jetson/` folder in this repo is meant to be copy-pasted into the Jetson bridge directory. The active Jetson-side deployment target is `Z:\demo\pico_bridge`.
 - `Test Context` and `Custom Context` are visible in the SPARK panel for summarize-loop debugging without depending on live accessibility extraction.
+- The panel header `✕` now fully quits the app. Use the tray menu or `Win+Alt+Space` when you want to hide/show the panel without exiting.
 - During manual debugging, make sure older `spark_app_v2.py` processes are closed before launching another copy. Duplicate host app processes can contend for the Pico HID session and surface as `BUSY`, `read error`, or device-response timeouts.
 - If the Pico still enumerates on USB but `Test Context` or other summarize requests hit a Raw HID timeout, do a physical Pico reset before trying software recovery steps. A soft reload may help, but it should not be the first-line recovery path.
 - On March 28, 2026, the real physical Host HID/CDC -> Pico -> Jetson `/dev/ttyTHS0` path was verified end-to-end with live summarize responses from the Jetson llama.cpp server.

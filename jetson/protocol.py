@@ -79,8 +79,13 @@ class PacketParser:
     _HEADER = 1
     _BODY = 2
 
-    def __init__(self, on_packet: Callable[[dict[str, Any]], None] | None = None):
+    def __init__(
+        self,
+        on_packet: Callable[[dict[str, Any]], None] | None = None,
+        diagnostic_hook: Callable[[dict[str, Any]], None] | None = None,
+    ):
         self.on_packet = on_packet
+        self.diagnostic_hook = diagnostic_hook
         self._buf = bytearray()
         self._state = self._SYNC
         self._pkt_type = 0
@@ -111,6 +116,7 @@ class PacketParser:
         (received_crc,) = struct.unpack_from(_CRC_FMT, self._buf, len(self._buf) - 1)
 
         if _crc8(header_and_payload) != received_crc:
+            self._diagnose("crc_mismatch", pkt_type=self._pkt_type, pkt_len=self._pkt_len)
             self._reset()
             return
 
@@ -123,15 +129,19 @@ class PacketParser:
     def _parse_payload(self, pkt_type: int, payload: bytes) -> dict[str, Any] | None:
         if pkt_type in _JSON_PACKET_TYPES:
             if not payload:
+                self._diagnose("invalid_payload", pkt_type=pkt_type, reason="empty_json_payload")
                 return None
             version = payload[0]
             if version != PROTOCOL_VERSION:
+                self._diagnose("invalid_payload", pkt_type=pkt_type, reason="version_mismatch")
                 return None
             try:
                 data = json.loads(payload[1:].decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
+                self._diagnose("invalid_payload", pkt_type=pkt_type, reason="json_decode_failed")
                 return None
             if not isinstance(data, dict):
+                self._diagnose("invalid_payload", pkt_type=pkt_type, reason="json_not_object")
                 return None
             data["type"] = pkt_type
             return data
@@ -139,9 +149,17 @@ class PacketParser:
             try:
                 (button_id,) = struct.unpack_from("<B", payload, 0)
             except struct.error:
+                self._diagnose("invalid_payload", pkt_type=pkt_type, reason="button_payload_short")
                 return None
             return {"type": pkt_type, "button_id": button_id}
         return None
+
+    def _diagnose(self, event: str, **fields: Any) -> None:
+        if self.diagnostic_hook is None:
+            return
+        payload = {"event": event}
+        payload.update(fields)
+        self.diagnostic_hook(payload)
 
     def _reset(self) -> None:
         self._buf = bytearray()

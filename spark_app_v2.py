@@ -12,7 +12,12 @@ import os
 import sys
 import signal
 import logging
+import logging.handlers
 import threading
+import time
+from pathlib import Path
+
+from app_log_contract import APP_LOG_FILE_FORMAT
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QFrame,
@@ -35,13 +40,64 @@ from host_pc.raw_hid import SparkHIDClient, AppCommand, SparkProtocolError
 from host_pc.release_output import format_release_output
 from host_pc.serial_sender import SerialSender
 from host_pc.live_capture import LiveCaptureFeed
-from host_pc.snapshot_policy import is_relevant_snapshot
+from host_pc.snapshot_policy import is_relevant_snapshot, snapshot_fingerprint
 from host_pc.summarize_stream import build_summary_request, build_summarize_command, build_test_summary_request
 from host_pc.single_instance import SingleInstanceGuard
 from host_pc.web_content import WebContentExtractor, SUPPORTED_BROWSERS
 
+APP_LOG_FORMAT = APP_LOG_FILE_FORMAT
+DEFAULT_LOG_PATH = Path(__file__).resolve().parent / "logs" / "spark_app_v2.log"
+APP_LOG_MAX_BYTES = 512_000
+APP_LOG_BACKUP_COUNT = 3
+
+
+def configure_app_logging(log_path=DEFAULT_LOG_PATH):
+    log_path = Path(log_path)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_log_path = log_path.resolve()
+        root = logging.getLogger()
+        matching_handlers = []
+
+        for handler in root.handlers:
+            if not isinstance(handler, logging.FileHandler):
+                continue
+            if Path(handler.baseFilename).resolve() != resolved_log_path:
+                continue
+            matching_handlers.append(handler)
+
+        if len(matching_handlers) == 1:
+            handler = matching_handlers[0]
+            if (
+                isinstance(handler, logging.handlers.RotatingFileHandler)
+                and handler.maxBytes == APP_LOG_MAX_BYTES
+                and handler.backupCount == APP_LOG_BACKUP_COUNT
+            ):
+                handler.setFormatter(logging.Formatter(APP_LOG_FORMAT))
+                return handler
+
+        for handler in matching_handlers:
+            root.removeHandler(handler)
+            handler.close()
+
+        file_handler = logging.handlers.RotatingFileHandler(
+            resolved_log_path,
+            maxBytes=APP_LOG_MAX_BYTES,
+            backupCount=APP_LOG_BACKUP_COUNT,
+            encoding="utf-8",
+            delay=True,
+        )
+        file_handler.setFormatter(logging.Formatter(APP_LOG_FORMAT))
+        root.addHandler(file_handler)
+        return file_handler
+    except OSError as exc:
+        logging.warning("[LOGGING] File logging could not be configured for %s: %s", log_path, exc)
+        return None
+
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s  %(name)s  %(levelname)s  %(message)s")
+configure_app_logging()
 logger = logging.getLogger(__name__)
 
 HOTKEY_CONFIG = get_hotkey_config()
@@ -314,6 +370,7 @@ class HIDSignals(QObject):
     summarize_succeeded = pyqtSignal(str)
     summarize_failed = pyqtSignal(str)
     summarize_finished = pyqtSignal()
+    pico_debug = pyqtSignal(str)
 
 
 class CustomContextDialog(QDialog):
@@ -465,13 +522,19 @@ class SparkPanel(QWidget):
 
         # ── Serial sender (Host → Pico Hub) ──────────────────────
         self.serial_sender = SerialSender()
+        self.serial_sender.set_packet_callback(self._handle_serial_packet)
         self.serial_sender.connect()   # best-effort; silently skipped if no Pico
         self._last_serial_key: str | None = None
+        self._last_serial_fingerprint: str | None = None
 
         self.captured_text: str = ""
         self.processed_text: str = ""
         self.is_polling = False
         self._release_in_progress = False
+        self._summary_request_in_flight = False
+        self._last_device_response_signature = (0, False, False)
+        self._device_response_poll_deadline = 0.0
+        self._last_pico_runtime_text = ""
         self._capture_feed = LiveCaptureFeed(max_lines=self.MAX_CAPTURE_LINES)
         self._drag_pos: QPoint | None = None
 
@@ -484,9 +547,23 @@ class SparkPanel(QWidget):
         self.poll_timer.setInterval(self.POLL_INTERVAL)
         self.poll_timer.timeout.connect(self._on_poll_tick)
 
+        self._response_poll_timer = QTimer()
+        self._response_poll_timer.setInterval(self.POLL_INTERVAL)
+        self._response_poll_timer.timeout.connect(self._poll_device_response)
+
+        self._pico_runtime_timer = QTimer()
+        self._pico_runtime_timer.setInterval(250)
+        self._pico_runtime_timer.timeout.connect(self._poll_pico_runtime_status)
+        self._pico_runtime_timer.start()
+
         self._blink_timer = QTimer()
         self._blink_timer.timeout.connect(self._blink_live)
         self._blink_state = True
+
+        self._serial_poll_timer = QTimer()
+        self._serial_poll_timer.setInterval(2000)
+        self._serial_poll_timer.timeout.connect(self._poll_serial_connection)
+        self._serial_poll_timer.start()
 
         # Restore saved position (or default to bottom-right)
         self._restore_position()
@@ -527,7 +604,7 @@ class SparkPanel(QWidget):
         close = QLabel("✕")
         close.setObjectName("close_btn")
         close.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        close.mousePressEvent = lambda _: self.hide()
+        close.mousePressEvent = lambda _: QApplication.instance().quit()
         hdr.addWidget(close, alignment=Qt.AlignmentFlag.AlignTop)
 
         top_lay.addLayout(hdr)
@@ -723,6 +800,7 @@ class SparkPanel(QWidget):
         self.hid_signals.summarize_succeeded.connect(self._on_summarize_succeeded)
         self.hid_signals.summarize_failed.connect(self._on_summarize_failed)
         self.hid_signals.summarize_finished.connect(self._on_summarize_finished)
+        self.hid_signals.pico_debug.connect(self._on_pico_debug_message)
         self._hid_poll_timer = QTimer()
         self._hid_poll_timer.setInterval(2000)
         self._hid_poll_timer.timeout.connect(self._poll_hid_connection)
@@ -742,6 +820,33 @@ class SparkPanel(QWidget):
             self._hid_previous_state = previous
             self._hid_connected = connected
             self.hid_signals.device_connected.emit(connected)
+
+    def _poll_serial_connection(self):
+        if self.serial_sender.is_connected():
+            return
+        self.serial_sender.connect()
+
+    def _poll_pico_runtime_status(self):
+        if not self.hid_client.is_connected():
+            self._last_pico_runtime_text = ""
+            return
+
+        try:
+            status = self.hid_client.get_runtime_status()
+        except Exception:
+            return
+
+        runtime_text = getattr(status, "text", "") or ""
+        if runtime_text and runtime_text != self._last_pico_runtime_text:
+            self._last_pico_runtime_text = runtime_text
+            self.hid_signals.pico_debug.emit(runtime_text.split("|", 1)[0])
+
+        if not self._summary_request_in_flight and (status.active or status.complete):
+            self._start_device_response_polling()
+
+    def _handle_serial_packet(self, pkt: dict):
+        if pkt.get("type") == 0x08:
+            self.hid_signals.pico_debug.emit(pkt.get("msg", ""))
 
     def _on_hid_connected(self, connected: bool):
         """Update the device status dot in the header and handle mid-session drops."""
@@ -795,7 +900,66 @@ class SparkPanel(QWidget):
         self._set_status(message, RED)
 
     def _on_summarize_finished(self):
+        self._summary_request_in_flight = False
         self._set_summary_buttons_enabled(True)
+
+    def _on_pico_debug_message(self, message: str):
+        if message == "button:0" and not self._summary_request_in_flight:
+            self._start_device_response_polling()
+
+    def _start_device_response_polling(self):
+        self._device_response_poll_deadline = time.monotonic() + 30.0
+        self._last_device_response_signature = (0, False, False)
+        if not self._response_poll_timer.isActive():
+            self._response_poll_timer.start()
+
+    def _stop_device_response_polling(self):
+        self._device_response_poll_deadline = 0.0
+        self._last_device_response_signature = (0, False, False)
+        self._response_poll_timer.stop()
+
+    def _poll_device_response(self):
+        if self._summary_request_in_flight:
+            self._stop_device_response_polling()
+            return
+
+        if self._device_response_poll_deadline and time.monotonic() >= self._device_response_poll_deadline:
+            self._stop_device_response_polling()
+            return
+
+        connected = getattr(self, "_hid_connected", None)
+        if connected is False:
+            self._stop_device_response_polling()
+            return
+        if connected is None and not self.hid_client.is_connected():
+            self._stop_device_response_polling()
+            return
+
+        try:
+            info = self.hid_client.get_response_info()
+        except Exception:
+            return
+
+        signature = (info.total_len, info.complete, info.active)
+        if signature == self._last_device_response_signature:
+            return
+        self._last_device_response_signature = signature
+
+        if info.total_len == 0 and not info.active and not info.complete:
+            return
+
+        if info.total_len > 0:
+            try:
+                text = self.hid_client.fetch_response(info)
+            except Exception:
+                return
+            self.release_output_lbl.setPlainText(text if text else "No summary returned.")
+
+        if info.complete:
+            self._set_status("Jetson summary complete — output updated", GREEN)
+            self._stop_device_response_polling()
+        else:
+            self._set_status("Streaming summary from Jetson…", ORANGE)
 
     # ─────────────────────────────────────────────────────────────
     # Polling — identical logic to SparkPipeline._on_poll_tick
@@ -806,12 +970,14 @@ class SparkPanel(QWidget):
             self.poll_timer.stop()
             self._blink_timer.stop()
             self.is_polling = False
+            logger.info("[POLL] Stopped live context polling")
             self.poll_btn.setText("Start Polling")
             self.poll_btn.setProperty("active", "false")
             self.poll_btn.setStyle(self.poll_btn.style())
             self.live_dot.setText("● Live")
         else:
             self.is_polling = True
+            logger.info("[POLL] Started live context polling")
             self.poll_btn.setText("Stop Polling")
             self.poll_btn.setProperty("active", "true")
             self.poll_btn.setStyle(self.poll_btn.style())
@@ -881,12 +1047,18 @@ class SparkPanel(QWidget):
                 if not self.serial_sender.is_connected():
                     self.serial_sender.connect()
                 key = current.context_key
+                fingerprint = snapshot_fingerprint(current)
                 if key != self._last_serial_key:
                     if self.serial_sender.send_context_new(current):
                         self._last_serial_key = key
+                        self._last_serial_fingerprint = fingerprint
                 else:
-                    if not self.serial_sender.send_context_update(current):
-                        self._last_serial_key = None
+                    if fingerprint != self._last_serial_fingerprint:
+                        if self.serial_sender.send_context_update(current):
+                            self._last_serial_fingerprint = fingerprint
+                        else:
+                            self._last_serial_key = None
+                            self._last_serial_fingerprint = None
         else:
             self._push_poll_capture_line(f"[{info.app_name}] (no text extracted)")
 
@@ -1030,6 +1202,8 @@ class SparkPanel(QWidget):
             self._set_status("SPARK device not connected", RED)
             return
 
+        self._stop_device_response_polling()
+        self._summary_request_in_flight = True
         self._set_summary_buttons_enabled(False)
         self.release_output_lbl.setPlainText("")
         self._push_capture_line(capture_label)
@@ -1132,6 +1306,9 @@ class SparkPanel(QWidget):
             self.poll_timer.stop()
             self._blink_timer.stop()
             self._hid_poll_timer.stop()
+            self._pico_runtime_timer.stop()
+            self._serial_poll_timer.stop()
+            self._response_poll_timer.stop()
             self.hotkeys.stop()
         except Exception as exc:
             logger.error("[APP] Error stopping timers/hotkeys: %s", exc)
@@ -1242,4 +1419,3 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
-

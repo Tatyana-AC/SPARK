@@ -29,6 +29,7 @@ class JetsonTransport:
         max_request_retries=1,
         time_source=None,
         debug_hook=None,
+        status_sender=None,
     ):
         self._uart = uart
         self._response = bytearray()
@@ -44,7 +45,9 @@ class JetsonTransport:
         self._request_bytes = b""
         self._retry_count = 0
         self._debug_hook = debug_hook
+        self._status_sender = status_sender
         self._uart_read_count = 0
+        self._response_started = False
 
     @property
     def response_bytes(self):
@@ -70,6 +73,7 @@ class JetsonTransport:
         self._request_bytes = build_summarize_request(request_text)
         self._retry_count = 0
         self._uart_read_count = 0
+        self._response_started = False
         self._debug("start_request", payload_len=len(request_text))
         self._send_request()
 
@@ -106,13 +110,20 @@ class JetsonTransport:
         )
 
     def _send_request(self):
-        self._uart.write(self._request_bytes)
+        try:
+            self._uart.write(self._request_bytes)
+        except Exception as exc:
+            self._emit_status(f"[ERROR] Jetson request send failed: {type(exc).__name__}")
+            raise
         now = self._time_source()
         self._last_send_s = now
         self._last_activity_s = now
         self._debug("send_request", byte_count=len(self._request_bytes), retry_count=self._retry_count)
+        if self._retry_count == 0:
+            self._emit_status("[JETSON] Request forwarded")
 
     def _fail_request(self, message):
+        self._emit_status(message)
         existing = bytes(self._response)
         if existing:
             combined = existing + b"\n" + message.encode("utf-8")
@@ -132,6 +143,11 @@ class JetsonTransport:
         payload.update(fields)
         self._debug_hook(payload)
 
+    def _emit_status(self, message):
+        if self._status_sender is None:
+            return
+        self._status_sender(message)
+
     def _handle_packet(self, pkt):
         pkt_type = pkt["type"]
         if pkt_type == PKT_SUMMARIZE_CHUNK:
@@ -139,6 +155,9 @@ class JetsonTransport:
                 return  # discard stale chunk from a previous request/retry
             self._last_activity_s = self._time_source()
             text = pkt.get("text") or ""
+            if not self._response_started:
+                self._response_started = True
+                self._emit_status("[JETSON] Response started")
             self._response.extend(text.encode("utf-8"))
             self._debug("recv_chunk", chunk_len=len(text), response_len=len(self._response))
             return

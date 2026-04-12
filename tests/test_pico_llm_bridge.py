@@ -4,9 +4,15 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from jetson.db_manager import JetsonDB
-from jetson.pico_llm_bridge import build_llm_request, _build_summarize_prompt
+from jetson.pico_llm_bridge import (
+    build_llm_request,
+    _build_summarize_prompt,
+    _log_inbound_packet,
+    _write_bridge_packet,
+)
 
 
 SYSTEM_PROMPT = "You are a helpful assistant."
@@ -86,6 +92,24 @@ class BuildLlmRequestTests(unittest.TestCase):
         _, prompt = build_llm_request("just a raw prompt", SYSTEM_PROMPT)
 
         self.assertEqual(prompt, "just a raw prompt")
+
+
+class BridgeLoggingTests(unittest.TestCase):
+    def test_log_inbound_packet_logs_button_press(self):
+        with mock.patch("jetson.pico_llm_bridge.logger.info") as info_log:
+            _log_inbound_packet({"type": 0x05, "button_id": 0})
+
+        info_log.assert_called_once_with("[UART IN] button_press button_id=%s", 0)
+
+    def test_write_bridge_packet_logs_and_flushes(self):
+        serial = mock.Mock()
+
+        with mock.patch("jetson.pico_llm_bridge.logger.info") as info_log:
+            _write_bridge_packet(serial, b"abc", label="summarize_done")
+
+        serial.write.assert_called_once_with(b"abc")
+        serial.flush.assert_called_once_with()
+        info_log.assert_called_once_with("[UART OUT] %s bytes=%d", "summarize_done", 3)
 
 
 if __name__ == "__main__":

@@ -215,6 +215,65 @@ class JetsonTransportTests(unittest.TestCase):
         self.assertIn("uart_read", event_names)
         self.assertIn("recv_done", event_names)
 
+    def test_status_sender_reports_forward_and_response_start(self):
+        from pico.jetson_transport import JetsonTransport
+
+        uart = FakeUart()
+        messages = []
+        transport = JetsonTransport(uart, status_sender=messages.append)
+
+        transport.start_request("summarize this")
+        uart.queue_read(build_summarize_chunk("Partial "))
+        transport.poll()
+
+        self.assertEqual(
+            messages,
+            [
+                "[JETSON] Request forwarded",
+                "[JETSON] Response started",
+            ],
+        )
+
+    def test_status_sender_reports_timeout_error(self):
+        from pico.jetson_transport import JetsonTransport
+
+        uart = FakeUart()
+        clock = FakeClock()
+        messages = []
+        transport = JetsonTransport(
+            uart,
+            request_timeout_s=5.0,
+            max_request_retries=0,
+            time_source=clock,
+            status_sender=messages.append,
+        )
+        transport.start_request("summarize this")
+
+        clock.advance(6.0)
+        transport.poll()
+
+        self.assertEqual(messages[0], "[JETSON] Request forwarded")
+        self.assertIn("timed out", messages[1])
+
+    def test_status_sender_reports_error_packet_message(self):
+        from pico.jetson_transport import JetsonTransport
+
+        uart = FakeUart()
+        messages = []
+        transport = JetsonTransport(uart, status_sender=messages.append)
+        transport.start_request("summarize this")
+
+        uart.queue_read(build_error("summarize failed"))
+        transport.poll()
+
+        self.assertEqual(
+            messages,
+            [
+                "[JETSON] Request forwarded",
+                "summarize failed",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

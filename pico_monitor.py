@@ -33,6 +33,7 @@ REPORT_SIZE = 32
 
 CMD_GET_INFO = 0x01
 CMD_GET_RESPONSE_INFO = 0x20
+CMD_GET_RUNTIME_STATUS = 0x22
 
 RESPONSE_FLAG_COMPLETE = 0x01
 RESPONSE_FLAG_ACTIVE = 0x02
@@ -71,6 +72,7 @@ class PicoState:
     response_chunk_count: int = 0
     response_complete: bool = False
     response_active: bool = False
+    runtime_status_text: str = ""
     # Errors
     error: str = ""
 
@@ -194,6 +196,7 @@ class HIDPoller:
 
             got_info = False
             got_resp = False
+            got_runtime = False
 
             # GET_INFO
             info_reply = self._send_and_match(CMD_GET_INFO)
@@ -226,13 +229,27 @@ class HIDPoller:
                 state.response_complete = self._last_good.response_complete
                 state.response_active = self._last_good.response_active
 
-            if got_info and got_resp:
+            runtime_reply = self._send_and_match(CMD_GET_RUNTIME_STATUS)
+            if runtime_reply is not None:
+                state.runtime_status_text = (
+                    bytes(runtime_reply[2:32]).split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+                )
+                got_runtime = True
+            else:
+                state.runtime_status_text = self._last_good.runtime_status_text
+
+            if got_info and got_resp and got_runtime:
                 self._consecutive_misses = 0
                 self._last_good = state
-            elif got_info or got_resp:
+            elif got_info or got_resp or got_runtime:
                 self._consecutive_misses = 0
                 self._last_good = state
-                which = "GET_RESPONSE_INFO" if not got_resp else "GET_INFO"
+                if not got_resp:
+                    which = "GET_RESPONSE_INFO"
+                elif not got_runtime:
+                    which = "GET_RUNTIME_STATUS"
+                else:
+                    which = "GET_INFO"
                 state.error = f"(stale {which} — host app contention)"
             else:
                 self._consecutive_misses += 1
@@ -378,7 +395,15 @@ def clear_screen():
         os.system("clear")
 
 
-def run_monitor(poll_ms, jetson_host, jetson_user, jetson_log_path, use_jetson):
+def should_clear_screen(clear_screen_flag, os_name=None):
+    if clear_screen_flag:
+        return True
+    if os_name is None:
+        os_name = os.name
+    return os_name != "nt"
+
+
+def run_monitor(poll_ms, jetson_host, jetson_user, jetson_log_path, use_jetson, clear_screen_enabled):
     poller = HIDPoller()
     tailer = None
 
@@ -438,7 +463,8 @@ def run_monitor(poll_ms, jetson_host, jetson_user, jetson_log_path, use_jetson):
                 prev_response_len = state.response_len
 
             # Render
-            clear_screen()
+            if clear_screen_enabled:
+                clear_screen()
             print(format_state(state, jetson_lines, elapsed))
 
             if event_log:
@@ -459,7 +485,7 @@ def run_monitor(poll_ms, jetson_host, jetson_user, jetson_log_path, use_jetson):
 # CLI
 # ---------------------------------------------------------------------------
 
-def main():
+def build_arg_parser():
     parser = argparse.ArgumentParser(description="SPARK Pico real-time status monitor")
     parser.add_argument(
         "--poll-ms", type=int, default=200,
@@ -482,6 +508,15 @@ def main():
         "--no-jetson", action="store_true",
         help="Disable Jetson SSH log tailing",
     )
+    parser.add_argument(
+        "--clear-screen", action="store_true",
+        help="Force full-screen redraw mode instead of append-only output",
+    )
+    return parser
+
+
+def main():
+    parser = build_arg_parser()
     args = parser.parse_args()
 
     run_monitor(
@@ -490,6 +525,7 @@ def main():
         jetson_user=args.jetson_user,
         jetson_log_path=args.jetson_log,
         use_jetson=not args.no_jetson,
+        clear_screen_enabled=should_clear_screen(args.clear_screen),
     )
 
 

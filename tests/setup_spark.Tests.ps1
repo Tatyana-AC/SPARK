@@ -302,6 +302,62 @@ Describe 'Invoke-SetupSpark' {
         $script:jetsonSyncs | Should Be @('Z:')
         $script:servicesStarted | Should Be 1
     }
+
+    It 'launches both the app and full stack watcher when app launch is enabled' {
+        $script:SkipSmokeTest = $true
+        $script:SkipAppLaunch = $false
+        $script:appLaunches = @()
+        $script:watcherLaunches = @()
+
+        function script:Write-Section {}
+        function script:Write-Status {}
+        function script:Get-RepoPython { 'python.exe' }
+        function script:Get-PicoMount {
+            [pscustomobject]@{
+                Drive = 'D:'
+                CodePath = 'D:\code.py'
+                BootPath = 'D:\boot.py'
+            }
+        }
+        function script:Ensure-JetsonMount {
+            [pscustomobject]@{
+                Drive = 'Z:'
+                Provider = '\\sshfs.r\sidac@192.168.55.1\mnt\usb_drive'
+                VolumeName = ''
+            }
+        }
+        function script:Test-Path { $true }
+        function script:Assert-JetsonWritableMount { 'rw,relatime' }
+        function script:Deploy-PicoFirmware {}
+        function script:Sync-JetsonBridgeBundle {}
+        function script:Start-JetsonServices {}
+        function script:Wait-JetsonBridgeSettle {}
+        Mock Start-SparkApp {
+            param([string]$PythonExe, [switch]$HeadlessLaunch)
+            $script:appLaunches += [pscustomobject]@{ PythonExe = $PythonExe; HeadlessLaunch = [bool]$HeadlessLaunch }
+        }
+        Mock Start-FullStackWatcher {
+            param([string]$PythonExe)
+            $script:watcherLaunches += [pscustomobject]@{ PythonExe = $PythonExe }
+        }
+
+        Invoke-SetupSpark
+
+        $script:appLaunches.Count | Should Be 1
+        $script:appLaunches[0].PythonExe | Should Be 'python.exe'
+        $script:watcherLaunches.Count | Should Be 1
+        $script:watcherLaunches[0].PythonExe | Should Be 'python.exe'
+    }
+}
+
+Describe 'Start-JetsonServices' {
+    It 'emits a remote script that avoids pgrep self-matches and hard-fails if the bridge is absent' {
+        $source = Get-Content (Join-Path $PSScriptRoot '..\setup_spark.ps1') -Raw
+
+        $source | Should Match "pgrep -af '\[p\]ico_llm_bridge\.py'"
+        $source | Should Match 'bridge failed to start'
+        $source | Should Match "pgrep -af '\[l\]lama-server\|\[p\]ico_llm_bridge\.py'"
+    }
 }
 
 Describe 'Run-SmokeTestWithRecovery' {
@@ -358,5 +414,147 @@ Describe 'Run-SmokeTestWithRecovery' {
         $script:settleCalls | Should Be 1
         $script:softReloads | Should Be 0
         $script:sections | Should Be @('Smoke Test', 'Bridge Recovery', 'Smoke Test Retry')
+    }
+}
+
+Describe 'Start-SparkApp' {
+    It 'launches spark_app_v2.py in a visible PowerShell window by default' {
+        $script:RepoRoot = 'C:\SPARK'
+        $script:startCall = $null
+        $script:statusMessages = @()
+
+        function script:Get-SparkAppProcesses { @() }
+        function script:Write-Status {
+            param([string]$Label, [string]$Value)
+            $script:statusMessages += [pscustomobject]@{ Label = $Label; Value = $Value }
+        }
+        function script:Start-Process {
+            param(
+                [string]$FilePath,
+                [string[]]$ArgumentList,
+                [string]$WorkingDirectory
+            )
+
+            $script:startCall = [pscustomobject]@{
+                FilePath = $FilePath
+                ArgumentList = $ArgumentList
+                WorkingDirectory = $WorkingDirectory
+            }
+        }
+
+        Start-SparkApp -PythonExe 'C:\SPARK\.venv\Scripts\python.exe'
+
+        $script:startCall.FilePath | Should Be 'powershell.exe'
+        $script:startCall.ArgumentList[0] | Should Be '-NoExit'
+        $script:startCall.ArgumentList[1] | Should Be '-Command'
+        $script:startCall.ArgumentList[2] | Should Match 'spark_app_v2\.py'
+        $script:startCall.ArgumentList[2] | Should Match 'python\.exe'
+        $script:startCall.WorkingDirectory | Should Be 'C:\SPARK'
+        $script:statusMessages[-1].Value | Should Be 'spark_app_v2.py launched in a visible console'
+    }
+
+    It 'launches spark_app_v2.py directly when headless launch is requested' {
+        $script:RepoRoot = 'C:\SPARK'
+        $script:startCall = $null
+
+        function script:Get-SparkAppProcesses { @() }
+        function script:Write-Status {}
+        function script:Start-Process {
+            param(
+                [string]$FilePath,
+                [string[]]$ArgumentList,
+                [string]$WorkingDirectory
+            )
+
+            $script:startCall = [pscustomobject]@{
+                FilePath = $FilePath
+                ArgumentList = $ArgumentList
+                WorkingDirectory = $WorkingDirectory
+            }
+        }
+
+        Start-SparkApp -PythonExe 'C:\SPARK\.venv\Scripts\python.exe' -HeadlessLaunch
+
+        $script:startCall.FilePath | Should Be 'C:\SPARK\.venv\Scripts\python.exe'
+        $script:startCall.ArgumentList | Should Be @('C:\SPARK\spark_app_v2.py')
+        $script:startCall.WorkingDirectory | Should Be 'C:\SPARK'
+    }
+
+    It 'does not launch a second app when one is already running' {
+        $script:startCalls = 0
+        $script:statusMessages = @()
+
+        function script:Get-SparkAppProcesses {
+            @([pscustomobject]@{ ProcessId = 1234 })
+        }
+        function script:Write-Status {
+            param([string]$Label, [string]$Value)
+            $script:statusMessages += [pscustomobject]@{ Label = $Label; Value = $Value }
+        }
+        function script:Start-Process {
+            $script:startCalls += 1
+        }
+
+        Start-SparkApp -PythonExe 'python.exe'
+
+        $script:startCalls | Should Be 0
+        $script:statusMessages[-1].Value | Should Be 'spark_app_v2.py is already running'
+    }
+}
+
+Describe 'Start-FullStackWatcher' {
+    It 'launches watch_full_stack.py in a visible cmd window' {
+        $script:RepoRoot = 'C:\SPARK'
+        $script:startCall = $null
+        $script:statusMessages = @()
+
+        function script:Get-WatchFullStackProcesses { @() }
+        function script:Write-Status {
+            param([string]$Label, [string]$Value)
+            $script:statusMessages += [pscustomobject]@{ Label = $Label; Value = $Value }
+        }
+        function script:Start-Process {
+            param(
+                [string]$FilePath,
+                [string[]]$ArgumentList,
+                [string]$WorkingDirectory
+            )
+
+            $script:startCall = [pscustomobject]@{
+                FilePath = $FilePath
+                ArgumentList = $ArgumentList
+                WorkingDirectory = $WorkingDirectory
+            }
+        }
+
+        Start-FullStackWatcher -PythonExe 'C:\SPARK\.venv\Scripts\python.exe'
+
+        $script:startCall.FilePath | Should Be 'cmd.exe'
+        $script:startCall.ArgumentList[0] | Should Be '/k'
+        $script:startCall.ArgumentList[1] | Should Match 'watch_full_stack\.py'
+        $script:startCall.ArgumentList[1] | Should Match 'python\.exe'
+        $script:startCall.WorkingDirectory | Should Be 'C:\SPARK'
+        $script:statusMessages[-1].Value | Should Be 'watch_full_stack.py launched in a visible console'
+    }
+
+    It 'does not launch a second watcher when one is already running' {
+        $script:startCalls = 0
+        $script:statusMessages = @()
+
+        function script:Get-WatchFullStackProcesses {
+            @([pscustomobject]@{ ProcessId = 5678 })
+        }
+        function script:Write-Status {
+            param([string]$Label, [string]$Value)
+            $script:statusMessages += [pscustomobject]@{ Label = $Label; Value = $Value }
+        }
+        function script:Start-Process {
+            $script:startCalls += 1
+        }
+
+        Start-FullStackWatcher -PythonExe 'python.exe'
+
+        $script:startCalls | Should Be 0
+        $script:statusMessages[-1].Value | Should Be 'watch_full_stack.py is already running'
     }
 }

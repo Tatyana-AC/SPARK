@@ -16,6 +16,7 @@ class Command:
     GET_INFO = 0x01
     GET_RESPONSE_INFO = 0x20
     GET_RESPONSE_CHUNK = 0x21
+    GET_RUNTIME_STATUS = 0x22
     BEGIN_UPLOAD = 0x10
     UPLOAD_CHUNK = 0x11
     COMMIT_UPLOAD = 0x12
@@ -56,8 +57,9 @@ VALID_APP_COMMANDS = {
 
 
 class UploadProtocolHandler:
-    def __init__(self, text_preparer=None):
+    def __init__(self, text_preparer=None, runtime_status_provider=None):
         self._text_preparer = text_preparer or self._default_prepare_text
+        self._runtime_status_provider = runtime_status_provider
         self._response_bytes = b""
         self._response_complete = False
         self._response_active = False
@@ -122,6 +124,8 @@ class UploadProtocolHandler:
             return self._handle_get_response_info()
         if command == Command.GET_RESPONSE_CHUNK:
             return self._handle_get_response_chunk(report)
+        if command == Command.GET_RUNTIME_STATUS:
+            return self._handle_get_runtime_status()
         if command == Command.BEGIN_UPLOAD:
             return self._handle_begin(report)
         if command == Command.UPLOAD_CHUNK:
@@ -197,6 +201,37 @@ class UploadProtocolHandler:
         reply[1] = index & 0xFF
         reply[2:2 + (end - start)] = self._response_bytes[start:end]
         return bytes(reply)
+
+    def set_runtime_status_provider(self, provider):
+        self._runtime_status_provider = provider
+
+    @staticmethod
+    def _compact_runtime_text(status):
+        debug_status = getattr(status, "cdc_debug_status", "") or "never"
+        loop_checkpoint = getattr(status, "loop_checkpoint", "startup") or "startup"
+        debug_message = debug_status.split("|", 1)[0]
+        return f"{debug_message}|{loop_checkpoint}"[:30]
+
+    def _handle_get_runtime_status(self):
+        report = bytearray(REPORT_SIZE)
+        report[0] = Command.GET_RUNTIME_STATUS
+
+        if self._runtime_status_provider is None:
+            status = None
+        else:
+            status = self._runtime_status_provider()
+
+        flags = 0
+        if status is not None and getattr(status, "request_active", False):
+            flags |= RESPONSE_FLAG_ACTIVE
+        if status is not None and getattr(status, "response_complete", False):
+            flags |= RESPONSE_FLAG_COMPLETE
+        report[1] = flags
+
+        runtime_text = "never|startup" if status is None else self._compact_runtime_text(status)
+        encoded = runtime_text.encode("utf-8")[:30]
+        report[2:2 + len(encoded)] = encoded
+        return bytes(report)
 
     def _handle_chunk(self, report):
         message_id = self._u16(report, 1)

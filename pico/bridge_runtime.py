@@ -20,7 +20,7 @@ class BridgeRuntime:
         ui=None,
         relay_chunk_size=64,
         button_poll_sleep_s=0.002,
-        heartbeat_interval_s=2.0,
+        heartbeat_interval_s=5.0,
     ):
         self._serial_bridge = serial_bridge
         self._jetson_transport = jetson_transport
@@ -58,6 +58,12 @@ class BridgeRuntime:
             response_length=response_length,
             response_complete=response_complete,
         )
+
+    def attach_protocol_status_provider(self):
+        set_provider = getattr(self._protocol_handler, "set_runtime_status_provider", None)
+        if set_provider is None:
+            return
+        set_provider(self.current_status)
 
     def run_once(self, *, now):
         if (now - self._last_debug_heartbeat) >= self._heartbeat_interval_s:

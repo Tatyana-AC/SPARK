@@ -243,6 +243,25 @@ class HostRawHidClientTests(unittest.TestCase):
         self.assertTrue(result.active)
         self.assertEqual(writes[0][0], 0x20)
 
+    def test_get_runtime_status_parses_flags_and_text(self):
+        client = SparkHIDClient()
+        writes = []
+
+        info = bytearray(REPORT_SIZE)
+        info[0] = 0x22
+        info[1] = 0b10
+        info[2:28] = b"button:0|after_button_events"
+
+        client._write = lambda payload: writes.append(payload)
+        client._read = lambda timeout_ms=2000: bytes(info)
+
+        result = client.get_runtime_status()
+
+        self.assertTrue(result.active)
+        self.assertFalse(result.complete)
+        self.assertEqual(result.text, "button:0|after_button_events")
+        self.assertEqual(writes[0][0], 0x22)
+
     def test_stream_round_trip_text_emits_partial_updates_until_complete(self):
         client = SparkHIDClient()
         updates = []

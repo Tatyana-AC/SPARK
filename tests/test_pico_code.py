@@ -36,10 +36,11 @@ class _FakeJetsonTransport:
 
 
 class _InitOnlyJetsonTransport:
-    def __init__(self, uart, *, max_request_retries, debug_hook):
+    def __init__(self, uart, *, max_request_retries, debug_hook, status_sender=None):
         self.uart = uart
         self.max_request_retries = max_request_retries
         self.debug_hook = debug_hook
+        self.status_sender = status_sender
         self.request_active = False
         self.response_len = 0
         self.response_complete = False
@@ -272,6 +273,7 @@ class PicoCodeTests(unittest.TestCase):
         self.assertEqual(runtime.raw_report_id, 9)
         self.assertIs(runtime.time_sleep, fake_time.sleep)
         self.assertEqual(runtime.run_forever_calls, [fake_time])
+        self.assertEqual(runtime.heartbeat_interval_s, 5.0)
 
     def test_main_runtime_builds_text_preparer_from_bridge_app(self):
         module = self._load_code_module()

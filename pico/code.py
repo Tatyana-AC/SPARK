@@ -7,7 +7,7 @@ CDC_RELAY_SLICE_BYTES = 64
 ERROR_LOG_PATH = "runtime_error.txt"
 STARTUP_TRACE_PATH = "startup_trace.txt"
 UART_DIAG_LOG_PATH = "uart_diag.txt"
-CDC_DEBUG_HEARTBEAT_S = 2.0
+CDC_DEBUG_HEARTBEAT_S = 5.0
 
 
 def _find_custom_hid_device(usb_hid, raw_usage_page, raw_usage_id):
@@ -38,6 +38,14 @@ def _send_button_debug(message):
     if result is None:
         result = "unknown"
     return result
+
+
+def _make_transport_debug_hook(*, status_sender):
+    def _hook(event):
+        _record_uart_diag(repr(event))
+        return None
+
+    return _hook
 
 
 def _configure_runtime(supervisor, record_step):
@@ -88,7 +96,8 @@ def _main(record_step):
     jetson_transport = JetsonTransport(
         uart,
         max_request_retries=0,
-        debug_hook=lambda event: _record_uart_diag(repr(event)),
+        debug_hook=_make_transport_debug_hook(status_sender=_send_button_debug),
+        status_sender=_send_button_debug,
     )
     record_step("transport ready")
     runtime = None
@@ -122,6 +131,7 @@ def _main(record_step):
         button_poll_sleep_s=BUTTON_POLL_SLEEP_S,
         heartbeat_interval_s=CDC_DEBUG_HEARTBEAT_S,
     )
+    runtime.attach_protocol_status_provider()
     record_step("bridge runtime ready")
     runtime.run_forever(time_module=time)
 

@@ -40,6 +40,7 @@ class Command(IntEnum):
     GET_INFO      = 0x01
     GET_RESPONSE_INFO = 0x20
     GET_RESPONSE_CHUNK = 0x21
+    GET_RUNTIME_STATUS = 0x22
     BEGIN_UPLOAD  = 0x10
     UPLOAD_CHUNK  = 0x11
     COMMIT_UPLOAD = 0x12
@@ -111,6 +112,13 @@ class ResponseInfo:
     chunk_count: int
     complete: bool
     active: bool
+
+
+@dataclass
+class RuntimeStatusInfo:
+    complete: bool
+    active: bool
+    text: str
 
 
 # ── Client ─────────────────────────────────────────────────────
@@ -379,6 +387,25 @@ class SparkHIDClient:
             chunk_count=self._u16(info, 5),
             complete=bool(flags & 0x01),
             active=bool(flags & 0x02),
+        )
+
+    def get_runtime_status(self) -> RuntimeStatusInfo:
+        report = bytearray(REPORT_SIZE)
+        report[0] = Command.GET_RUNTIME_STATUS
+        self._write(bytes(report))
+        info = self._read_until(lambda reply: reply[0] == Command.GET_RUNTIME_STATUS)
+
+        if info[0] != Command.GET_RUNTIME_STATUS:
+            raise SparkProtocolError(
+                f"Expected GET_RUNTIME_STATUS response, got 0x{info[0]:02X}"
+            )
+
+        flags = info[1]
+        text = bytes(info[2:32]).split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+        return RuntimeStatusInfo(
+            complete=bool(flags & 0x01),
+            active=bool(flags & 0x02),
+            text=text,
         )
 
     def _fetch_response_from_info(self, info: ResponseInfo) -> str:

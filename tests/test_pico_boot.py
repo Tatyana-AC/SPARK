@@ -19,7 +19,7 @@ class PicoBootTests(unittest.TestCase):
             spec.loader.exec_module(module)
         return module
 
-    def test_boot_enables_console_and_data_cdc(self):
+    def test_boot_enables_only_data_cdc(self):
         enable_calls = []
         fake_supervisor = types.SimpleNamespace(set_usb_identification=lambda **_kwargs: None)
         fake_usb_cdc = types.SimpleNamespace(enable=lambda **kwargs: enable_calls.append(kwargs))
@@ -48,7 +48,7 @@ class PicoBootTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(enable_calls, [{"console": True, "data": True}])
+        self.assertEqual(enable_calls, [{"console": False, "data": True}])
 
 
 if __name__ == "__main__":
