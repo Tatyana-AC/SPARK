@@ -68,6 +68,63 @@ class PicoButtonInputTests(unittest.TestCase):
         self.assertEqual([event.index for event in pressed_events], [0, 3])
         self.assertEqual([type(event).__name__ for event in pressed_events], ["ButtonPressed", "ButtonPressed"])
 
+    def test_button_input_debounces_repeated_same_button_presses_within_window(self):
+        module = _load_button_input_module()
+        raw_events = iter(
+            [
+                types.SimpleNamespace(pressed=True, key_number=0),
+                types.SimpleNamespace(pressed=True, key_number=0),
+                None,
+            ]
+        )
+        monotonic_values = iter([1.0, 1.05])
+        button_input = module.ButtonInput(
+            types.SimpleNamespace(events=types.SimpleNamespace(get=lambda: next(raw_events))),
+            monotonic=lambda: next(monotonic_values),
+        )
+
+        pressed_events = list(button_input.drain_pressed_events())
+
+        self.assertEqual([event.index for event in pressed_events], [0])
+
+    def test_button_input_allows_same_button_after_debounce_window(self):
+        module = _load_button_input_module()
+        raw_events = iter(
+            [
+                types.SimpleNamespace(pressed=True, key_number=0),
+                types.SimpleNamespace(pressed=True, key_number=0),
+                None,
+            ]
+        )
+        monotonic_values = iter([1.0, 1.30])
+        button_input = module.ButtonInput(
+            types.SimpleNamespace(events=types.SimpleNamespace(get=lambda: next(raw_events))),
+            monotonic=lambda: next(monotonic_values),
+        )
+
+        pressed_events = list(button_input.drain_pressed_events())
+
+        self.assertEqual([event.index for event in pressed_events], [0, 0])
+
+    def test_button_input_does_not_debounce_different_buttons(self):
+        module = _load_button_input_module()
+        raw_events = iter(
+            [
+                types.SimpleNamespace(pressed=True, key_number=0),
+                types.SimpleNamespace(pressed=True, key_number=1),
+                None,
+            ]
+        )
+        monotonic_values = iter([1.0, 1.05])
+        button_input = module.ButtonInput(
+            types.SimpleNamespace(events=types.SimpleNamespace(get=lambda: next(raw_events))),
+            monotonic=lambda: next(monotonic_values),
+        )
+
+        pressed_events = list(button_input.drain_pressed_events())
+
+        self.assertEqual([event.index for event in pressed_events], [0, 1])
+
     def test_button_input_does_not_own_ui_or_bridge_side_effects(self):
         module_name = f"_test_pico_button_input_imports_{uuid.uuid4().hex}"
         module_path = Path(__file__).resolve().parents[1] / "pico" / "button_input.py"
