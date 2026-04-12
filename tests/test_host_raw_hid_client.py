@@ -262,6 +262,35 @@ class HostRawHidClientTests(unittest.TestCase):
         self.assertEqual(result.text, "button:0|after_button_events")
         self.assertEqual(writes[0][0], 0x22)
 
+    def test_get_debug_event_returns_text_when_present(self):
+        client = SparkHIDClient()
+        writes = []
+
+        info = bytearray(REPORT_SIZE)
+        info[0] = 0x23
+        info[1] = 1
+        info[2:14] = b"pre_press:1"
+
+        client._write = lambda payload: writes.append(payload)
+        client._read = lambda timeout_ms=2000: bytes(info)
+
+        result = client.get_debug_event()
+
+        self.assertEqual(result, "pre_press:1")
+        self.assertEqual(writes[0][0], 0x23)
+
+    def test_get_debug_event_returns_none_when_queue_empty(self):
+        client = SparkHIDClient()
+
+        info = bytearray(REPORT_SIZE)
+        info[0] = 0x23
+        info[1] = 0
+
+        client._write = lambda payload: None
+        client._read = lambda timeout_ms=2000: bytes(info)
+
+        self.assertIsNone(client.get_debug_event())
+
     def test_stream_round_trip_text_emits_partial_updates_until_complete(self):
         client = SparkHIDClient()
         updates = []

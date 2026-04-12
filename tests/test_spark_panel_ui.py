@@ -133,6 +133,38 @@ class SparkPanelUiTests(unittest.TestCase):
 
         self.assertTrue(panel._response_poll_timer.isActive())
 
+    def test_hid_runtime_status_complete_does_not_retrigger_same_response_state(self):
+        hid_client = mock.Mock()
+        hid_client.get_runtime_status.return_value = types.SimpleNamespace(
+            active=False,
+            complete=True,
+            text="heartbeat|after_response_sync",
+        )
+        hid_client.get_debug_event.return_value = None
+
+        panel = self._make_panel(hid_client=hid_client)
+
+        with mock.patch.object(panel, "_start_device_response_polling") as start_poll:
+            panel._poll_pico_runtime_status()
+            panel._poll_pico_runtime_status()
+
+        start_poll.assert_called_once_with()
+
+    def test_runtime_status_poll_is_skipped_while_device_response_polling_is_active(self):
+        hid_client = mock.Mock()
+        hid_client.get_runtime_status.return_value = types.SimpleNamespace(
+            active=False,
+            complete=False,
+            text="heartbeat|after_sleep",
+        )
+
+        panel = self._make_panel(hid_client=hid_client)
+        panel._response_poll_timer.start()
+
+        panel._poll_pico_runtime_status()
+
+        hid_client.get_runtime_status.assert_not_called()
+
     def test_hid_runtime_status_heartbeat_does_not_emit_duplicate_debug(self):
         hid_client = mock.Mock()
         hid_client.get_runtime_status.return_value = types.SimpleNamespace(
@@ -149,6 +181,65 @@ class SparkPanelUiTests(unittest.TestCase):
         panel._poll_pico_runtime_status()
 
         self.assertEqual(received, ["heartbeat"])
+
+    def test_hid_runtime_status_logs_pico_debug_message(self):
+        hid_client = mock.Mock()
+        hid_client.get_runtime_status.return_value = types.SimpleNamespace(
+            active=False,
+            complete=False,
+            text="button:1|after_button_events",
+        )
+        hid_client.get_debug_event.side_effect = ["button:1", None]
+
+        panel = self._make_panel(hid_client=hid_client)
+
+        with mock.patch.object(spark_app_v2.logging.getLogger("pico.debug"), "info") as log_info:
+            panel._poll_pico_runtime_status()
+
+        log_info.assert_called_once_with("[PICO] %s", "button:1")
+
+    def test_hid_runtime_status_logs_heartbeat_again_after_interval(self):
+        hid_client = mock.Mock()
+        hid_client.get_runtime_status.return_value = types.SimpleNamespace(
+            active=False,
+            complete=False,
+            text="heartbeat|after_sleep",
+        )
+        hid_client.get_debug_event.side_effect = ["heartbeat", None, "heartbeat", None]
+
+        panel = self._make_panel(hid_client=hid_client)
+
+        with (
+            mock.patch.object(spark_app_v2.logging.getLogger("pico.debug"), "info") as log_info,
+            mock.patch.object(spark_app_v2.time, "monotonic", side_effect=[0.0, 5.1]),
+        ):
+            panel._poll_pico_runtime_status()
+            panel._poll_pico_runtime_status()
+
+        self.assertEqual(log_info.call_args_list, [mock.call("[PICO] %s", "heartbeat"), mock.call("[PICO] %s", "heartbeat")])
+
+    def test_hid_runtime_status_drains_multiple_debug_events_in_order(self):
+        hid_client = mock.Mock()
+        hid_client.get_runtime_status.return_value = types.SimpleNamespace(
+            active=False,
+            complete=False,
+            text="post_press:1|after_ui_press:1",
+        )
+        hid_client.get_debug_event.side_effect = ["button:1", "pre_press:1", "draw_press:1", None]
+
+        panel = self._make_panel(hid_client=hid_client)
+
+        with mock.patch.object(spark_app_v2.logging.getLogger("pico.debug"), "info") as log_info:
+            panel._poll_pico_runtime_status()
+
+        self.assertEqual(
+            log_info.call_args_list,
+            [
+                mock.call("[PICO] %s", "button:1"),
+                mock.call("[PICO] %s", "pre_press:1"),
+                mock.call("[PICO] %s", "draw_press:1"),
+            ],
+        )
 
     def test_unsolicited_device_response_skips_while_host_summary_in_flight(self):
         hid_client = mock.Mock()

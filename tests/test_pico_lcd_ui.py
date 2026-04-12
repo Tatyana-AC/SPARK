@@ -429,6 +429,48 @@ class PicoLcdUiTests(unittest.TestCase):
         self.assertIsNone(ui.active_cell)
         self.assertEqual(ui.press_time, 10.1)
 
+    def test_initialize_lcd_ui_bridge_mode_emits_renderer_stage_debug(self):
+        lcd_ui = _load_module("pico.lcd_ui")
+        renderer_calls = []
+        debug_calls = []
+
+        class _FakeBridgeRenderer:
+            def draw_pressed_cell(self, index):
+                renderer_calls.append(("pressed", index))
+
+            def draw_idle_cell(self, index):
+                renderer_calls.append(("idle", index))
+
+        fake_renderer_module = types.SimpleNamespace(
+            initialize_bridge_renderer=lambda: _FakeBridgeRenderer()
+        )
+
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "pico.lcd_renderer_spi": fake_renderer_module,
+                "lcd_renderer_spi": fake_renderer_module,
+            },
+            clear=False,
+        ):
+            ui = lcd_ui.initialize_lcd_ui(mode="bridge")
+
+        ui.set_debug_sender(debug_calls.append)
+        ui.handle_press(1, now=10.0)
+        ui.handle_press(3, now=10.1)
+
+        self.assertEqual(
+            debug_calls,
+            [
+                "draw_press:1",
+                "press_done:1",
+                "idle_prev:1",
+                "draw_press:3",
+                "press_done:3",
+            ],
+        )
+        self.assertEqual(renderer_calls, [("pressed", 1), ("idle", 1), ("pressed", 3)])
+
 
 if __name__ == "__main__":
     unittest.main()

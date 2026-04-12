@@ -55,7 +55,7 @@ class WatchFullStackTests(unittest.TestCase):
         )
 
         self.assertEqual(source, "PICO")
-        self.assertEqual(message, "[PICO] heartbeat")
+        self.assertEqual(message, "heartbeat")
 
     def test_map_app_log_line_defaults_to_app(self):
         from watch_full_stack import map_app_log_line
@@ -285,6 +285,52 @@ class WatchFullStackTests(unittest.TestCase):
 
         self.assertEqual(lines[0], "APP CDC: error | write timeout")
 
+    def test_build_pico_poller_is_disabled_when_app_process_is_running(self):
+        from watch_full_stack import build_pico_poller
+
+        poller = build_pico_poller(app_running=True)
+
+        self.assertIsNone(poller)
+
+    def test_run_watch_loop_uses_app_log_pico_events_without_hid_poller(self):
+        from watch_full_stack import AppLogSource, build_parser, run_watch_loop
+
+        class _FakeOut(io.StringIO):
+            def isatty(self):
+                return False
+
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "spark_app_v2.log"
+            path.write_text("2026-04-10 12:44:40,604 spark_app_v2 INFO app started\n", encoding="utf-8")
+            source = AppLogSource(path)
+
+            state = {"calls": 0}
+
+            def _sleep(_seconds):
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    path.write_text(
+                        "2026-04-10 12:44:40,604 spark_app_v2 INFO app started\n"
+                        "2026-04-10 12:44:45,604 pico.debug INFO [PICO] heartbeat\n",
+                        encoding="utf-8",
+                    )
+
+            args = build_parser().parse_args(["--check-interval", "100"])
+            out = _FakeOut()
+
+            run_watch_loop(
+                args,
+                out=out,
+                sources=[source],
+                health_check_runner=lambda _args: [],
+                pico_poller=None,
+                monotonic=lambda: 0.0,
+                sleep_fn=_sleep,
+                max_iterations=4,
+            )
+
+            self.assertIn("[PICO] heartbeat", out.getvalue())
+
     def test_dashboard_renderer_uses_ansi_redraw_in_interactive_mode(self):
         from watch_full_stack import DashboardRenderer
 
@@ -308,7 +354,7 @@ class WatchFullStackTests(unittest.TestCase):
 
         self.assertEqual(calls, ["frame body"])
 
-    def test_windows_interactive_dashboard_only_requires_tty(self):
+    def test_watcher_forces_append_mode_even_on_tty(self):
         from watch_full_stack import should_use_interactive_dashboard
 
         class _FakeOut:
@@ -317,7 +363,7 @@ class WatchFullStackTests(unittest.TestCase):
 
         out = _FakeOut()
 
-        self.assertTrue(
+        self.assertFalse(
             should_use_interactive_dashboard(
                 out,
                 os_name="nt",

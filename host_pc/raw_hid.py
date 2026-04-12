@@ -41,6 +41,7 @@ class Command(IntEnum):
     GET_RESPONSE_INFO = 0x20
     GET_RESPONSE_CHUNK = 0x21
     GET_RUNTIME_STATUS = 0x22
+    GET_DEBUG_EVENT = 0x23
     BEGIN_UPLOAD  = 0x10
     UPLOAD_CHUNK  = 0x11
     COMMIT_UPLOAD = 0x12
@@ -407,6 +408,21 @@ class SparkHIDClient:
             active=bool(flags & 0x02),
             text=text,
         )
+
+    def get_debug_event(self) -> Optional[str]:
+        report = bytearray(REPORT_SIZE)
+        report[0] = Command.GET_DEBUG_EVENT
+        self._write(bytes(report))
+        info = self._read_until(lambda reply: reply[0] == Command.GET_DEBUG_EVENT)
+
+        if info[0] != Command.GET_DEBUG_EVENT:
+            raise SparkProtocolError(
+                f"Expected GET_DEBUG_EVENT response, got 0x{info[0]:02X}"
+            )
+
+        if not info[1]:
+            return None
+        return bytes(info[2:32]).split(b"\x00", 1)[0].decode("utf-8", errors="replace")
 
     def _fetch_response_from_info(self, info: ResponseInfo) -> str:
         total_len = info.total_len

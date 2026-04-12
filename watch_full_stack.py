@@ -305,7 +305,10 @@ def map_app_log_line(line):
         return "APP", normalized_line
 
     source = "PICO" if match.group("name") == PICO_DEBUG_LOGGER_NAME else "APP"
-    return source, match.group("message")
+    message = match.group("message")
+    if source == "PICO" and message.startswith("[PICO] "):
+        message = message[len("[PICO] "):]
+    return source, message
 
 
 def update_app_serial_status_line(current_line, message):
@@ -788,7 +791,9 @@ def build_component_lines(results, *, pico_state=None, app_serial_status_line=No
     return lines
 
 
-def build_pico_poller():
+def build_pico_poller(*, app_running=False):
+    if app_running:
+        return None
     try:
         from pico_monitor import HIDPoller
     except Exception:
@@ -969,13 +974,7 @@ def enable_windows_virtual_terminal(stream):
 
 
 def should_use_interactive_dashboard(out, *, os_name=None, enable_vt=None):
-    if not hasattr(out, "isatty") or not out.isatty():
-        return False
-
-    if os_name is None:
-        os_name = os.name
-
-    return True
+    return False
 
 
 def build_default_sources(args):
@@ -993,6 +992,13 @@ def get_app_serial_status_line(sources):
         if status_line:
             return status_line
     return None
+
+
+def app_process_running(results):
+    for result in results:
+        if result.component_name == COMPONENT_APP_PROCESS and result.availability == AVAILABILITY_PRESENT:
+            return True
+    return False
 
 
 def _source_label_from_source(source):
@@ -1052,15 +1058,14 @@ def run_watch_loop(
         sources = build_default_sources(args)
     if health_check_runner is None:
         health_check_runner = collect_health_check_results
-    if pico_poller is None:
-        pico_poller = build_pico_poller()
-
     renderer = build_dashboard_renderer(out)
     interactive = renderer._interactive
 
     tracker = StateTracker(quiet_after_seconds=args.quiet_seconds)
     startup_now = monotonic()
     startup_results = health_check_runner(args)
+    if pico_poller is None:
+        pico_poller = build_pico_poller(app_running=app_process_running(startup_results))
     latest_health_results = startup_results
     latest_pico_state = poll_pico_state(pico_poller)
     latest_app_serial_status_line = get_app_serial_status_line(sources)

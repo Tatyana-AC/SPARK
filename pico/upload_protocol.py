@@ -17,6 +17,7 @@ class Command:
     GET_RESPONSE_INFO = 0x20
     GET_RESPONSE_CHUNK = 0x21
     GET_RUNTIME_STATUS = 0x22
+    GET_DEBUG_EVENT = 0x23
     BEGIN_UPLOAD = 0x10
     UPLOAD_CHUNK = 0x11
     COMMIT_UPLOAD = 0x12
@@ -57,9 +58,10 @@ VALID_APP_COMMANDS = {
 
 
 class UploadProtocolHandler:
-    def __init__(self, text_preparer=None, runtime_status_provider=None):
+    def __init__(self, text_preparer=None, runtime_status_provider=None, debug_event_provider=None):
         self._text_preparer = text_preparer or self._default_prepare_text
         self._runtime_status_provider = runtime_status_provider
+        self._debug_event_provider = debug_event_provider
         self._response_bytes = b""
         self._response_complete = False
         self._response_active = False
@@ -126,6 +128,8 @@ class UploadProtocolHandler:
             return self._handle_get_response_chunk(report)
         if command == Command.GET_RUNTIME_STATUS:
             return self._handle_get_runtime_status()
+        if command == Command.GET_DEBUG_EVENT:
+            return self._handle_get_debug_event()
         if command == Command.BEGIN_UPLOAD:
             return self._handle_begin(report)
         if command == Command.UPLOAD_CHUNK:
@@ -205,6 +209,9 @@ class UploadProtocolHandler:
     def set_runtime_status_provider(self, provider):
         self._runtime_status_provider = provider
 
+    def set_debug_event_provider(self, provider):
+        self._debug_event_provider = provider
+
     @staticmethod
     def _compact_runtime_text(status):
         debug_status = getattr(status, "cdc_debug_status", "") or "never"
@@ -230,6 +237,24 @@ class UploadProtocolHandler:
 
         runtime_text = "never|startup" if status is None else self._compact_runtime_text(status)
         encoded = runtime_text.encode("utf-8")[:30]
+        report[2:2 + len(encoded)] = encoded
+        return bytes(report)
+
+    def _handle_get_debug_event(self):
+        report = bytearray(REPORT_SIZE)
+        report[0] = Command.GET_DEBUG_EVENT
+
+        if self._debug_event_provider is None:
+            event = None
+        else:
+            event = self._debug_event_provider()
+
+        if not event:
+            report[1] = 0
+            return bytes(report)
+
+        report[1] = 1
+        encoded = str(event).encode("utf-8")[:30]
         report[2:2 + len(encoded)] = encoded
         return bytes(report)
 

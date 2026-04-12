@@ -131,7 +131,7 @@ def _pulse_stage_led(count):
     try:
         import board
         import digitalio
-    except ImportError:
+    except Exception:
         return
 
     led_pin = getattr(board, "LED", None)
@@ -260,16 +260,31 @@ class _BridgeSparkLcdUi:
     def __init__(self, *, renderer):
         self._renderer = renderer
         self._state = LcdState(highlight_sec=HIGHLIGHT_SEC)
+        self._debug_sender = None
         self.active_cell = None
         self.press_time = 0.0
         self._sync_public_state()
+
+    def set_debug_sender(self, sender):
+        self._debug_sender = sender
+        attach_renderer_debug = getattr(self._renderer, "set_debug_sender", None)
+        if attach_renderer_debug is not None:
+            attach_renderer_debug(sender)
+
+    def _emit_debug(self, message):
+        if self._debug_sender is None:
+            return
+        self._debug_sender(message)
 
     def handle_press(self, index, *, now):
         change = self._state.press(index, now=now)
         if change.visible_changed:
             if change.previous_active is not None and change.previous_active != index:
+                self._emit_debug(f"idle_prev:{change.previous_active}")
                 self._renderer.draw_idle_cell(change.previous_active)
+            self._emit_debug(f"draw_press:{index}")
             self._renderer.draw_pressed_cell(index)
+            self._emit_debug(f"press_done:{index}")
         self._sync_public_state()
 
     def tick(self, *, now):

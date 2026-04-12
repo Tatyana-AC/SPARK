@@ -85,8 +85,25 @@ class PicoLcdRendererSpiTests(unittest.TestCase):
 
         renderer.draw_pressed_cell(2)
 
-        self.assertEqual(target.calls, [])
-        self.assertEqual(target.blit_calls, [(8, 136, renderer_spi.CELL_W, renderer_spi.CELL_H, renderer_spi.CELL_W * renderer_spi.CELL_H * 2)])
+        self.assertEqual(target.calls, _cell_calls(renderer_spi, 2, renderer_spi.ACTIVE))
+        self.assertEqual(target.blit_calls, [])
+
+    def test_renderer_emits_pressed_cell_stage_debug(self):
+        renderer_spi = _load_module("pico.lcd_renderer_spi")
+        target = _FakeBlitTarget()
+        debug_calls = []
+        renderer = renderer_spi.SpiLcdRenderer(target=target)
+
+        renderer.set_debug_sender(debug_calls.append)
+        renderer.draw_pressed_cell(1)
+
+        self.assertEqual(
+            debug_calls,
+            [
+                "render_press:1",
+                "render_press_done:1",
+            ],
+        )
 
     def test_renderer_draws_idle_layout_once(self):
         renderer_spi = _load_module("pico.lcd_renderer_spi")

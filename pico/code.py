@@ -131,7 +131,9 @@ def _main(record_step):
         button_poll_sleep_s=BUTTON_POLL_SLEEP_S,
         heartbeat_interval_s=CDC_DEBUG_HEARTBEAT_S,
     )
-    runtime.attach_protocol_status_provider()
+    attach_protocol_status_provider = getattr(runtime, "attach_protocol_status_provider", None)
+    if attach_protocol_status_provider is not None:
+        attach_protocol_status_provider()
     record_step("bridge runtime ready")
     runtime.run_forever(time_module=time)
 

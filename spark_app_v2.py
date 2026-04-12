@@ -535,6 +535,8 @@ class SparkPanel(QWidget):
         self._last_device_response_signature = (0, False, False)
         self._device_response_poll_deadline = 0.0
         self._last_pico_runtime_text = ""
+        self._last_pico_runtime_emitted_at: float | None = None
+        self._last_runtime_response_flags = (False, False)
         self._capture_feed = LiveCaptureFeed(max_lines=self.MAX_CAPTURE_LINES)
         self._drag_pos: QPoint | None = None
 
@@ -552,7 +554,7 @@ class SparkPanel(QWidget):
         self._response_poll_timer.timeout.connect(self._poll_device_response)
 
         self._pico_runtime_timer = QTimer()
-        self._pico_runtime_timer.setInterval(250)
+        self._pico_runtime_timer.setInterval(1000)
         self._pico_runtime_timer.timeout.connect(self._poll_pico_runtime_status)
         self._pico_runtime_timer.start()
 
@@ -827,8 +829,13 @@ class SparkPanel(QWidget):
         self.serial_sender.connect()
 
     def _poll_pico_runtime_status(self):
+        if self._response_poll_timer.isActive() or self._summary_request_in_flight:
+            return
+
         if not self.hid_client.is_connected():
             self._last_pico_runtime_text = ""
+            self._last_pico_runtime_emitted_at = None
+            self._last_runtime_response_flags = (False, False)
             return
 
         try:
@@ -836,12 +843,42 @@ class SparkPanel(QWidget):
         except Exception:
             return
 
-        runtime_text = getattr(status, "text", "") or ""
-        if runtime_text and runtime_text != self._last_pico_runtime_text:
-            self._last_pico_runtime_text = runtime_text
-            self.hid_signals.pico_debug.emit(runtime_text.split("|", 1)[0])
+        logger = logging.getLogger("pico.debug")
+        drained_debug_events = False
+        for _ in range(8):
+            try:
+                event = self.hid_client.get_debug_event()
+            except Exception:
+                break
+            if not isinstance(event, str) or not event:
+                break
+            drained_debug_events = True
+            logger.info("[PICO] %s", event)
+            self.hid_signals.pico_debug.emit(event.split("|", 1)[0])
 
-        if not self._summary_request_in_flight and (status.active or status.complete):
+        runtime_text = getattr(status, "text", "") or ""
+        runtime_message = runtime_text.split("|", 1)[0] if runtime_text else ""
+        now = time.monotonic()
+        should_emit = runtime_text and runtime_text != self._last_pico_runtime_text
+        if runtime_message == "heartbeat" and self._last_pico_runtime_emitted_at is not None:
+            if (now - self._last_pico_runtime_emitted_at) >= 5.0:
+                should_emit = True
+
+        if should_emit and not drained_debug_events:
+            self._last_pico_runtime_text = runtime_text
+            self._last_pico_runtime_emitted_at = now
+            logger.info("[PICO] %s", runtime_text)
+            self.hid_signals.pico_debug.emit(runtime_message)
+
+        response_flags = (bool(status.active), bool(status.complete))
+        should_start_response_polling = (
+            not self._summary_request_in_flight
+            and response_flags != self._last_runtime_response_flags
+            and (status.active or status.complete)
+        )
+        self._last_runtime_response_flags = response_flags
+
+        if should_start_response_polling:
             self._start_device_response_polling()
 
     def _handle_serial_packet(self, pkt: dict):

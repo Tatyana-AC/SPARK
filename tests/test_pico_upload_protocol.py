@@ -304,6 +304,22 @@ class UploadProtocolTests(unittest.TestCase):
 
         self.assertEqual(reply[1], 0b01)
 
+    def test_get_debug_event_returns_next_queued_message(self):
+        events = iter(["button:1", None])
+        self.handler.set_debug_event_provider(lambda: next(events))
+
+        report = bytearray(32)
+        report[0] = self.Command.GET_DEBUG_EVENT
+
+        first = self.handler.handle_report(bytes(report))
+        second = self.handler.handle_report(bytes(report))
+
+        self.assertEqual(first[0], self.Command.GET_DEBUG_EVENT)
+        self.assertEqual(first[1], 1)
+        self.assertEqual(first[2:32].split(b"\x00", 1)[0].decode("utf-8"), "button:1")
+        self.assertEqual(second[0], self.Command.GET_DEBUG_EVENT)
+        self.assertEqual(second[1], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

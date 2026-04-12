@@ -167,6 +167,15 @@ class SpiLcdRenderer:
         self._target = target
         self._idle_drawn = False
         self._has_blit = hasattr(target, "blit_pixels")
+        self._debug_sender = None
+
+    def set_debug_sender(self, sender):
+        self._debug_sender = sender
+
+    def _emit_debug(self, message):
+        if self._debug_sender is None:
+            return
+        self._debug_sender(message)
 
     def draw_idle_layout(self):
         if self._idle_drawn:
@@ -195,17 +204,11 @@ class SpiLcdRenderer:
         _record_stage("renderer:draw_idle:done")
 
     def draw_pressed_cell(self, index):
-        if self._has_blit:
-            x, y = cell_origin(index)
-            self._target.blit_pixels(x, y, CELL_W, CELL_H, _build_cell_pixels(index, ACTIVE))
-            return
+        self._emit_debug(f"render_press:{index}")
         self._draw_cell(index, ACTIVE)
+        self._emit_debug(f"render_press_done:{index}")
 
     def draw_idle_cell(self, index):
-        if self._has_blit:
-            x, y = cell_origin(index)
-            self._target.blit_pixels(x, y, CELL_W, CELL_H, _build_cell_pixels(index, SURFACE))
-            return
         self._draw_cell(index, SURFACE)
 
     def _draw_cell(self, index, fill_color):
