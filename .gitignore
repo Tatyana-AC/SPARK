@@ -32,6 +32,7 @@ AGENTS.md
 
 # Logs
 *.log
+logs/
 .tmp/
 .worktrees/
 
