@@ -1,7 +1,30 @@
 import unittest
+import builtins
+import importlib.util
+import uuid
+from pathlib import Path
+from unittest import mock
 
 
 class PicoButtonLayoutTests(unittest.TestCase):
+    def test_button_layout_does_not_require_dataclasses_module(self):
+        module_name = f"_test_pico_button_layout_{uuid.uuid4().hex}"
+        module_path = Path(__file__).resolve().parents[1] / "pico" / "button_layout.py"
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        module = importlib.util.module_from_spec(spec)
+        original_import = builtins.__import__
+
+        def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "dataclasses":
+                raise ImportError("blocked for CircuitPython compatibility test")
+            return original_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=tracking_import):
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+
+        self.assertEqual(module.BUTTON_DEFINITIONS[0].name, "PB1")
+
     def test_button_definitions_match_hardware_and_lcd_order(self):
         from pico.button_layout import BUTTON_DEFINITIONS
 

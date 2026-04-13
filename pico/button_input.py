@@ -21,20 +21,26 @@ class ButtonInput:
         self._monotonic = monotonic
         self._debounce_window_s = debounce_window_s
         self._last_pressed_at = {}
+        self._pressed_keys = set()
 
     def drain_pressed_events(self):
         while True:
             event = self._keys.events.get()
             if event is None:
                 return
+            key_number = event.key_number
             if getattr(event, "pressed", False):
+                if key_number in self._pressed_keys:
+                    continue
                 now = self._monotonic()
-                key_number = event.key_number
                 previous_pressed_at = self._last_pressed_at.get(key_number)
                 if previous_pressed_at is not None and (now - previous_pressed_at) < self._debounce_window_s:
                     continue
                 self._last_pressed_at[key_number] = now
-                yield ButtonPressed(index=event.key_number)
+                self._pressed_keys.add(key_number)
+                yield ButtonPressed(index=key_number)
+                continue
+            self._pressed_keys.discard(key_number)
 
 
 def build_button_input(*, board_module=None, keypad_module=None):

@@ -1,12 +1,11 @@
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
 class ButtonDefinition:
-    index: int
-    physical_number: int
-    name: str
-    action_label: str
+    __slots__ = ("index", "physical_number", "name", "action_label")
+
+    def __init__(self, index, physical_number, name, action_label):
+        self.index = index
+        self.physical_number = physical_number
+        self.name = name
+        self.action_label = action_label
 
 
 BUTTON_DEFINITIONS = (

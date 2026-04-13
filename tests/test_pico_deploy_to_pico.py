@@ -66,6 +66,7 @@ class DeployToPicoTests(unittest.TestCase):
         required = {
             "bridge_app.py",
             "bridge_runtime.py",
+            "button_layout.py",
             "button_input.py",
             "lcd_renderer_spi.py",
             "lcd_state.py",

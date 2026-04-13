@@ -16,6 +16,7 @@ FIRMWARE_FILES = (
     "boot.py",
     "bridge_app.py",
     "bridge_runtime.py",
+    "button_layout.py",
     "button_input.py",
     "jetson_transport.py",
     "lcd_renderer_spi.py",

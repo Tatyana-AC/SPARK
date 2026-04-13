@@ -92,6 +92,7 @@ class PicoButtonInputTests(unittest.TestCase):
         raw_events = iter(
             [
                 types.SimpleNamespace(pressed=True, key_number=0),
+                types.SimpleNamespace(pressed=False, key_number=0),
                 types.SimpleNamespace(pressed=True, key_number=0),
                 None,
             ]
@@ -105,6 +106,26 @@ class PicoButtonInputTests(unittest.TestCase):
         pressed_events = list(button_input.drain_pressed_events())
 
         self.assertEqual([event.index for event in pressed_events], [0, 0])
+
+    def test_button_input_requires_release_before_same_button_repeats(self):
+        module = _load_button_input_module()
+        raw_events = iter(
+            [
+                types.SimpleNamespace(pressed=True, key_number=0),
+                types.SimpleNamespace(pressed=True, key_number=0),
+                types.SimpleNamespace(pressed=True, key_number=0),
+                None,
+            ]
+        )
+        monotonic_values = iter([1.0, 1.30, 1.60])
+        button_input = module.ButtonInput(
+            types.SimpleNamespace(events=types.SimpleNamespace(get=lambda: next(raw_events))),
+            monotonic=lambda: next(monotonic_values),
+        )
+
+        pressed_events = list(button_input.drain_pressed_events())
+
+        self.assertEqual([event.index for event in pressed_events], [0])
 
     def test_button_input_does_not_debounce_different_buttons(self):
         module = _load_button_input_module()
