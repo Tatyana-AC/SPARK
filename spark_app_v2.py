@@ -540,6 +540,7 @@ class SparkPanel(QWidget):
         self._active_feature_command: AppCommand | None = None
         self._last_device_response_signature = (0, False, False)
         self._device_response_poll_deadline = 0.0
+        self._last_physical_reformat_trigger_at = 0.0
         self._last_pico_runtime_text = ""
         self._last_pico_runtime_emitted_at: float | None = None
         self._last_runtime_response_flags = (False, False)
@@ -962,7 +963,11 @@ class SparkPanel(QWidget):
         if message == "button:1" and not self._summary_request_in_flight:
             self._start_device_response_polling()
             return
-        if message == "button:2" and not self._summary_request_in_flight:
+        if message == "post_press:2" and not self._summary_request_in_flight:
+            now = time.monotonic()
+            if (now - self._last_physical_reformat_trigger_at) < 1.0:
+                return
+            self._last_physical_reformat_trigger_at = now
             self._on_reformat()
 
     def _start_device_response_polling(self):

@@ -305,24 +305,48 @@ class SparkPanelUiTests(unittest.TestCase):
 
         self.assertTrue(panel._response_poll_timer.isActive())
 
-    def test_button_two_debug_message_triggers_reformat_without_starting_response_polling(self):
+    def test_button_two_edge_debug_message_does_not_trigger_reformat(self):
         panel = self._make_panel()
-
-        with mock.patch.object(panel, "_on_reformat") as on_reformat:
-            panel._on_pico_debug_message("button:2")
-
-        on_reformat.assert_called_once_with()
-
-        self.assertFalse(panel._response_poll_timer.isActive())
-
-    def test_button_two_debug_message_is_ignored_while_request_in_flight(self):
-        panel = self._make_panel()
-        panel._summary_request_in_flight = True
 
         with mock.patch.object(panel, "_on_reformat") as on_reformat:
             panel._on_pico_debug_message("button:2")
 
         on_reformat.assert_not_called()
+
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_two_post_press_triggers_reformat_without_starting_response_polling(self):
+        panel = self._make_panel()
+
+        with mock.patch.object(panel, "_on_reformat") as on_reformat:
+            panel._on_pico_debug_message("post_press:2")
+
+        on_reformat.assert_called_once_with()
+
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_two_post_press_is_ignored_while_request_in_flight(self):
+        panel = self._make_panel()
+        panel._summary_request_in_flight = True
+
+        with mock.patch.object(panel, "_on_reformat") as on_reformat:
+            panel._on_pico_debug_message("post_press:2")
+
+        on_reformat.assert_not_called()
+
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_two_post_press_is_debounced(self):
+        panel = self._make_panel()
+
+        with (
+            mock.patch.object(panel, "_on_reformat") as on_reformat,
+            mock.patch.object(spark_app_v2.time, "monotonic", side_effect=[10.0, 10.2]),
+        ):
+            panel._on_pico_debug_message("post_press:2")
+            panel._on_pico_debug_message("post_press:2")
+
+        on_reformat.assert_called_once_with()
 
         self.assertFalse(panel._response_poll_timer.isActive())
 
