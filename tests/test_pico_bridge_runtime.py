@@ -97,10 +97,10 @@ class BridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(
             call_log,
             [
-                ("debug", "button:0"),
-                ("debug", "pre_press:0"),
+                ("debug", "button:1"),
+                ("debug", "pre_press:1"),
                 ("ui", 0, 1.5),
-                ("debug", "post_press:0"),
+                ("debug", "post_press:1"),
                 ("handler", 0),
                 ("tick", 1.5),
                 ("sleep", 0.002),
@@ -147,10 +147,10 @@ class BridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(
             call_log,
             [
-                ("debug", "button:3"),
-                ("debug", "pre_press:3"),
+                ("debug", "button:4"),
+                ("debug", "pre_press:4"),
                 ("ui", 3, 1.5),
-                ("debug", "post_press:3"),
+                ("debug", "post_press:4"),
                 ("tick", 1.5),
                 ("sleep", 0.002),
             ],
@@ -201,10 +201,10 @@ class BridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(
             call_log,
             [
-                ("debug", "button:0"),
-                ("debug", "pre_press:0"),
+                ("debug", "button:1"),
+                ("debug", "pre_press:1"),
                 ("ui", 0, 1.5),
-                ("debug", "post_press:0"),
+                ("debug", "post_press:1"),
                 ("handler", 0),
                 ("tick", 1.5),
                 ("sleep", 0.002),
@@ -260,10 +260,10 @@ class BridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(
             call_log,
             [
-                ("debug", "button:0"),
-                ("debug", "pre_press:0"),
+                ("debug", "button:1"),
+                ("debug", "pre_press:1"),
                 ("ui", 0, 1.5),
-                ("debug", "post_press:0"),
+                ("debug", "post_press:1"),
                 ("handler", 0),
                 ("tick", 1.5),
                 ("sleep", 0.002),
@@ -276,10 +276,10 @@ class BridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(
             call_log,
             [
-                ("debug", "button:0"),
-                ("debug", "pre_press:0"),
+                ("debug", "button:1"),
+                ("debug", "pre_press:1"),
                 ("ui", 0, 1.6),
-                ("debug", "post_press:0"),
+                ("debug", "post_press:1"),
                 ("handler", 0),
                 ("tick", 1.6),
                 ("sleep", 0.002),
@@ -443,8 +443,51 @@ class BridgeRuntimeTests(unittest.TestCase):
 
         runtime.run_once(now=5.0)
 
-        self.assertEqual(debug_messages, ["heartbeat", "button:2"])
+        self.assertEqual(debug_messages, ["heartbeat", "button:3"])
         self.assertEqual(runtime.current_status().cdc_debug_status, "import:fail")
+
+    def test_bridge_runtime_skips_invalid_indices_before_ui_calls(self):
+        from pico.bridge_runtime import BridgeRuntime
+
+        ui_calls = []
+        handler_calls = []
+        debug_messages = []
+        runtime = BridgeRuntime(
+            serial_bridge=types.SimpleNamespace(relay_once=lambda *, max_chunk_size: None),
+            jetson_transport=types.SimpleNamespace(
+                poll=lambda *, max_chunk_size: None,
+                request_active=False,
+                response_len=0,
+                response_complete=False,
+                response_bytes=b"",
+            ),
+            protocol_handler=types.SimpleNamespace(
+                update_response_state=lambda response_bytes, *, complete, active: None,
+                handle_report=lambda report: None,
+            ),
+            custom_hid=types.SimpleNamespace(
+                get_last_received_report=lambda raw_report_id: None,
+                send_report=lambda reply, raw_report_id: None,
+            ),
+            raw_report_id=9,
+            button_input=types.SimpleNamespace(
+                drain_pressed_events=lambda: iter([types.SimpleNamespace(index=99)])
+            ),
+            ui=types.SimpleNamespace(
+                handle_press=lambda index, *, now: ui_calls.append((index, now)),
+                tick=lambda *, now: None,
+            ),
+            button_press_handler=lambda index: handler_calls.append(index),
+            time_sleep=lambda _: None,
+            debug_sender=lambda message: debug_messages.append(message) or "sent:31",
+            heartbeat_interval_s=99.0,
+        )
+
+        runtime.run_once(now=2.0)
+
+        self.assertEqual(ui_calls, [])
+        self.assertEqual(handler_calls, [])
+        self.assertEqual(debug_messages, ["button:?"])
 
     def test_bridge_runtime_processes_at_most_one_button_event_per_run(self):
         from pico.bridge_runtime import BridgeRuntime
@@ -505,10 +548,10 @@ class BridgeRuntimeTests(unittest.TestCase):
                 ("transport", 64),
                 ("sync", None),
                 ("hid", 9),
-                ("debug", "button:1"),
-                ("debug", "pre_press:1"),
+                ("debug", "button:2"),
+                ("debug", "pre_press:2"),
                 ("ui", 1, 1.5),
-                ("debug", "post_press:1"),
+                ("debug", "post_press:2"),
                 ("tick", 1.5),
             ],
         )
@@ -523,10 +566,10 @@ class BridgeRuntimeTests(unittest.TestCase):
                 ("serial", 64),
                 ("transport", 64),
                 ("hid", 9),
-                ("debug", "button:3"),
-                ("debug", "pre_press:3"),
+                ("debug", "button:4"),
+                ("debug", "pre_press:4"),
                 ("ui", 3, 1.6),
-                ("debug", "post_press:3"),
+                ("debug", "post_press:4"),
                 ("tick", 1.6),
             ],
         )
@@ -597,8 +640,8 @@ class BridgeRuntimeTests(unittest.TestCase):
 
         runtime.run_once(now=2.0)
 
-        self.assertEqual(debug_messages[-1], "post_press:1")
-        self.assertEqual(runtime.current_status().cdc_debug_status, "post_press:1|sent:31")
+        self.assertEqual(debug_messages[-1], "post_press:2")
+        self.assertEqual(runtime.current_status().cdc_debug_status, "post_press:2|sent:31")
 
     def test_bridge_runtime_keeps_last_nonheartbeat_debug_status_through_heartbeat(self):
         from pico.bridge_runtime import BridgeRuntime
@@ -642,8 +685,8 @@ class BridgeRuntimeTests(unittest.TestCase):
         runtime.run_once(now=5.0)
         runtime.run_once(now=10.0)
 
-        self.assertEqual(debug_messages, ["heartbeat", "button:1", "pre_press:1", "post_press:1", "heartbeat"])
-        self.assertEqual(runtime.current_status().cdc_debug_status, "post_press:1|sent:31")
+        self.assertEqual(debug_messages, ["heartbeat", "button:2", "pre_press:2", "post_press:2", "heartbeat"])
+        self.assertEqual(runtime.current_status().cdc_debug_status, "post_press:2|sent:31")
 
     def test_bridge_runtime_expires_sticky_debug_status_after_window(self):
         from pico.bridge_runtime import BridgeRuntime

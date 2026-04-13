@@ -100,8 +100,8 @@ class PicoLcdRendererSpiTests(unittest.TestCase):
         self.assertEqual(
             debug_calls,
             [
-                "render_press:1",
-                "render_press_done:1",
+                "render_press:2",
+                "render_press_done:2",
             ],
         )
 

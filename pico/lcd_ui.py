@@ -8,6 +8,11 @@ try:
 except ImportError:
     from lcd_state import LcdState
 
+try:
+    from pico.button_layout import ACTIONS, BUTTON_DEFINITIONS, debug_label
+except ImportError:
+    from button_layout import ACTIONS, BUTTON_DEFINITIONS, debug_label
+
 
 BG = 0x1A1B26
 SURFACE = 0x24283B
@@ -26,9 +31,6 @@ CELL_H = (H - BAR_H - 2 * PAD - GAP) // 2
 DISPLAY_BAUDRATE = 24_000_000
 DISPLAY_ROTATION = 180
 HIGHLIGHT_SEC = 0.4
-
-ACTIONS = ("SYNTHESIS", "REFORMAT", "SEARCH", "RESPOND")
-
 
 def _debug_stage(message):
     try:
@@ -188,8 +190,8 @@ class SparkLcdUi:
             )
         )
 
-        for index, name in enumerate(ACTIONS):
-            x, y = cell_origin(index)
+        for button in BUTTON_DEFINITIONS:
+            x, y = cell_origin(button.index)
 
             cell_group = self._displayio.Group()
             cell_group.x = x
@@ -203,7 +205,7 @@ class SparkLcdUi:
             right_border = solid_rect(self._displayio, CELL_W - 2, 0, 2, CELL_H, ACCENT)
             label = self._label.Label(
                 self._font,
-                text=name,
+                text=button.action_label,
                 color=WHITE,
                 anchor_point=(0.5, 0.5),
                 anchored_position=(CELL_W // 2, CELL_H // 2),
@@ -219,8 +221,8 @@ class SparkLcdUi:
 
             self.cell_views.append(
                 CellView(
-                    index=index,
-                    name=name,
+                    index=button.index,
+                    name=button.name,
                     group=cell_group,
                     pressed_overlay=pressed_overlay,
                     label=label,
@@ -280,11 +282,11 @@ class _BridgeSparkLcdUi:
         change = self._state.press(index, now=now)
         if change.visible_changed:
             if change.previous_active is not None and change.previous_active != index:
-                self._emit_debug(f"idle_prev:{change.previous_active}")
+                self._emit_debug(debug_label("idle_prev", change.previous_active))
                 self._renderer.draw_idle_cell(change.previous_active)
-            self._emit_debug(f"draw_press:{index}")
+            self._emit_debug(debug_label("draw_press", index))
             self._renderer.draw_pressed_cell(index)
-            self._emit_debug(f"press_done:{index}")
+            self._emit_debug(debug_label("press_done", index))
         self._sync_public_state()
 
     def tick(self, *, now):

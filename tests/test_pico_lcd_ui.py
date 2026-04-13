@@ -167,6 +167,7 @@ class PicoLcdUiTests(unittest.TestCase):
         self.assertEqual(lcd_ui.cell_origin(3), (164, 136))
         self.assertEqual(len(ui.cell_views), 4)
         self.assertEqual(len(ui.root_group), 8)
+        self.assertEqual([cell.name for cell in ui.cell_views], ["PB1", "PB2", "PB3", "PB4"])
         self.assertEqual([cell.label.text for cell in ui.cell_views], list(lcd_ui.ACTIONS))
         self.assertEqual([(cell.group.x, cell.group.y) for cell in ui.cell_views], [lcd_ui.cell_origin(i) for i in range(4)])
         self.assertEqual([len(cell.group) for cell in ui.cell_views], [7, 7, 7, 7])
@@ -462,11 +463,11 @@ class PicoLcdUiTests(unittest.TestCase):
         self.assertEqual(
             debug_calls,
             [
-                "draw_press:1",
-                "press_done:1",
-                "idle_prev:1",
-                "draw_press:3",
-                "press_done:3",
+                "draw_press:2",
+                "press_done:2",
+                "idle_prev:2",
+                "draw_press:4",
+                "press_done:4",
             ],
         )
         self.assertEqual(renderer_calls, [("pressed", 1), ("idle", 1), ("pressed", 3)])

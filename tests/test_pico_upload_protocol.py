@@ -266,7 +266,7 @@ class UploadProtocolTests(unittest.TestCase):
 
         self.handler.set_runtime_status_provider(
             lambda: RuntimeStatus(
-                cdc_debug_status="button:0|sent:26",
+                cdc_debug_status="button:1|sent:26",
                 loop_checkpoint="after_button_events",
                 request_active=True,
                 response_length=42,
@@ -282,8 +282,87 @@ class UploadProtocolTests(unittest.TestCase):
         self.assertEqual(reply[1], 0b10)
         self.assertEqual(
             reply[2:32].split(b"\x00", 1)[0].decode("utf-8"),
-            "button:0|after_button_events",
+            "button:1|after_button_events",
         )
+
+    def test_get_runtime_status_normalizes_after_ui_press_checkpoint(self):
+        from pico.bridge_app import RuntimeStatus
+
+        self.handler.set_runtime_status_provider(
+            lambda: RuntimeStatus(
+                cdc_debug_status="pre_press:2|sent:31",
+                loop_checkpoint="after_ui_press:1",
+                request_active=True,
+                response_length=42,
+                response_complete=False,
+            )
+        )
+
+        report = bytearray(32)
+        report[0] = self.Command.GET_RUNTIME_STATUS
+        reply = self.handler.handle_report(bytes(report))
+
+        self.assertEqual(reply[2:32].split(b"\x00", 1)[0].decode("utf-8"), "pre:2|ui_post")
+
+    def test_get_runtime_status_normalizes_before_ui_press_checkpoint(self):
+        from pico.bridge_app import RuntimeStatus
+
+        self.handler.set_runtime_status_provider(
+            lambda: RuntimeStatus(
+                cdc_debug_status="pre_press:2|sent:31",
+                loop_checkpoint="before_ui_press:1",
+                request_active=True,
+                response_length=42,
+                response_complete=False,
+            )
+        )
+
+        report = bytearray(32)
+        report[0] = self.Command.GET_RUNTIME_STATUS
+        reply = self.handler.handle_report(bytes(report))
+
+        self.assertEqual(reply[2:32].split(b"\x00", 1)[0].decode("utf-8"), "pre:2|ui_pre")
+
+    def test_get_runtime_status_button_paths_fit_without_truncation_at_boundary(self):
+        from pico.bridge_app import RuntimeStatus
+
+        self.handler.set_runtime_status_provider(
+            lambda: RuntimeStatus(
+                cdc_debug_status="render_press_done:4|sent:31",
+                loop_checkpoint="after_sleep",
+                request_active=True,
+                response_length=42,
+                response_complete=False,
+            )
+        )
+
+        report = bytearray(32)
+        report[0] = self.Command.GET_RUNTIME_STATUS
+        reply = self.handler.handle_report(bytes(report))
+        text = reply[2:32].split(b"\x00", 1)[0].decode("utf-8")
+
+        self.assertEqual(text, "rdone:4|after_sleep")
+        self.assertLessEqual(len(text), 30)
+
+    def test_runtime_status_never_reintroduces_zero_based_button_indices(self):
+        from pico.bridge_app import RuntimeStatus
+
+        self.handler.set_runtime_status_provider(
+            lambda: RuntimeStatus(
+                cdc_debug_status="post_press:1|sent:31",
+                loop_checkpoint="after_ui_press:1",
+                request_active=True,
+                response_length=42,
+                response_complete=False,
+            )
+        )
+
+        report = bytearray(32)
+        report[0] = self.Command.GET_RUNTIME_STATUS
+        reply = self.handler.handle_report(bytes(report))
+        text = reply[2:32].split(b"\x00", 1)[0].decode("utf-8")
+
+        self.assertNotIn(":0", text)
 
     def test_get_runtime_status_reports_complete_flag(self):
         from pico.bridge_app import RuntimeStatus

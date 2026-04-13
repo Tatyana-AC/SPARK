@@ -1,4 +1,10 @@
 try:
+    from pico.button_layout import button_definition, debug_label
+except ImportError:
+    from button_layout import button_definition, debug_label
+
+
+try:
     from pico.bridge_app import RuntimeStatus
 except ImportError:
     from bridge_app import RuntimeStatus
@@ -110,12 +116,14 @@ class BridgeRuntime:
         self._last_loop_checkpoint = "after_hid_drain"
 
         for button_event in self._button_input.drain_pressed_events():
-            self._emit_debug(f"button:{button_event.index}")
+            self._emit_debug(debug_label("button", button_event.index))
+            if button_definition(button_event.index) is None:
+                break
             if self._ui is not None:
                 self._last_loop_checkpoint = f"before_ui_press:{button_event.index}"
-                self._emit_debug(f"pre_press:{button_event.index}")
+                self._emit_debug(debug_label("pre_press", button_event.index))
                 self._ui.handle_press(button_event.index, now=now)
-                self._emit_debug(f"post_press:{button_event.index}")
+                self._emit_debug(debug_label("post_press", button_event.index))
                 self._last_loop_checkpoint = f"after_ui_press:{button_event.index}"
             if button_event.index == 0 and self._button_press_handler is not None:
                 self._button_press_handler(button_event.index)

@@ -235,14 +235,14 @@ class WatchFullStackTests(unittest.TestCase):
                 "response_complete": True,
                 "response_len": 128,
                 "response_chunk_count": 3,
-                "runtime_status_text": "button:0|after_button_events",
+                "runtime_status_text": "button:1|after_button_events",
                 "error": "",
             },
         )()
 
         self.assertEqual(
             build_pico_status_line(state),
-            "PICO HID: present | upload=ACTIVE msg_id=7 response=COMPLETE len=128 chunks=3 | debug=button:0|after_button_events",
+            "PICO HID: present | upload=ACTIVE msg_id=7 response=COMPLETE len=128 chunks=3 | debug=button:1|after_button_events",
         )
 
     def test_build_component_lines_includes_pico_status(self):
@@ -433,7 +433,7 @@ class WatchFullStackTests(unittest.TestCase):
                     "response_complete": False,
                     "response_len": 12,
                     "response_chunk_count": 1,
-                    "runtime_status_text": "button:0|after_button_events",
+                    "runtime_status_text": "rdone:4|after_sleep",
                     "error": "",
                 })(),
             ]
@@ -453,7 +453,7 @@ class WatchFullStackTests(unittest.TestCase):
             max_iterations=2,
         )
 
-        self.assertIn("[PICO] button:0", out.getvalue())
+        self.assertIn("[PICO] rdone:4", out.getvalue())
 
     def test_append_pico_runtime_events_repeats_heartbeat_after_interval(self):
         from watch_full_stack import _append_pico_runtime_events
