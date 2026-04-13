@@ -941,7 +941,7 @@ class SparkPanel(QWidget):
         self._set_summary_buttons_enabled(True)
 
     def _on_pico_debug_message(self, message: str):
-        if message == "button:0" and not self._summary_request_in_flight:
+        if message == "button:1" and not self._summary_request_in_flight:
             self._start_device_response_polling()
 
     def _start_device_response_polling(self):

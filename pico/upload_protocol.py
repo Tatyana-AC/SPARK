@@ -1,5 +1,10 @@
 import binascii
 
+try:
+    from pico.button_layout import runtime_checkpoint_alias, runtime_label_alias
+except ImportError:
+    from button_layout import runtime_checkpoint_alias, runtime_label_alias
+
 
 REPORT_SIZE = 32
 CHUNK_PAYLOAD_SIZE = 27
@@ -217,7 +222,12 @@ class UploadProtocolHandler:
         debug_status = getattr(status, "cdc_debug_status", "") or "never"
         loop_checkpoint = getattr(status, "loop_checkpoint", "startup") or "startup"
         debug_message = debug_status.split("|", 1)[0]
-        return f"{debug_message}|{loop_checkpoint}"[:30]
+        debug_message = runtime_label_alias(debug_message)
+        loop_checkpoint = runtime_checkpoint_alias(loop_checkpoint)
+        text = f"{debug_message}|{loop_checkpoint}"
+        if len(text) > 30:
+            return text[:30]
+        return text
 
     def _handle_get_runtime_status(self):
         report = bytearray(REPORT_SIZE)

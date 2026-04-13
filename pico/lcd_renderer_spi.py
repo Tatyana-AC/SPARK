@@ -9,9 +9,9 @@ except ImportError:
     from pin_config import LCD_PIN_NUMBERS
 
 try:
-    from pico.lcd_ui import ACTIONS as UI_ACTIONS
+    from pico.button_layout import ACTIONS as UI_ACTIONS, debug_label
 except ImportError:
-    from lcd_ui import ACTIONS as UI_ACTIONS
+    from button_layout import ACTIONS as UI_ACTIONS, debug_label
 
 
 BG = 0x1A1B26
@@ -204,9 +204,9 @@ class SpiLcdRenderer:
         _record_stage("renderer:draw_idle:done")
 
     def draw_pressed_cell(self, index):
-        self._emit_debug(f"render_press:{index}")
+        self._emit_debug(debug_label("render_press", index))
         self._draw_cell(index, ACTIVE)
-        self._emit_debug(f"render_press_done:{index}")
+        self._emit_debug(debug_label("render_press_done", index))
 
     def draw_idle_cell(self, index):
         self._draw_cell(index, SURFACE)

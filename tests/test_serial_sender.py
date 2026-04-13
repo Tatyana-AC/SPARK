@@ -185,9 +185,9 @@ class SerialSenderTests(unittest.TestCase):
         debug_packets = []
         sender.set_packet_callback(debug_packets.append)
 
-        sender._on_pico_packet({"type": serial_sender.PKT_DEBUG, "msg": "button:0"})
+        sender._on_pico_packet({"type": serial_sender.PKT_DEBUG, "msg": "button:1"})
 
-        self.assertEqual(debug_packets, [{"type": serial_sender.PKT_DEBUG, "msg": "button:0"}])
+        self.assertEqual(debug_packets, [{"type": serial_sender.PKT_DEBUG, "msg": "button:1"}])
 
     def test_write_error_blacklists_port_and_falls_back_to_next_candidate(self):
         sender = serial_sender.SerialSender()
