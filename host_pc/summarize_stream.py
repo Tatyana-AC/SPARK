@@ -34,3 +34,18 @@ def build_summary_request(app_name: str, window_title: str, window_text: str) ->
             "window_text": window_text,
         }
     )
+
+
+def build_reformat_request(selected_text: str) -> str:
+    """Build a reformat_selection request with only selected text context."""
+    selected_text = (selected_text or "").strip()
+
+    if len(selected_text) > _MAX_WINDOW_TEXT_CHARS:
+        selected_text = selected_text[:_MAX_WINDOW_TEXT_CHARS]
+
+    return json.dumps(
+        {
+            "command": "reformat_selection",
+            "selected_text": selected_text,
+        }
+    )

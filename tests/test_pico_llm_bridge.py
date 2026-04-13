@@ -11,6 +11,7 @@ from jetson.pico_llm_bridge import (
     build_llm_request,
     _build_summarize_prompt,
     _log_inbound_packet,
+    handle_summarize_request,
     _write_bridge_packet,
 )
 
@@ -93,6 +94,69 @@ class BuildLlmRequestTests(unittest.TestCase):
 
         self.assertEqual(prompt, "just a raw prompt")
 
+    def test_reformat_selection_command_pulls_from_db(self):
+        self.db.on_context_new(_make_context_payload())
+
+        raw = json.dumps({
+            "command": "reformat_selection",
+            "selected_text": "  adjust spacing  ",
+        })
+        system, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("code rewriter", system)
+        self.assertIn("rewritten selected text", system)
+        self.assertIn("Active application: Firefox", prompt)
+        self.assertIn("Window title: GitHub - SPARK", prompt)
+        self.assertIn("README content here", prompt)
+        self.assertIn("adjust spacing", prompt)
+
+    def test_reformat_selection_preserves_formatting_sensitive_selected_text(self):
+        self.db.on_context_new(_make_context_payload())
+
+        raw = json.dumps({
+            "command": "reformat_selection",
+            "selected_text": "  line1\n\tline2\n    line3  \n",
+        })
+        _, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("  line1\n\tline2\n    line3  \n", prompt)
+
+    def test_reformat_prompt_demands_grammar_and_spelling_corrections(self):
+        self.db.on_context_new(_make_context_payload())
+
+        raw = json.dumps({
+            "command": "reformat_selection",
+            "selected_text": "thsi is not corrrect",
+        })
+        _, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("Correct spelling, grammar", prompt)
+        self.assertIn("punctuation", prompt)
+        self.assertIn("Preserve the meaning", prompt)
+        self.assertIn("relevant", prompt)
+
+    def test_reformat_selection_command_without_active_session(self):
+        raw = json.dumps({
+            "command": "reformat_selection",
+            "selected_text": "fix this",
+        })
+        _, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("no active session", prompt)
+
+    def test_reformat_selection_uses_reformat_system_prompt(self):
+        self.db.on_context_new(_make_context_payload())
+
+        raw = json.dumps({
+            "command": "reformat_selection",
+            "selected_text": "fix this",
+        })
+        system, _ = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("rewritten", system)
+        self.assertIn("selected text", system)
+        self.assertNotEqual(system, SYSTEM_PROMPT)
+
 
 class BridgeLoggingTests(unittest.TestCase):
     def test_log_inbound_packet_logs_button_press(self):
@@ -110,6 +174,60 @@ class BridgeLoggingTests(unittest.TestCase):
         serial.write.assert_called_once_with(b"abc")
         serial.flush.assert_called_once_with()
         info_log.assert_called_once_with("[UART OUT] %s bytes=%d", "summarize_done", 3)
+
+
+class ReformatHandlingTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.db = JetsonDB(str(Path(self._tmpdir.name) / "test.db"))
+
+    def tearDown(self):
+        self.db.close()
+        self._tmpdir.cleanup()
+
+    def _make_args(self):
+        return mock.Mock(
+            stream=False,
+            structured=True,
+            timeout=120,
+            llm_url="http://127.0.0.1:8080",
+            system_prompt=SYSTEM_PROMPT,
+        )
+
+    def test_reformat_selection_ignores_structured_response_mode(self):
+        self.db.on_context_new(_make_context_payload())
+        ser = mock.Mock()
+        request = json.dumps({
+            "command": "reformat_selection",
+            "selected_text": "inline code",
+        })
+
+        with mock.patch("jetson.pico_llm_bridge._emit_summary_response") as emit_chunks:
+            with mock.patch("jetson.pico_llm_bridge.query_llm_blocking", return_value="{\"app\": \"x\"}") as query:
+                with mock.patch("jetson.pico_llm_bridge._write_bridge_packet"):
+                    with mock.patch("jetson.pico_llm_bridge.time.sleep"):
+                        handle_summarize_request(ser, request, self._make_args(), db=self.db)
+
+        query.assert_called_once()
+        query_kwargs = query.call_args.kwargs
+        self.assertFalse(query_kwargs["structured"])
+        emit_chunks.assert_any_call(ser, '{"app": "x"}')
+
+    def test_reformat_selection_without_session_sends_error(self):
+        ser = mock.Mock()
+        request = json.dumps({
+            "command": "reformat_selection",
+            "selected_text": "inline code",
+        })
+
+        with mock.patch("jetson.pico_llm_bridge.build_error", return_value=b"ERROR") as mk_error:
+            with mock.patch("jetson.pico_llm_bridge.query_llm_blocking") as query:
+                with mock.patch("jetson.pico_llm_bridge._write_bridge_packet") as writer:
+                    handle_summarize_request(ser, request, self._make_args(), db=self.db)
+
+        mk_error.assert_called_once()
+        query.assert_not_called()
+        writer.assert_called_once_with(ser, b"ERROR", label="error")
 
 
 if __name__ == "__main__":

@@ -129,6 +129,11 @@ SUMMARY_JSON_SCHEMA = {
     },
 }
 
+REFORMAT_SYSTEM_PROMPT = (
+    "You are a code rewriter that rewrites selected text from the active window. "
+    "Return only the rewritten selected text."
+)
+
 
 def _build_summarize_prompt(app_name: str, window_title: str, window_text: str) -> str:
     app_name = (app_name or "").strip() or "(unknown app)"
@@ -146,13 +151,67 @@ def _build_summarize_prompt(app_name: str, window_title: str, window_text: str) 
     )
 
 
-def build_llm_request(raw_prompt: str, default_system_prompt: str, *, db=None) -> tuple[str, str]:
+def _build_reformat_prompt(
+    app_name: str,
+    window_title: str,
+    window_text: str,
+    selected_text: str,
+) -> str:
+    app_name = (app_name or "").strip() or "(unknown app)"
+    window_title = (window_title or "").strip() or "(untitled window)"
+    window_text = (window_text or "").strip()
+    selected_text = selected_text if isinstance(selected_text, str) else ""
+    return (
+        "Rewrite the selected text using only the provided context.\n"
+        "Correct spelling, grammar, punctuation, and phrasing where needed.\n"
+        "Preserve the meaning while making the text clearer and more polished, and keep it relevant to the current context.\n"
+        "Return only the rewritten text.\n"
+        "Do not add labels, explanations, commentary, or JSON.\n\n"
+        f"Active application: {app_name}\n"
+        f"Window title: {window_title}\n"
+        "Visible text:\n"
+        f"{window_text}\n"
+        "Selected text:\n"
+        f"{selected_text}\n"
+    )
+
+
+def _parse_request(raw_prompt: str) -> dict:
     try:
         request = json.loads(raw_prompt)
     except json.JSONDecodeError:
+        return {}
+    if not isinstance(request, dict):
+        return {}
+    return request
+
+
+def build_llm_request(
+    raw_prompt: str,
+    default_system_prompt: str,
+    *,
+    db=None,
+    _request: dict | None = None,
+) -> tuple[str, str]:
+    request = _request if _request is not None else _parse_request(raw_prompt)
+    if not request:
         return default_system_prompt, raw_prompt
 
     command = request.get("command")
+
+    if command == "reformat_selection":
+        if db is None:
+            return default_system_prompt, "(no database available)"
+        session = db.get_active_session()
+        if session is None:
+            return default_system_prompt, "(no active session)"
+        user_prompt = _build_reformat_prompt(
+            session["app_name"],
+            session["window_title"],
+            session["text"],
+            request.get("selected_text", ""),
+        )
+        return REFORMAT_SYSTEM_PROMPT, user_prompt
 
     if command == "summarize":
         if db is None:
@@ -252,22 +311,38 @@ def _emit_summary_response(ser, text: str) -> None:
         )
         time.sleep(INTER_PACKET_DELAY_S)
 
-
 def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
-    llm_system_prompt, llm_prompt = build_llm_request(request_text, args.system_prompt, db=db)
-    structured = args.structured
+    request = _parse_request(request_text)
+    command = request.get("command") if request else None
+    llm_system_prompt, llm_prompt = build_llm_request(
+        request_text,
+        args.system_prompt,
+        db=db,
+        _request=request,
+    )
+    structured = args.structured and command != "reformat_selection"
     logger.info(
-        "Handling summarize request: chars=%d stream=%s structured=%s llm_url=%s",
+        "Handling summarize request: chars=%d stream=%s structured=%s llm_url=%s command=%s",
         len(request_text or ""),
         args.stream,
         structured,
         args.llm_url,
+        command,
     )
 
     # If no context has been received from the host, skip the LLM and send
     # a diagnostic warning back so the user knows what went wrong.
     _NO_CONTEXT_MARKERS = ("(no database available)", "(no active session)")
     if llm_prompt in _NO_CONTEXT_MARKERS:
+        if command == "reformat_selection":
+            warning_msg = "[ERROR] Cannot reformat without active context."
+            logger.warning("Reformat skipped LLM: %s", warning_msg)
+            try:
+                _write_bridge_packet(ser, build_error(warning_msg), label="error")
+            except Exception:
+                logger.exception("Failed to send no-context error back to Pico")
+            return
+
         warning_msg = (
             "[WARNING] No context received from host. "
             "Context polling may not be reaching the Jetson."
@@ -406,7 +481,12 @@ def run_bridge(args) -> int:
         while True:
             if ser is None:
                 ser = open_serial_with_retry(args.port, args.baud, args.reconnect_delay)
-                parser = PacketParser(on_packet=handle_packet, diagnostic_hook=_log_parser_diagnostic)
+                try:
+                    parser = PacketParser(on_packet=handle_packet, diagnostic_hook=_log_parser_diagnostic)
+                except TypeError:
+                    # Backward-compatible path for PacketParser variants that do not accept
+                    # the optional diagnostic_hook parameter.
+                    parser = PacketParser(on_packet=handle_packet)
                 logger.info("Packet parser reset after serial reconnect")
 
             try:

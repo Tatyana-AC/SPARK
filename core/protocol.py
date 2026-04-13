@@ -112,29 +112,49 @@ def build_button_press(button_id: int) -> bytes:
     return build_packet(PKT_BUTTON_PRESS, struct.pack("<B", button_id))
 
 
-def _parse_json_payload(pkt_type: int, payload: bytes) -> dict[str, Any] | None:
+def _parse_json_payload(
+    pkt_type: int,
+    payload: bytes,
+    *,
+    diagnostic_hook: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any] | None:
     if not payload:
+        if diagnostic_hook is not None:
+            diagnostic_hook({"event": "invalid_payload", "pkt_type": pkt_type, "reason": "empty_json_payload"})
         return None
     version = payload[0]
     if version != PROTOCOL_VERSION:
+        if diagnostic_hook is not None:
+            diagnostic_hook({"event": "invalid_payload", "pkt_type": pkt_type, "reason": "version_mismatch"})
         return None
     try:
         data = json.loads(payload[1:].decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
+        if diagnostic_hook is not None:
+            diagnostic_hook({"event": "invalid_payload", "pkt_type": pkt_type, "reason": "json_decode_failed"})
         return None
     if not isinstance(data, dict):
+        if diagnostic_hook is not None:
+            diagnostic_hook({"event": "invalid_payload", "pkt_type": pkt_type, "reason": "json_not_object"})
         return None
     data["type"] = pkt_type
     return data
 
 
-def _parse_payload(pkt_type: int, payload: bytes) -> dict[str, Any] | None:
+def _parse_payload(
+    pkt_type: int,
+    payload: bytes,
+    *,
+    diagnostic_hook: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any] | None:
     if pkt_type in _JSON_PACKET_TYPES:
-        return _parse_json_payload(pkt_type, payload)
+        return _parse_json_payload(pkt_type, payload, diagnostic_hook=diagnostic_hook)
     if pkt_type == PKT_BUTTON_PRESS:
         try:
             (button_id,) = struct.unpack_from("<B", payload, 0)
         except struct.error:
+            if diagnostic_hook is not None:
+                diagnostic_hook({"event": "invalid_payload", "pkt_type": pkt_type, "reason": "button_payload_short"})
             return None
         return {"type": pkt_type, "button_id": button_id}
     return None
@@ -150,8 +170,13 @@ class PacketParser:
     _HEADER = 1
     _BODY = 2
 
-    def __init__(self, on_packet: Callable[[dict[str, Any]], None] | None = None):
+    def __init__(
+        self,
+        on_packet: Callable[[dict[str, Any]], None] | None = None,
+        diagnostic_hook: Callable[[dict[str, Any]], None] | None = None,
+    ):
         self.on_packet = on_packet
+        self._diagnostic_hook = diagnostic_hook
         self._buf = bytearray()
         self._state = self._SYNC
         self._pkt_type = 0
@@ -184,14 +209,22 @@ class PacketParser:
         (received_crc,) = struct.unpack_from(_CRC_FMT, self._buf, len(self._buf) - 1)
 
         if _crc8(header_and_payload) != received_crc:
+            self._diagnose("crc_mismatch", pkt_type=self._pkt_type, pkt_len=self._pkt_len)
             self._reset()
             return
 
         payload = bytes(self._buf[HEADER_SIZE : HEADER_SIZE + self._pkt_len])
-        pkt = _parse_payload(self._pkt_type, payload)
+        pkt = _parse_payload(self._pkt_type, payload, diagnostic_hook=self._diagnose)
         if pkt is not None and self.on_packet:
             self.on_packet(pkt)
         self._reset()
+
+    def _diagnose(self, event: str, **fields: Any) -> None:
+        if self._diagnostic_hook is None:
+            return
+        payload = {"event": event}
+        payload.update(fields)
+        self._diagnostic_hook(payload)
 
     def _reset(self) -> None:
         self._buf = bytearray()

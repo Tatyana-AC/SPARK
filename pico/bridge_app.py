@@ -31,9 +31,17 @@ class BridgeApp:
 
     def prepare_upload_result(self, app_command, text):
         status = self._runtime_status()
+        command_code = int(app_command) if app_command is not None else None
 
-        if app_command == AppCommand.FEATURE_1:
+        feature_2_codes = {
+            int(AppCommand.FEATURE_2),
+            ((int(AppCommand.FEATURE_2) & 0x00FF) << 8) | ((int(AppCommand.FEATURE_2) & 0xFF00) >> 8),
+        }
+
+        if command_code == int(AppCommand.FEATURE_1):
             return self._prepare_feature_1(text, status)
+        if command_code in feature_2_codes:
+            return self._prepare_feature_2(text, status)
 
         return {
             "accepted_text": text,
@@ -45,13 +53,16 @@ class BridgeApp:
                 f"CDC DEBUG: {status.cdc_debug_status}\n"
                 f"LOOP CHECKPOINT: {status.loop_checkpoint}"
             ),
-            "app_command": int(app_command),
+            "app_command": command_code if command_code is not None else -1,
         }
 
     def _prepare_feature_1(self, text, status):
-        return self._forward_request_text(text, status)
+        return self._forward_request_text(text, status, AppCommand.FEATURE_1)
 
-    def _forward_request_text(self, text, status):
+    def _prepare_feature_2(self, text, status):
+        return self._forward_request_text(text, status, AppCommand.FEATURE_2)
+
+    def _forward_request_text(self, text, status, app_command):
         try:
             if self._jetson_transport is None:
                 return {
@@ -95,7 +106,7 @@ class BridgeApp:
                 "response_text": "",
                 "response_active": True,
                 "response_complete": False,
-                "app_command": int(AppCommand.FEATURE_1),
+                "app_command": int(app_command),
             }
         except Exception as exc:
             return {
@@ -112,6 +123,7 @@ class BridgeApp:
         return self._forward_request_text(
             SUMMARIZE_COMMAND_TEXT,
             self._runtime_status(),
+            AppCommand.FEATURE_1,
         )
 
 

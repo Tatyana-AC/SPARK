@@ -35,6 +35,24 @@ class SummarizeStreamTests(unittest.TestCase):
 
         self.assertEqual(request["command"], "summarize")
 
+    def test_build_reformat_request_trims_and_serializes_selected_text(self):
+        from host_pc.summarize_stream import build_reformat_request
+
+        payload = build_reformat_request("   selected text with spaces   ")
+        request = json.loads(payload)
+
+        self.assertEqual(request["command"], "reformat_selection")
+        self.assertEqual(request["selected_text"], "selected text with spaces")
+        self.assertEqual(len(request), 2)
+
+    def test_build_reformat_request_truncates_to_upload_budget(self):
+        from host_pc.summarize_stream import build_reformat_request, _MAX_WINDOW_TEXT_CHARS
+
+        payload = build_reformat_request("x" * (_MAX_WINDOW_TEXT_CHARS + 1))
+        request = json.loads(payload)
+
+        self.assertEqual(len(request["selected_text"]), _MAX_WINDOW_TEXT_CHARS)
+
 
 if __name__ == "__main__":
     unittest.main()

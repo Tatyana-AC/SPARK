@@ -316,10 +316,12 @@ class BridgeAppTests(unittest.TestCase):
             },
         )
 
-    def test_feature_2_preserves_pre_extraction_echo_behavior(self):
+    def test_feature_2_forwards_reformat_payload_unchanged(self):
         from pico.bridge_app import BridgeApp, RuntimeStatus
         from pico.upload_protocol import AppCommand
+        from host_pc.summarize_stream import build_reformat_request
 
+        payload = build_reformat_request(selected_text="Reformat this")
         transport = types.SimpleNamespace(start_request=mock.Mock())
         app = BridgeApp(
             jetson_transport=transport,
@@ -332,17 +334,57 @@ class BridgeAppTests(unittest.TestCase):
             ),
         )
 
-        result = app.prepare_upload_result(AppCommand.FEATURE_2, "future")
+        result = app.prepare_upload_result(AppCommand.FEATURE_2, payload)
 
-        transport.start_request.assert_not_called()
+        transport.start_request.assert_called_once_with(payload.encode("utf-8"))
         self.assertEqual(
             result,
             {
-                "accepted_text": "future",
-                "accepted_count": len("future"),
+                "accepted_text": payload,
+                "accepted_count": len(payload),
                 "skipped_count": 0,
-                "detail": "accepted",
-                "response_text": "PICO ECHO: future\nCDC DEBUG: heartbeat|sent:27\nLOOP CHECKPOINT: after_response_sync",
+                "detail": "forwarded",
+                "response_text": "",
+                "response_active": True,
+                "response_complete": False,
+                "app_command": int(AppCommand.FEATURE_2),
+            },
+        )
+
+    def test_feature_2_forwards_when_command_byte_order_is_swapped(self):
+        from pico.bridge_app import BridgeApp, RuntimeStatus
+        from pico.upload_protocol import AppCommand
+        from host_pc.summarize_stream import build_reformat_request
+
+        payload = build_reformat_request(selected_text="Reformat this")
+        transport = types.SimpleNamespace(start_request=mock.Mock())
+        app = BridgeApp(
+            jetson_transport=transport,
+            runtime_status=lambda: RuntimeStatus(
+                cdc_debug_status="heartbeat|sent:27",
+                loop_checkpoint="after_response_sync",
+                request_active=False,
+                response_length=0,
+                response_complete=False,
+            ),
+        )
+
+        swapped_feature_2 = ((int(AppCommand.FEATURE_2) & 0x00FF) << 8) | (
+            (int(AppCommand.FEATURE_2) & 0xFF00) >> 8
+        )
+        result = app.prepare_upload_result(swapped_feature_2, payload)
+
+        transport.start_request.assert_called_once_with(payload.encode("utf-8"))
+        self.assertEqual(
+            result,
+            {
+                "accepted_text": payload,
+                "accepted_count": len(payload),
+                "skipped_count": 0,
+                "detail": "forwarded",
+                "response_text": "",
+                "response_active": True,
+                "response_complete": False,
                 "app_command": int(AppCommand.FEATURE_2),
             },
         )

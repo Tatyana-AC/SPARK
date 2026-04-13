@@ -3,11 +3,12 @@ import unittest
 from unittest import mock
 
 try:
-    from PyQt6.QtWidgets import QApplication, QLabel, QTextEdit
+    from PyQt6.QtWidgets import QApplication, QLabel, QTextEdit, QPushButton
 except ImportError:  # pragma: no cover - environment-dependent test guard
     QApplication = None
     QLabel = None
     QTextEdit = None
+    QPushButton = None
     spark_app_v2 = None
 else:
     import spark_app_v2
@@ -71,19 +72,211 @@ class SparkPanelUiTests(unittest.TestCase):
         self.assertTrue(panel.release_output_lbl.isReadOnly())
         self.assertEqual(panel.release_output_lbl.toPlainText(), "No released text yet…")
 
+    def test_reformat_button_is_visible(self):
+        panel = self._make_panel()
+
+        btn_candidates = [
+            btn for btn in panel.findChildren(QPushButton)
+            if btn.property("test_id") == "btn_reformat"
+        ]
+        self.assertEqual(len(btn_candidates), 1)
+        btn_reformat = btn_candidates[0]
+        self.assertIsNotNone(btn_reformat)
+        self.assertTrue(btn_reformat.isEnabled())
+
+    def test_reformat_blocked_when_selection_from_private_window(self):
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(
+            bundle_id="com.private.app",
+            title="Private App",
+        )
+        panel = self._make_panel()
+        panel.manager = manager
+
+        panel._set_status = mock.Mock()
+
+        with (
+            mock.patch.object(spark_app_v2, "build_reformat_request") as build_reformat,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            panel._on_reformat()
+
+        panel._set_status.assert_called_once_with(
+            "Cannot reformat: Sensitive window detected",
+            spark_app_v2.RED,
+        )
+        build_reformat.assert_not_called()
+        start_feature_request.assert_not_called()
+
+    def test_reformat_does_not_launch_when_device_disconnected(self):
+        hid_client = mock.Mock()
+        hid_client.is_connected.return_value = False
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(
+            bundle_id="com.test.app",
+            title="Editor",
+        )
+        manager.get_selected_text.return_value = "selected text"
+
+        panel = self._make_panel(hid_client=hid_client)
+        panel.manager = manager
+
+        panel._set_status = mock.Mock()
+
+        with mock.patch("spark_app_v2.threading.Thread") as thread_cls:
+            panel._on_reformat()
+
+        thread_cls.assert_not_called()
+        panel._set_status.assert_called_once_with("SPARK device not connected", spark_app_v2.RED)
+
+    def test_reformat_inlines_current_selection_without_capture(self):
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Editor")
+
+        panel = self._make_panel()
+        panel.manager = manager
+        panel.processed_text = "old captured text"
+        panel.manager.get_selected_text.return_value = "  inline selected text  "
+
+        with (
+            mock.patch.object(spark_app_v2, "build_reformat_request") as build_reformat,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            build_reformat.return_value = "REFORMAT_REQUEST"
+            panel._on_reformat()
+
+        build_reformat.assert_called_once_with("  inline selected text  ")
+        start_feature_request.assert_called_once()
+        call_args = start_feature_request.call_args
+        args, kwargs = call_args
+        self.assertEqual(kwargs.get("app_command", args[0]), spark_app_v2.AppCommand.FEATURE_2)
+        request = kwargs.get("request", args[1] if len(args) > 1 else None)
+        self.assertEqual(request, "REFORMAT_REQUEST")
+
+    def test_reformat_fails_fast_when_selection_is_empty(self):
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Editor")
+
+        panel = self._make_panel()
+        panel.manager = manager
+        panel.manager.get_selected_text.return_value = "   "
+
+        panel._set_status = mock.Mock()
+
+        with (
+            mock.patch.object(spark_app_v2, "build_reformat_request") as build_reformat,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            panel._on_reformat()
+            build_reformat.assert_not_called()
+
+        start_feature_request.assert_not_called()
+        panel._set_status.assert_called_once_with("No text selected — highlight text first", spark_app_v2.RED)
+
+    def test_start_feature_request_uses_feature_2_round_trip(self):
+        hid_client = mock.Mock()
+        hid_client.is_connected.return_value = True
+
+        panel = self._make_panel(hid_client=hid_client)
+
+        def immediate_thread(*args, **kwargs):
+            if args:
+                target = args[0]
+                thread_args = args[1] if len(args) > 1 else tuple()
+            else:
+                target = kwargs["target"]
+                thread_args = kwargs.get("args", tuple())
+            t = mock.Mock()
+            t.start.side_effect = lambda: target(*thread_args)
+            return t
+
+        with (
+            mock.patch("spark_app_v2.threading.Thread", mock.Mock(side_effect=immediate_thread)) as thread_cls,
+            mock.patch.object(hid_client, "stream_round_trip_text", return_value="refactored") as stream_round_trip,
+        ):
+            panel._start_feature_request(
+                app_command=spark_app_v2.AppCommand.FEATURE_2,
+                request="request-payload",
+                capture_label="[REFORMAT] selection",
+                status_text="Sending reformat selection request",
+            )
+
+        thread_cls.assert_called_once()
+        stream_round_trip.assert_called_once()
+        args, kwargs = stream_round_trip.call_args
+        self.assertEqual(args[0], spark_app_v2.AppCommand.FEATURE_2)
+        self.assertEqual(args[1], "request-payload")
+        self.assertIn("on_update", kwargs)
+
+    def test_reformat_success_does_not_mutate_processed_text(self):
+        hid_client = mock.Mock()
+        hid_client.is_connected.return_value = True
+
+        panel = self._make_panel(hid_client=hid_client)
+        panel.processed_text = "already captured"
+
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Editor")
+        manager.get_selected_text.return_value = "selection for reformat"
+        panel.manager = manager
+
+        def immediate_thread(*args, **kwargs):
+            if args:
+                target = args[0]
+                thread_args = args[1] if len(args) > 1 else tuple()
+            else:
+                target = kwargs["target"]
+                thread_args = kwargs.get("args", tuple())
+            return mock.Mock(start=lambda: target(*thread_args))
+
+        with (
+            mock.patch("spark_app_v2.threading.Thread", immediate_thread),
+            mock.patch.object(
+                panel,
+                "_set_status",
+                wraps=panel._set_status,
+            ),
+        ):
+            panel._on_reformat()
+        
+        self.assertEqual(panel.processed_text, "already captured")
+
+    def test_reformat_completion_status_text_is_feature_specific(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_2
+        panel._set_status = mock.Mock()
+
+        panel._on_summarize_succeeded("reformatted text")
+
+        panel._set_status.assert_called_once_with("Jetson reformat complete — output updated", spark_app_v2.GREEN)
+        self.assertEqual(panel.release_output_lbl.toPlainText(), "reformatted text")
+
+    def test_reformat_streaming_status_text_is_feature_specific(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_2
+        panel._set_status = mock.Mock()
+
+        panel._on_summarize_progress("partial chunk")
+
+        panel._set_status.assert_called_once_with("Streaming reformat from Jetson…", spark_app_v2.ORANGE)
+        self.assertEqual(panel.release_output_lbl.toPlainText(), "partial chunk")
+
     def test_summarize_sends_lightweight_command(self):
         """_on_summarize sends a lightweight DB-backed command, no window scraping."""
         hid_client = mock.Mock()
         hid_client.is_connected.return_value = True
 
         panel = self._make_panel(hid_client=hid_client)
-        panel._start_summary_request = mock.Mock()
+        panel._start_feature_request = mock.Mock()
         panel._on_summarize()
 
-        panel._start_summary_request.assert_called_once()
-        kwargs = panel._start_summary_request.call_args.kwargs
-        self.assertIn("summarize", kwargs["request"])
-        self.assertNotIn("window_text", kwargs["request"])
+        panel._start_feature_request.assert_called_once()
+        args, kwargs = panel._start_feature_request.call_args
+        request = kwargs.get("request", args[1] if len(args) > 1 else None)
+        app_command = kwargs.get("app_command", args[0])
+        self.assertIn("summarize", request)
+        self.assertNotIn("window_text", request)
+        self.assertEqual(app_command, spark_app_v2.AppCommand.FEATURE_1)
 
     def test_unsolicited_device_response_updates_release_output(self):
         hid_client = mock.Mock()
@@ -112,10 +305,24 @@ class SparkPanelUiTests(unittest.TestCase):
 
         self.assertTrue(panel._response_poll_timer.isActive())
 
-    def test_other_button_debug_messages_do_not_start_response_polling(self):
+    def test_button_two_debug_message_triggers_reformat_without_starting_response_polling(self):
         panel = self._make_panel()
 
-        panel._on_pico_debug_message("button:2")
+        with mock.patch.object(panel, "_on_reformat") as on_reformat:
+            panel._on_pico_debug_message("button:2")
+
+        on_reformat.assert_called_once_with()
+
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_two_debug_message_is_ignored_while_request_in_flight(self):
+        panel = self._make_panel()
+        panel._summary_request_in_flight = True
+
+        with mock.patch.object(panel, "_on_reformat") as on_reformat:
+            panel._on_pico_debug_message("button:2")
+
+        on_reformat.assert_not_called()
 
         self.assertFalse(panel._response_poll_timer.isActive())
 

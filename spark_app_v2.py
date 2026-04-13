@@ -41,7 +41,12 @@ from host_pc.release_output import format_release_output
 from host_pc.serial_sender import SerialSender
 from host_pc.live_capture import LiveCaptureFeed
 from host_pc.snapshot_policy import is_relevant_snapshot, snapshot_fingerprint
-from host_pc.summarize_stream import build_summary_request, build_summarize_command, build_test_summary_request
+from host_pc.summarize_stream import (
+    build_reformat_request,
+    build_summary_request,
+    build_summarize_command,
+    build_test_summary_request,
+)
 from host_pc.single_instance import SingleInstanceGuard
 from host_pc.web_content import WebContentExtractor, SUPPORTED_BROWSERS
 
@@ -532,6 +537,7 @@ class SparkPanel(QWidget):
         self.is_polling = False
         self._release_in_progress = False
         self._summary_request_in_flight = False
+        self._active_feature_command: AppCommand | None = None
         self._last_device_response_signature = (0, False, False)
         self._device_response_poll_deadline = 0.0
         self._last_pico_runtime_text = ""
@@ -672,6 +678,8 @@ class SparkPanel(QWidget):
         self.btn_capture  = ActionButton("Capture Text", f"{CAPTURE_HOTKEY_LABEL} - grab selection")
         self.btn_release  = ActionButton("Release Text", f"{RELEASE_HOTKEY_LABEL} - send to SPARK")
         self.btn_summarize = ActionButton("Summarize Window", "Quick overview of visible text")
+        self.btn_reformat = ActionButton("Reformat Selection", "Reformat highlighted text")
+        self.btn_reformat.setProperty("test_id", "btn_reformat")
         self.btn_test_context = ActionButton("Test Context", "Send a fixed fake app context")
         self.btn_custom_context = ActionButton("Custom Context", "Edit and send a fake app context")
         self.btn_history  = ActionButton("Show History", "View previous window contexts")
@@ -681,6 +689,7 @@ class SparkPanel(QWidget):
         self.btn_capture.clicked.connect(self._on_capture)
         self.btn_release.clicked.connect(self._on_release)
         self.btn_summarize.clicked.connect(self._on_summarize)
+        self.btn_reformat.clicked.connect(self._on_reformat)
         self.btn_test_context.clicked.connect(self._on_test_context)
         self.btn_custom_context.clicked.connect(self._on_custom_context)
         self.btn_history.clicked.connect(self._on_show_history)
@@ -689,8 +698,9 @@ class SparkPanel(QWidget):
         grid.addWidget(self.btn_release,  0, 1)
         grid.addWidget(self.btn_summarize, 1, 0)
         grid.addWidget(self.btn_test_context, 1, 1)
-        grid.addWidget(self.btn_custom_context, 2, 0)
-        grid.addWidget(self.btn_history,  2, 1)
+        grid.addWidget(self.btn_reformat, 2, 0)
+        grid.addWidget(self.btn_custom_context, 3, 0)
+        grid.addWidget(self.btn_history, 3, 1)
         left.addLayout(grid)
         left.addStretch()
 
@@ -922,15 +932,22 @@ class SparkPanel(QWidget):
 
     def _set_summary_buttons_enabled(self, enabled: bool):
         self.btn_summarize.setEnabled(enabled)
+        self.btn_reformat.setEnabled(enabled)
         self.btn_test_context.setEnabled(enabled)
         self.btn_custom_context.setEnabled(enabled)
 
     def _on_summarize_succeeded(self, text: str):
         self.release_output_lbl.setPlainText(text if text else "No summary returned.")
+        if self._active_feature_command == AppCommand.FEATURE_2:
+            self._set_status("Jetson reformat complete — output updated", GREEN)
+            return
         self._set_status("Jetson summary complete — output updated", GREEN)
 
     def _on_summarize_progress(self, text: str):
         self.release_output_lbl.setPlainText(text)
+        if self._active_feature_command == AppCommand.FEATURE_2:
+            self._set_status("Streaming reformat from Jetson…", ORANGE)
+            return
         self._set_status("Streaming summary from Jetson…", ORANGE)
 
     def _on_summarize_failed(self, message: str):
@@ -938,11 +955,15 @@ class SparkPanel(QWidget):
 
     def _on_summarize_finished(self):
         self._summary_request_in_flight = False
+        self._active_feature_command = None
         self._set_summary_buttons_enabled(True)
 
     def _on_pico_debug_message(self, message: str):
         if message == "button:1" and not self._summary_request_in_flight:
             self._start_device_response_polling()
+            return
+        if message == "button:2" and not self._summary_request_in_flight:
+            self._on_reformat()
 
     def _start_device_response_polling(self):
         self._device_response_poll_deadline = time.monotonic() + 30.0
@@ -1203,11 +1224,9 @@ class SparkPanel(QWidget):
 
     def _on_summarize(self):
         """Send lightweight summarize signal — Jetson reads context from its own DB."""
-        if not self.hid_client.is_connected():
-            self._set_status("SPARK device not connected", RED)
-            return
         request = build_summarize_command()
-        self._start_summary_request(
+        self._start_feature_request(
+            AppCommand.FEATURE_1,
             request=request,
             capture_label="[SUMMARY REQUEST] Summarize active context",
             status_text="Sending summarize command to Jetson…",
@@ -1215,7 +1234,8 @@ class SparkPanel(QWidget):
 
     def _on_test_context(self):
         request = build_test_summary_request()
-        self._start_summary_request(
+        self._start_feature_request(
+            AppCommand.FEATURE_1,
             request=request,
             capture_label="[TEST CONTEXT] Fixed sample context",
             status_text="Sending fixed test context to Jetson…",
@@ -1228,29 +1248,50 @@ class SparkPanel(QWidget):
 
         app_name, window_title, window_text = dialog.get_values()
         request = build_summary_request(app_name, window_title, window_text)
-        self._start_summary_request(
+        self._start_feature_request(
+            AppCommand.FEATURE_1,
             request=request,
             capture_label=f"[CUSTOM CONTEXT] {app_name or '(unknown app)'} — {(window_title or '')[:60]}",
             status_text="Sending custom context to Jetson…",
         )
 
-    def _start_summary_request(self, request: str, capture_label: str, status_text: str):
+    def _on_reformat(self):
+        info = self.manager.get_active_window_info()
+        if info and not self.privacy_guard.is_safe(info.bundle_id, info.title):
+            self._set_status("Cannot reformat: Sensitive window detected", RED)
+            return
+
+        selected = self.manager.get_selected_text()
+        if not (selected and selected.strip()):
+            self._set_status("No text selected — highlight text first", RED)
+            return
+
+        request = build_reformat_request(selected)
+        self._start_feature_request(
+            AppCommand.FEATURE_2,
+            request=request,
+            capture_label="[REFORMAT] Reformat selected text",
+            status_text="Sending reformat request to Jetson…",
+        )
+
+    def _start_feature_request(self, app_command: AppCommand, request: str, capture_label: str, status_text: str):
         if not self.hid_client.is_connected():
             self._set_status("SPARK device not connected", RED)
             return
 
         self._stop_device_response_polling()
+        self._active_feature_command = app_command
         self._summary_request_in_flight = True
         self._set_summary_buttons_enabled(False)
         self.release_output_lbl.setPlainText("")
         self._push_capture_line(capture_label)
         self._set_status(status_text, ORANGE)
-        threading.Thread(target=self._do_summarize_round_trip, args=(request,), daemon=True).start()
+        threading.Thread(target=self._do_feature_round_trip, args=(app_command, request), daemon=True).start()
 
-    def _do_summarize_round_trip(self, prompt: str):
+    def _do_feature_round_trip(self, app_command: AppCommand, prompt: str):
         try:
             response = self.hid_client.stream_round_trip_text(
-                AppCommand.FEATURE_1,
+                app_command,
                 prompt,
                 on_update=self.hid_signals.summarize_progress.emit,
             )
@@ -1258,7 +1299,7 @@ class SparkPanel(QWidget):
         except SparkProtocolError as exc:
             self.hid_signals.summarize_failed.emit(f"HID error: {exc}")
         except Exception as exc:
-            self.hid_signals.summarize_failed.emit(f"Summarize failed: {exc}")
+            self.hid_signals.summarize_failed.emit(f"Feature request failed: {exc}")
         finally:
             self.hid_signals.summarize_finished.emit()
 

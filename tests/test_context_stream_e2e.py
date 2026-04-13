@@ -314,6 +314,44 @@ class ContextStreamEndToEnd(unittest.TestCase):
         self.assertIn("def main(): pass", prompt)
         self.assertNotIn("browsing", prompt)
 
+    # -- reformat selection path ---
+
+    def test_reformat_from_db_includes_selected_text_and_context(self):
+        self.sender.send_context_new(
+            _make_snapshot(
+                app_name="VSCode",
+                title="main.py",
+                text="def foo():    pass",
+                url=None,
+            )
+        )
+        self._relay()
+
+        _, prompt = build_llm_request(
+            json.dumps({
+                "command": "reformat_selection",
+                "selected_text": "def foo():    pass",
+            }),
+            "You are a helpful assistant.",
+            db=self.db,
+        )
+
+        self.assertIn("VSCode", prompt)
+        self.assertIn("main.py", prompt)
+        self.assertIn("def foo():    pass", prompt)
+
+    def test_reformat_with_no_session_returns_no_context_prompt(self):
+        _, prompt = build_llm_request(
+            json.dumps({
+                "command": "reformat_selection",
+                "selected_text": "try this",
+            }),
+            "You are a helpful assistant.",
+            db=self.db,
+        )
+
+        self.assertEqual(prompt, "(no active session)")
+
 
 if __name__ == "__main__":
     unittest.main()
