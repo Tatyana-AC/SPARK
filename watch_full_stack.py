@@ -408,6 +408,21 @@ def _nonempty_output_lines(output):
     return tuple(line.strip() for line in output.splitlines() if line.strip())
 
 
+def _first_command_token(command_line):
+    match = re.match(r'^\s*(?:"([^"]+)"|(\S+))', command_line)
+    if match is None:
+        return ""
+    return match.group(1) or match.group(2) or ""
+
+
+def _looks_like_python_process(command_line):
+    executable = _first_command_token(command_line)
+    if not executable:
+        return False
+    executable_name = Path(executable).name.lower()
+    return executable_name.startswith("python") or executable_name in {"py", "py.exe"}
+
+
 def _process_snapshot_command():
     if sys.platform.startswith("win"):
         return [
@@ -427,7 +442,7 @@ def check_local_spark_app_process(command_output):
     matches = tuple(
         line
         for line in _nonempty_output_lines(command_output)
-        if "spark_app_v2.py" in line.lower()
+        if "spark_app_v2.py" in line.lower() and _looks_like_python_process(line)
     )
     match_count = len(matches)
     if match_count:

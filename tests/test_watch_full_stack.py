@@ -47,6 +47,17 @@ class ConfigureAppLoggingTests(unittest.TestCase):
 
 
 class WatchFullStackTests(unittest.TestCase):
+    def test_check_local_spark_app_process_ignores_shell_wrappers(self):
+        from watch_full_stack import check_local_spark_app_process
+
+        result = check_local_spark_app_process(
+            '"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoExit -Command '
+            "Set-Location 'C:\\SPARK'; & 'C:\\SPARK\\.venv\\Scripts\\python.exe' 'C:\\SPARK\\spark_app_v2.py'"
+        )
+
+        self.assertEqual(result.availability, "missing")
+        self.assertEqual(result.status, "App process missing")
+
     def test_map_app_log_line_routes_pico_debug_to_pico(self):
         from watch_full_stack import map_app_log_line
 
