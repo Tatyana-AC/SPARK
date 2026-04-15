@@ -234,6 +234,37 @@ class SparkPanelUiTests(unittest.TestCase):
         self.assertEqual(args[1], "request-payload")
         self.assertIn("on_update", kwargs)
 
+    def test_start_feature_request_preserves_existing_release_output(self):
+        hid_client = mock.Mock()
+        hid_client.is_connected.return_value = True
+
+        panel = self._make_panel(hid_client=hid_client)
+        panel.release_output_lbl.setPlainText("existing output")
+
+        def immediate_thread(*args, **kwargs):
+            if args:
+                target = args[0]
+                thread_args = args[1] if len(args) > 1 else tuple()
+            else:
+                target = kwargs["target"]
+                thread_args = kwargs.get("args", tuple())
+            t = mock.Mock()
+            t.start.side_effect = lambda: target(*thread_args)
+            return t
+
+        with (
+            mock.patch("spark_app_v2.threading.Thread", mock.Mock(side_effect=immediate_thread)),
+            mock.patch.object(hid_client, "stream_round_trip_text", return_value="refactored"),
+        ):
+            panel._start_feature_request(
+                app_command=spark_app_v2.AppCommand.FEATURE_2,
+                request="request-payload",
+                capture_label="[REFORMAT] selection",
+                status_text="Sending reformat selection request",
+            )
+
+        self.assertEqual(panel.release_output_lbl.toPlainText(), "existing output")
+
     def test_reformat_success_does_not_mutate_processed_text(self):
         hid_client = mock.Mock()
         hid_client.is_connected.return_value = True
@@ -277,15 +308,57 @@ class SparkPanelUiTests(unittest.TestCase):
         panel._set_status.assert_called_once_with("Jetson reformat complete — output updated", spark_app_v2.GREEN)
         self.assertEqual(panel.release_output_lbl.toPlainText(), "reformatted text")
 
+    def test_reformat_completion_copies_final_text_to_clipboard(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_2
+        panel._set_status = mock.Mock()
+        clipboard = mock.Mock()
+
+        with mock.patch.object(spark_app_v2.QApplication, "clipboard", return_value=clipboard):
+            panel._on_summarize_succeeded("reformatted text")
+
+        clipboard.setText.assert_called_once_with("reformatted text")
+
+    def test_summary_completion_does_not_copy_text_to_clipboard(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_1
+        panel._set_status = mock.Mock()
+        clipboard = mock.Mock()
+
+        with mock.patch.object(spark_app_v2.QApplication, "clipboard", return_value=clipboard):
+            panel._on_summarize_succeeded("summary text")
+
+        clipboard.setText.assert_not_called()
+
     def test_reformat_streaming_status_text_is_feature_specific(self):
         panel = self._make_panel()
         panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_2
         panel._set_status = mock.Mock()
+        clipboard = mock.Mock()
 
-        panel._on_summarize_progress("partial chunk")
+        with mock.patch.object(spark_app_v2.QApplication, "clipboard", return_value=clipboard):
+            panel._on_summarize_progress("partial chunk")
 
         panel._set_status.assert_called_once_with("Streaming reformat from Jetson…", spark_app_v2.ORANGE)
         self.assertEqual(panel.release_output_lbl.toPlainText(), "partial chunk")
+        clipboard.setText.assert_not_called()
+
+    def test_finished_feature_request_drains_stale_hid_debug_events(self):
+        hid_client = mock.Mock()
+        hid_client.is_connected.return_value = True
+        hid_client.get_debug_event.side_effect = [
+            "button:2",
+            "pre_press:2",
+            "post_press:2",
+            None,
+        ]
+
+        panel = self._make_panel(hid_client=hid_client)
+        panel._summary_request_in_flight = True
+
+        panel._on_summarize_finished()
+
+        self.assertEqual(hid_client.get_debug_event.call_count, 4)
 
     def test_summarize_sends_lightweight_command(self):
         """_on_summarize sends a lightweight DB-backed command, no window scraping."""

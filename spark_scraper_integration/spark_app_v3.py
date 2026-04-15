@@ -1,4 +1,4 @@
-﻿"""
+"""
 SPARK — Full Pipeline Application (v2: SPARK Panel UI)
 
 Capture text from any application, process it, and paste it back.
@@ -48,7 +48,10 @@ from host_pc.summarize_stream import (
     build_test_summary_request,
 )
 from host_pc.single_instance import SingleInstanceGuard
-from host_pc.web_content import WebContentExtractor, SUPPORTED_BROWSERS
+from scraper_engine import (
+    extract_with_fallback,
+    SUPPORTED_BROWSERS,
+)
 
 APP_LOG_FORMAT = APP_LOG_FILE_FORMAT
 DEFAULT_LOG_PATH = Path(__file__).resolve().parent / "logs" / "spark_app_v2.log"
@@ -516,7 +519,6 @@ class SparkPanel(QWidget):
 
         # ── Backend (same objects as SparkPipeline) ──────────────
         self.manager = AccessibilityManager()
-        self.web_extractor = WebContentExtractor()
         self.hotkeys = GlobalHotkeyManager()
         self.settings = QSettings("SPARK", "SPARK")
         self.tracker = WindowContextTracker()
@@ -676,20 +678,16 @@ class SparkPanel(QWidget):
         grid = QGridLayout()
         grid.setSpacing(8)
 
-        self.btn_capture  = ActionButton("Capture Text", f"{CAPTURE_HOTKEY_LABEL} - grab selection", self)
-        self.btn_release  = ActionButton("Release Text", f"{RELEASE_HOTKEY_LABEL} - send to SPARK", self)
-        self.btn_summarize = ActionButton("Summarize Window", "Quick overview of visible text", self)
+        self.btn_capture  = ActionButton("Capture Text", f"{CAPTURE_HOTKEY_LABEL} - grab selection")
+        self.btn_release  = ActionButton("Release Text", f"{RELEASE_HOTKEY_LABEL} - send to SPARK")
+        self.btn_summarize = ActionButton("Summarize Window", "Quick overview of visible text")
         self.btn_reformat = ActionButton("Reformat Selection", "Reformat highlighted text")
         self.btn_reformat.setProperty("test_id", "btn_reformat")
         self.btn_test_context = ActionButton("Test Context", "Send a fixed fake app context")
         self.btn_custom_context = ActionButton("Custom Context", "Edit and send a fake app context")
-        self.btn_history  = ActionButton("Show History", "View previous window contexts", self)
+        self.btn_history  = ActionButton("Show History", "View previous window contexts")
 
         self.btn_release.setEnabled(False)
-        self.btn_capture.hide()
-        self.btn_release.hide()
-        self.btn_summarize.hide()
-        self.btn_history.hide()
 
         self.btn_capture.clicked.connect(self._on_capture)
         self.btn_release.clicked.connect(self._on_release)
@@ -699,9 +697,13 @@ class SparkPanel(QWidget):
         self.btn_custom_context.clicked.connect(self._on_custom_context)
         self.btn_history.clicked.connect(self._on_show_history)
 
-        grid.addWidget(self.btn_reformat, 0, 0)
-        grid.addWidget(self.btn_test_context, 0, 1)
-        grid.addWidget(self.btn_custom_context, 1, 0)
+        grid.addWidget(self.btn_capture,  0, 0)
+        grid.addWidget(self.btn_release,  0, 1)
+        grid.addWidget(self.btn_summarize, 1, 0)
+        grid.addWidget(self.btn_test_context, 1, 1)
+        grid.addWidget(self.btn_reformat, 2, 0)
+        grid.addWidget(self.btn_custom_context, 3, 0)
+        grid.addWidget(self.btn_history, 3, 1)
         left.addLayout(grid)
         left.addStretch()
 
@@ -940,8 +942,6 @@ class SparkPanel(QWidget):
     def _on_summarize_succeeded(self, text: str):
         self.release_output_lbl.setPlainText(text if text else "No summary returned.")
         if self._active_feature_command == AppCommand.FEATURE_2:
-            if text:
-                QApplication.clipboard().setText(text)
             self._set_status("Jetson reformat complete — output updated", GREEN)
             return
         self._set_status("Jetson summary complete — output updated", GREEN)
@@ -956,21 +956,9 @@ class SparkPanel(QWidget):
     def _on_summarize_failed(self, message: str):
         self._set_status(message, RED)
 
-    def _drain_stale_hid_debug_events(self, *, limit: int = 16):
-        if not self.hid_client.is_connected():
-            return
-        for _ in range(limit):
-            try:
-                event = self.hid_client.get_debug_event()
-            except Exception:
-                return
-            if not isinstance(event, str) or not event:
-                return
-
     def _on_summarize_finished(self):
         self._summary_request_in_flight = False
         self._active_feature_command = None
-        self._drain_stale_hid_debug_events()
         self._set_summary_buttons_enabled(True)
 
     def _on_pico_debug_message(self, message: str):
@@ -1042,20 +1030,6 @@ class SparkPanel(QWidget):
     # Polling — identical logic to SparkPipeline._on_poll_tick
     # ─────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _is_browser_app_for_poll(app_name: str) -> bool:
-        normalized = (app_name or "").lower()
-        if normalized in {
-            "chrome",
-            "google chrome",
-            "msedge",
-            "microsoft edge",
-            "brave",
-            "brave browser",
-        }:
-            return True
-        return app_name in SUPPORTED_BROWSERS
-
     def _on_toggle_polling(self):
         if self.is_polling:
             self.poll_timer.stop()
@@ -1103,16 +1077,22 @@ class SparkPanel(QWidget):
         # Try to get text
         text, source = None, None
 
-        if tab and tab.url and self._is_browser_app_for_poll(info.app_name):
-            try:
-                browser_result = self.web_extractor.extract_page(tab.url, info.app_name)
-                if browser_result and browser_result.text and browser_result.text.strip():
-                    text = browser_result.text
-                    source = TextSource.WEB_CONTENT
-            except Exception as exc:
-                logger.warning("[POLL] web extraction failed for %s: %s", info.app_name, exc)
+        is_browser = info.app_name in SUPPORTED_BROWSERS
 
-        if not text:
+        if is_browser and tab and tab.url:
+            # Browser window: route through scraper_engine (AppleScript → HTTP fallback).
+            try:
+                result = extract_with_fallback(tab.url, app_name=info.app_name)
+                if result["success"] and result["text"]:
+                    text = result["text"]
+                    source = TextSource.WEB_CONTENT
+                else:
+                    self._set_status(f"Scraper: {result['error']}", ORANGE)
+            except Exception as exc:
+                logger.warning("[POLL] extract_with_fallback failed for %s: %s", info.app_name, exc)
+
+        elif not is_browser:
+            # Native app: use AX accessibility APIs.
             try:
                 text = self.manager.get_focused_element_text()
                 if text:
@@ -1120,13 +1100,13 @@ class SparkPanel(QWidget):
             except Exception as exc:
                 logger.warning("[POLL] get_focused_element_text failed for %s: %s", info.app_name, exc)
 
-        if not text:
-            try:
-                text = self.manager.get_window_text()
-                if text:
-                    source = TextSource.FULL_WINDOW
-            except Exception as exc:
-                logger.warning("[POLL] get_window_text failed for %s: %s", info.app_name, exc)
+            if not text:
+                try:
+                    text = self.manager.get_window_text()
+                    if text:
+                        source = TextSource.FULL_WINDOW
+                except Exception as exc:
+                    logger.warning("[POLL] get_window_text failed for %s: %s", info.app_name, exc)
 
         #Edit 
 
@@ -1317,6 +1297,7 @@ class SparkPanel(QWidget):
         self._active_feature_command = app_command
         self._summary_request_in_flight = True
         self._set_summary_buttons_enabled(False)
+        self.release_output_lbl.setPlainText("")
         self._push_capture_line(capture_label)
         self._set_status(status_text, ORANGE)
         threading.Thread(target=self._do_feature_round_trip, args=(app_command, request), daemon=True).start()
