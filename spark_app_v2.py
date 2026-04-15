@@ -20,11 +20,12 @@ from pathlib import Path
 from app_log_contract import APP_LOG_FILE_FORMAT
 
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QFrame,
-    QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QGridLayout, QSizePolicy,
-    QSystemTrayIcon, QMenu,
-    QDialog, QDialogButtonBox, QLineEdit, QTextEdit,
+     QApplication, QWidget, QFrame,
+     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+     QGridLayout, QSizePolicy,
+     QSystemTrayIcon, QMenu,
+     QDialog, QDialogButtonBox, QLineEdit, QTextEdit, QComboBox,
+     QTableWidget, QTableWidgetItem,
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint, QObject, pyqtSignal, QSettings
 from PyQt6.QtGui import QFont, QColor, QPainter, QPainterPath, QCursor, QIcon, QPixmap
@@ -42,13 +43,21 @@ from host_pc.serial_sender import SerialSender
 from host_pc.live_capture import LiveCaptureFeed
 from host_pc.snapshot_policy import is_relevant_snapshot, snapshot_fingerprint
 from host_pc.summarize_stream import (
-    build_reformat_request,
-    build_summary_request,
-    build_summarize_command,
-    build_test_summary_request,
+     build_reformat_request,
+     build_summary_request,
+     build_summarize_command,
+     build_test_summary_request,
 )
 from host_pc.single_instance import SingleInstanceGuard
 from host_pc.web_content import WebContentExtractor, SUPPORTED_BROWSERS
+from host_pc.jetson_db_snapshot import (
+    SnapshotHandle,
+    TablePage,
+    create_snapshot_with_retry,
+    list_user_tables,
+    load_table_rows,
+    delete_snapshot,
+)
 
 APP_LOG_FORMAT = APP_LOG_FILE_FORMAT
 DEFAULT_LOG_PATH = Path(__file__).resolve().parent / "logs" / "spark_app_v2.log"
@@ -378,6 +387,11 @@ class HIDSignals(QObject):
     pico_debug = pyqtSignal(str)
 
 
+class JetsonDbRefreshSignals(QObject):
+    refresh_succeeded = pyqtSignal(int, object, list, object)
+    refresh_failed = pyqtSignal(int, str)
+
+
 class CustomContextDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -452,6 +466,304 @@ class CustomContextDialog(QDialog):
             self.window_title_edit.text(),
             self.window_text_edit.toPlainText(),
         )
+
+
+class JetsonDbViewerDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Jetson DB Viewer")
+        self.setModal(True)
+        self.resize(700, 460)
+
+        self.current_snapshot = None
+        self.current_table = ""
+        self.row_offset = 0
+        self.current_table_has_more = False
+        self.refresh_in_flight = False
+        self._refresh_request_token = 0
+        self._table_load_token = 0
+        self._is_closed = False
+        self._page_size = 100
+        self._current_table_columns: list[str] = []
+        self._refresh_signals = JetsonDbRefreshSignals()
+        self._refresh_signals.refresh_succeeded.connect(self._on_refresh_succeeded)
+        self._refresh_signals.refresh_failed.connect(self._on_refresh_failed)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        top_row = QHBoxLayout()
+        self.table_selector = QComboBox(self)
+        self.table_selector.currentTextChanged.connect(self._on_table_selected)
+        top_row.addWidget(self.table_selector, stretch=1)
+
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
+        top_row.addWidget(self.refresh_btn)
+
+        self.load_more_btn = QPushButton("Load More")
+        self.load_more_btn.setEnabled(False)
+        self.load_more_btn.clicked.connect(self._on_load_more)
+        top_row.addWidget(self.load_more_btn)
+        layout.addLayout(top_row)
+
+        self.status_label = QLabel("Ready")
+        self.status_label.setWordWrap(True)
+        self.status_label.setObjectName("status_label")
+        self.status_label.setProperty("read_only", True)
+        layout.addWidget(self.status_label)
+
+        self.rows_table = QTableWidget(0, 0, self)
+        layout.addWidget(self.rows_table)
+
+    def _on_refresh(self):
+        self._on_refresh_clicked()
+
+    def _on_refresh_clicked(self):
+        if self._is_closed:
+            return
+        if self.refresh_in_flight:
+            return
+        self._start_refresh()
+
+    def _start_refresh(self):
+        self._refresh_request_token += 1
+        request_token = self._refresh_request_token
+        self.refresh_in_flight = True
+        self.refresh_btn.setEnabled(False)
+        self.load_more_btn.setEnabled(False)
+        self.status_label.setText("Refreshing Jetson DB snapshot…")
+        threading.Thread(
+            target=self._fetch_snapshot_and_table_data,
+            args=(request_token,),
+            daemon=True,
+        ).start()
+
+    def _fetch_snapshot_and_table_data(self, request_token: int):
+        snapshot = None
+        try:
+            snapshot = create_snapshot_with_retry()
+            tables = list_user_tables(snapshot.path)
+            page = None
+            if tables:
+                page = load_table_rows(
+                    snapshot.path,
+                    tables[0],
+                    limit=self._page_size,
+                    offset=0,
+                )
+            self._refresh_signals.refresh_succeeded.emit(request_token, snapshot, tables, page)
+        except Exception as exc:
+            if snapshot is not None:
+                delete_snapshot(snapshot)
+            self._refresh_signals.refresh_failed.emit(request_token, f"{exc}")
+
+    def _on_refresh_succeeded(
+        self,
+        request_token: int,
+        snapshot: SnapshotHandle,
+        table_names: list[str],
+        table_page: TablePage | None,
+    ):
+        if self._is_closed or request_token != self._refresh_request_token:
+            if snapshot is not None:
+                delete_snapshot(snapshot)
+            return
+
+        prior_snapshot = self.current_snapshot
+        self.current_snapshot = snapshot
+        self.current_table = table_names[0] if table_names else ""
+        self.current_table_has_more = False
+        self._current_table_columns = []
+        self.row_offset = 0
+
+        self._populate_table_selector(table_names)
+        if table_page is not None:
+            self._render_table_page(table_page)
+            self.current_table_has_more = bool(table_page.has_more)
+            self.row_offset = len(table_page.rows)
+            self.status_label.setText(
+                f"Loaded {len(table_page.rows)} rows from {table_page.table_name}"
+            )
+        else:
+            self.rows_table.clearContents()
+            self.rows_table.setRowCount(0)
+            self.rows_table.setColumnCount(0)
+            self.rows_table.setHorizontalHeaderLabels([])
+            if self.current_table:
+                self.status_label.setText(f"No rows in table '{self.current_table}'")
+            else:
+                self.status_label.setText("No user tables in snapshot")
+            self.current_table_has_more = False
+            self._current_table_columns = []
+
+        self.load_more_btn.setEnabled(bool(self.current_table and self.current_table_has_more))
+
+        if prior_snapshot is not None:
+            delete_snapshot(prior_snapshot)
+        self.refresh_in_flight = False
+        self.refresh_btn.setEnabled(True)
+
+    def _on_refresh_failed(self, request_token: int, error_text: str):
+        if self._is_closed or request_token != self._refresh_request_token:
+            return
+
+        self.status_label.setText(f"Refresh failed: {error_text}")
+        self.refresh_in_flight = False
+        self.refresh_btn.setEnabled(True)
+        self.load_more_btn.setEnabled(bool(self.current_table and self.current_table_has_more))
+
+    def _populate_table_selector(self, table_names: list[str]):
+        self.table_selector.blockSignals(True)
+        self.table_selector.clear()
+        if table_names:
+            self.table_selector.addItems(table_names)
+            self.table_selector.setCurrentText(table_names[0])
+        self.table_selector.blockSignals(False)
+        if not table_names:
+            self.load_more_btn.setEnabled(False)
+
+    def _on_table_selected(self, table_name: str):
+        if self._is_closed:
+            return
+        if not table_name or not self.current_snapshot:
+            return
+
+        self._table_load_token += 1
+        load_token = self._table_load_token
+        prior_table = self.current_table
+        prior_row_offset = self.row_offset
+
+        try:
+            table_page = load_table_rows(
+                self.current_snapshot.path,
+                table_name,
+                limit=self._page_size,
+                offset=0,
+            )
+        except Exception as exc:
+            if load_token != self._table_load_token:
+                return
+            self.status_label.setText(f"Failed to load table '{table_name}': {exc}")
+            if prior_table:
+                self.table_selector.blockSignals(True)
+                self.table_selector.setCurrentText(prior_table)
+                self.table_selector.blockSignals(False)
+            self.row_offset = prior_row_offset
+            return
+
+        if load_token != self._table_load_token:
+            return
+
+        try:
+            self.current_table = table_name
+            self.row_offset = 0
+            self._render_table_page(table_page)
+            self.current_table_has_more = bool(table_page.has_more)
+            self.row_offset = len(table_page.rows)
+            self.status_label.setText(
+                f"Loaded {len(table_page.rows)} rows from {table_page.table_name}"
+            )
+            self._current_table_columns = list(table_page.rows[0].keys()) if table_page.rows else []
+            self.load_more_btn.setEnabled(bool(self.current_table_has_more))
+            return
+        except Exception as exc:
+            if load_token != self._table_load_token:
+                return
+            self.status_label.setText(f"Failed to render table '{table_name}': {exc}")
+            self.current_table = prior_table
+            self.row_offset = prior_row_offset
+            self.current_table_has_more = False
+            if prior_table:
+                self.table_selector.blockSignals(True)
+                self.table_selector.setCurrentText(prior_table)
+                self.table_selector.blockSignals(False)
+                self.load_more_btn.setEnabled(bool(prior_table) and self.current_table_has_more)
+            else:
+                self.load_more_btn.setEnabled(False)
+
+    def _on_load_more(self):
+        if self._is_closed or self.refresh_in_flight:
+            return
+        if not self.current_snapshot or not self.current_table:
+            return
+        if not self.current_table_has_more:
+            return
+
+        try:
+            table_page = load_table_rows(
+                self.current_snapshot.path,
+                self.current_table,
+                limit=self._page_size,
+                offset=self.row_offset,
+            )
+        except Exception as exc:
+            self.status_label.setText(f"Failed to load more rows from '{self.current_table}': {exc}")
+            return
+
+        if table_page.rows:
+            self._append_table_page(table_page)
+            self.status_label.setText(
+                f"Loaded {len(table_page.rows)} more rows from {table_page.table_name}"
+            )
+        else:
+            self.status_label.setText(f"No more rows from {table_page.table_name}")
+
+        self.current_table_has_more = bool(table_page.has_more)
+        self.row_offset += len(table_page.rows)
+        self.load_more_btn.setEnabled(self.current_table_has_more)
+
+    def _render_table_page(self, table_page: TablePage):
+        rows = table_page.rows
+        if not rows:
+            self.rows_table.clearContents()
+            self.rows_table.setRowCount(0)
+            self.rows_table.setColumnCount(0)
+            self.rows_table.setHorizontalHeaderLabels([])
+            self._current_table_columns = []
+            return
+
+        columns = list(rows[0].keys())
+        self._current_table_columns = columns
+        self.rows_table.setColumnCount(len(columns))
+        self.rows_table.setRowCount(len(rows))
+        self.rows_table.setHorizontalHeaderLabels(columns)
+
+        for row_i, row in enumerate(rows):
+            for col_i, key in enumerate(columns):
+                self.rows_table.setItem(row_i, col_i, QTableWidgetItem(str(row.get(key, ""))))
+
+    def _append_table_page(self, table_page: TablePage):
+        rows = table_page.rows
+        if not rows:
+            return
+
+        columns = list(rows[0].keys())
+        if self._current_table_columns != columns and self.rows_table.columnCount() > 0:
+            self._render_table_page(table_page)
+            return
+
+        start_row = self.rows_table.rowCount()
+        self.rows_table.setRowCount(start_row + len(rows))
+
+        for row_i, row in enumerate(rows):
+            for col_i, key in enumerate(columns):
+                self.rows_table.setItem(start_row + row_i, col_i, QTableWidgetItem(str(row.get(key, ""))))
+
+    def closeEvent(self, event):
+        self._is_closed = True
+        self._refresh_request_token += 1
+        self._table_load_token += 1
+        self.refresh_in_flight = False
+        self.load_more_btn.setEnabled(False)
+
+        if self.current_snapshot is not None:
+            delete_snapshot(self.current_snapshot)
+            self.current_snapshot = None
+
+        if event is not None:
+            event.accept()
 
 
 # --Sensitive content guard  ─────────────────────────
@@ -683,6 +995,7 @@ class SparkPanel(QWidget):
         self.btn_reformat.setProperty("test_id", "btn_reformat")
         self.btn_test_context = ActionButton("Test Context", "Send a fixed fake app context")
         self.btn_custom_context = ActionButton("Custom Context", "Edit and send a fake app context")
+        self.btn_view_jetson_db = ActionButton("View Jetson DB", "Browse snapshot tables")
         self.btn_history  = ActionButton("Show History", "View previous window contexts", self)
 
         self.btn_release.setEnabled(False)
@@ -697,11 +1010,13 @@ class SparkPanel(QWidget):
         self.btn_reformat.clicked.connect(self._on_reformat)
         self.btn_test_context.clicked.connect(self._on_test_context)
         self.btn_custom_context.clicked.connect(self._on_custom_context)
+        self.btn_view_jetson_db.clicked.connect(self._on_view_jetson_db)
         self.btn_history.clicked.connect(self._on_show_history)
 
         grid.addWidget(self.btn_reformat, 0, 0)
         grid.addWidget(self.btn_test_context, 0, 1)
         grid.addWidget(self.btn_custom_context, 1, 0)
+        grid.addWidget(self.btn_view_jetson_db, 1, 1)
         left.addLayout(grid)
         left.addStretch()
 
@@ -1307,6 +1622,10 @@ class SparkPanel(QWidget):
             capture_label="[REFORMAT] Reformat selected text",
             status_text="Sending reformat request to Jetson…",
         )
+
+    def _on_view_jetson_db(self):
+        dialog = JetsonDbViewerDialog(self)
+        dialog.exec()
 
     def _start_feature_request(self, app_command: AppCommand, request: str, capture_label: str, status_text: str):
         if not self.hid_client.is_connected():

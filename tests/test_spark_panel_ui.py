@@ -102,6 +102,7 @@ class SparkPanelUiTests(unittest.TestCase):
                 "Custom Context",
                 "Reformat Selection",
                 "Test Context",
+                "View Jetson DB",
             ],
         )
 
@@ -109,6 +110,18 @@ class SparkPanelUiTests(unittest.TestCase):
         self.assertTrue(panel.btn_release.isHidden())
         self.assertTrue(panel.btn_summarize.isHidden())
         self.assertTrue(panel.btn_history.isHidden())
+
+    def test_view_jetson_db_button_opens_dialog(self):
+        panel = self._make_panel()
+
+        with mock.patch.object(spark_app_v2, "JetsonDbViewerDialog") as dialog_cls:
+            dialog = mock.Mock()
+            dialog_cls.return_value = dialog
+
+            panel.btn_view_jetson_db.click()
+
+        dialog_cls.assert_called_once_with(panel)
+        dialog.exec.assert_called_once()
 
     def test_reformat_blocked_when_selection_from_private_window(self):
         manager = mock.Mock()
