@@ -85,6 +85,31 @@ class SparkPanelUiTests(unittest.TestCase):
         self.assertIsNotNone(btn_reformat)
         self.assertTrue(btn_reformat.isEnabled())
 
+    def test_action_grid_hides_legacy_buttons_without_resizing_panel(self):
+        panel = self._make_panel()
+
+        self.assertEqual(panel.width(), 1500)
+
+        visible_titles = sorted(
+            btn._title_lbl.text()
+            for btn in panel.findChildren(spark_app_v2.ActionButton)
+            if not btn.isHidden()
+        )
+
+        self.assertEqual(
+            visible_titles,
+            [
+                "Custom Context",
+                "Reformat Selection",
+                "Test Context",
+            ],
+        )
+
+        self.assertTrue(panel.btn_capture.isHidden())
+        self.assertTrue(panel.btn_release.isHidden())
+        self.assertTrue(panel.btn_summarize.isHidden())
+        self.assertTrue(panel.btn_history.isHidden())
+
     def test_reformat_blocked_when_selection_from_private_window(self):
         manager = mock.Mock()
         manager.get_active_window_info.return_value = types.SimpleNamespace(
