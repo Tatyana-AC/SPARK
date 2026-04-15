@@ -19,14 +19,15 @@ SPARK/
 |- host_pc/                        # Host-side runtime package
 |  |- accessibility/               # Cross-platform text capture
 |  |- hid/                         # Keyboard Raw HID manager abstraction
-|  |- browser.py                   # Browser tab metadata
+|  |- browser.py                   # OS-dispatched browser metadata entrypoint
+|  |- browser_windows.py           # Windows browser tab metadata helper
 |  |- context.py                   # LLM-friendly host context object
 |  |- db.py                        # Legacy host-side local SQLite store; not used by spark_app_v2.py
 |  |- hotkeys.py                   # Global hotkeys
 |  |- live_capture.py              # Live-capture feed dedupe helper
 |  |- raw_hid.py                   # Raw HID upload client for SPARK device
 |  |- serial_sender.py             # CDC serial sender to Pico Hub / Jetson path
-|  `- web_content.py               # Browser JavaScript extraction helper for supported tabs
+|  `- web_content.py               # OS-aware browser text extractor
 |- core/                           # Shared wire protocol builder/parser
 |- jetson/                         # Deployable Jetson bridge bundle and DB layer
 |- pico/                           # Pico-runnable CircuitPython runtime files and smoke helpers
@@ -151,10 +152,12 @@ Files under `host_pc/accessibility/` are still the base of the host app:
 ### Host-Side Supporting Modules
 
 - `browser.py`
-  - Browser tab enrichment for supported desktop browsers.
+  - OS-dispatched browser metadata entrypoint for supported desktop browsers.
+- `browser_windows.py`
+  - Windows browser tab metadata helper used by `host_pc.browser`.
 - `web_content.py`
-  - Browser-page extraction helper for supported Safari/Chrome tabs.
-  - Uses browser JavaScript injection when the accessibility tree does not expose useful page text.
+  - OS-aware browser text extractor for supported macOS/Windows browser tabs.
+  - Uses live-tab extraction with HTTP fallback depending on platform and URL.
 - `context.py`
   - LLM-ready host context object.
 - `db.py`
@@ -198,12 +201,14 @@ The main V2 app flow is now:
    - `SerialSender`
    - `LiveCaptureFeed`
 3. Every 125 ms:
-   - read active window info
-   - apply privacy guard
-   - optionally enrich browser metadata
-   - try browser JavaScript extraction for supported tabs
-   - otherwise extract focused-element or full-window text
-   - update in-memory host tracker/history
+    - read active window info
+    - apply privacy guard
+    - optionally enrich browser metadata
+    - try browser extraction for supported tabs
+    - fallback to focused-element
+    - fallback to full-window text if needed
+    - note: this is the unchanged poll-loop fallback order in `spark_app_v2.py`
+    - update in-memory host tracker/history
    - append deduped live-capture output
    - send `CONTEXT_NEW` or `CONTEXT_UPDATE` over serial toward the Pico/Jetson path
 4. On `Capture Text`:

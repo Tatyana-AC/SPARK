@@ -6,6 +6,7 @@ using osascript subprocess calls.
 """
 
 import logging
+import sys
 import subprocess
 from dataclasses import dataclass
 from typing import Optional
@@ -40,7 +41,7 @@ def _run_applescript(script: str, timeout: float = 2.0) -> Optional[str]:
     return None
 
 
-def get_browser_tab(app_name: str) -> Optional[BrowserTabInfo]:
+def _get_macos_browser_tab(app_name: str) -> Optional[BrowserTabInfo]:
     """
     Get the active tab's title and URL for a supported browser.
 
@@ -72,11 +73,32 @@ def get_browser_tab(app_name: str) -> Optional[BrowserTabInfo]:
 
     if not title and not url:
         return None
-    if app_name == "Google Chrome":
-            url=url[:60]
 
     return BrowserTabInfo(
         tab_title=title or "",
         
         url=url or "",
     )
+
+
+def _get_windows_browser_tab(app_name: str) -> Optional[BrowserTabInfo]:
+    """Get browser metadata on Windows.
+
+    This is import-safe and fails closed when optional dependencies are absent.
+    """
+    try:
+        from .browser_windows import get_browser_tab as _windows_get_browser_tab
+    except Exception as exc:
+        logger.debug("Failed to import Windows browser helper: %s", exc)
+        return None
+
+    return _windows_get_browser_tab(app_name)
+
+
+def get_browser_tab(app_name: str) -> Optional[BrowserTabInfo]:
+    """Dispatch browser metadata lookup by platform."""
+    if sys.platform == "darwin":
+        return _get_macos_browser_tab(app_name)
+    if sys.platform == "win32":
+        return _get_windows_browser_tab(app_name)
+    return None

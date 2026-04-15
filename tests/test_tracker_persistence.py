@@ -2,6 +2,7 @@ import unittest
 
 from host_pc.accessibility.base import TextSource, WindowInfo
 from host_pc.accessibility.tracker import WindowContextTracker
+from host_pc.browser import BrowserTabInfo
 
 
 def make_window_info(
@@ -93,6 +94,28 @@ class WindowContextTrackerTests(unittest.TestCase):
 
         self.assertEqual(len(previous), 1)
         self.assertEqual(previous[0].window_info.app_name, "slack")
+
+    def test_browser_snapshot_preserves_full_url_in_current_and_context_key(self):
+        full_url = "https://example.com/" + "a" * 120
+        tab = BrowserTabInfo(tab_title="Docs", url=full_url)
+
+        self.tracker.update(
+            make_window_info(
+                title="Docs - Example",
+                app_name="Google Chrome",
+                process_name="Google Chrome.exe",
+                pid=404,
+            ),
+            "browser extracted text",
+            TextSource.WEB_CONTENT,
+            tab=tab,
+        )
+
+        current = self.tracker.get_current()
+
+        self.assertIsNotNone(current)
+        self.assertEqual(current.url, full_url)
+        self.assertEqual(current.context_key, f"Google Chrome|{full_url}")
 
 
 if __name__ == "__main__":

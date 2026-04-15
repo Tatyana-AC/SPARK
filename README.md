@@ -6,7 +6,7 @@ SPARK is a desktop context-capture app with hardware integration. On the current
 - Pico Hub: CircuitPython device exposing custom Raw HID and USB CDC serial relay
 - Jetson bridge: durable context storage plus summarize broker for the Pico UART path
 
-The main app entrypoint is `spark_app_v2.py`.
+The main app entrypoint is `spark_app_v2.py`, which remains the active runtime path.
 
 ## Quickstart
 
@@ -58,6 +58,8 @@ py -3.11 -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
+- Windows setup expects the optional UI Automation dependencies (`pywinauto`, `pywin32`) from this root `requirements.txt`.
+
 3. Run the app:
 
 ```powershell
@@ -75,6 +77,16 @@ Or run it without activating the shell first:
 - `Win+Alt+C`: capture selected text
 - `Win+Alt+V`: release text
 - `Win+Alt+Space`: toggle the SPARK window
+
+### Browser extraction behavior
+
+- `spark_app_v2.py` polls every 125 ms and keeps the same fallback order:
+  - browser extraction first for supported browser tabs
+  - focused-element fallback
+  - full-window text fallback
+- macOS browsers: `host_pc/web_content.py` uses live-tab extraction for supported Safari/Chrome-family tabs and falls back to HTTP extraction for normal web pages when needed.
+- Windows browsers: `host_pc/browser_windows.py` provides tab URL/title metadata, then the same poll loop tries browser extraction and falls back to HTTP extraction for external pages.
+- If browser text is not directly fetchable on Windows, the app continues to fallback to focused-element/full-window accessibility paths.
 
 Avoid `Alt+Space`-based shortcuts on Windows. By default, `Alt+Space` opens the active window's system/context menu, so `Win+Alt+Space` can still trigger that visible menu behavior. `Win+Alt+Space` may also conflict with PowerToys Command Palette if you use it.
 

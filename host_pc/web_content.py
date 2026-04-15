@@ -1,39 +1,81 @@
-"""
-Web content extractor for browser tabs.
+"""Browser tab text extraction helpers for host-side capture.
 
-Uses AppleScript to inject JavaScript into the active Safari or Chrome tab,
-bypassing the AX accessibility tree which returns almost nothing for web pages.
-
-Supported targets:
-  - Google Docs  (docs.google.com/document/)
-  - Google Sheets (docs.google.com/spreadsheets/)
-  - General websites (document.body.innerText fallback)
-
-Usage:
-    from host_pc.web_content import WebContentExtractor
-    extractor = WebContentExtractor()
-    text = extractor.get_page_text(url="https://docs.google.com/...", app_name="Google Chrome")
+The extractor keeps a single API surface in this module and returns either a
+structured result or just text via the backward-compatible wrapper.
 """
 
 import logging
 import subprocess
+import sys
+from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class BrowserExtractionResult:
+    text: Optional[str] = None
+    source: Optional[str] = None
+    title: Optional[str] = None
+    error: Optional[str] = None
+
+
+SOURCE_GOOGLE_DOCS_LIVE = "google_docs_live"
+SOURCE_GOOGLE_SHEETS_LIVE = "google_sheets_live"
+SOURCE_LIVE_TAB = "live_tab"
+SOURCE_HTTP_FALLBACK = "http_fallback"
+SOURCE_NON_FETCHABLE = "non_fetchable"
+SOURCE_UNSUPPORTED = "unsupported"
+SUPPORTED_BROWSERS = {"Safari", "Google Chrome", "Google Chrome Canary"}
+
+
 # ── JavaScript payloads ───────────────────────────────────────────────────────
 
-# Google Docs: paragraph text lives in .kix-lineview-text-block elements.
-# Joining with \n preserves document structure.
-_JS_GOOGLE_DOCS = (
-    "Array.from(document.querySelectorAll('.kix-lineview-text-block'))"
-    ".map(function(el){return el.innerText;})"
-    ".filter(function(t){return t.trim().length > 0;})"
-    ".join('\\n')"
+_JS_GOOGLE_DOCS_EXPORT = (
+    "(function(){"
+    "var m = window.location.pathname.match(/\\/d\\/([A-Za-z0-9_-]+)/);"
+    "if (m) {"
+    "  try {"
+    "    var xhr = new XMLHttpRequest();"
+    "    xhr.open('GET', 'https://docs.google.com/document/d/' + m[1] + '/export?format=txt', false);"
+    "    xhr.send();"
+    "    if (xhr.status === 200) {"
+    "      return (xhr.responseText || '').replace(/^\\uFEFF/, '').trim();"
+    "    }"
+    "  } catch (e) {}"
+    "}"
+    "return '';"
+    "})()"
 )
 
-# Google Sheets: visible cell values in the formula bar + rendered grid.
-# Best effort — reads the active sheet's rendered text rows.
+_JS_GOOGLE_DOCS_DOM_FALLBACK = (
+    "(function(){"
+    "var blocks = document.querySelectorAll('.kix-lineview-text-block');"
+    "if (blocks.length > 0) {"
+    "  return Array.from(blocks)"
+    "    .map(function(el){return el.innerText;})"
+    "    .filter(function(t){return t.trim().length > 0;})"
+    "    .join('\\n');"
+    "}"
+    "var sr = document.querySelectorAll('[role=\"paragraph\"]');"
+    "if (sr.length > 0) {"
+    "  return Array.from(sr)"
+    "    .map(function(el){return el.innerText;})"
+    "    .filter(function(t){return t.trim().length > 0;})"
+    "    .join('\\n');"
+    "}"
+    "var iframe = document.querySelector('.docs-texteventtarget-iframe');"
+    "if (iframe && iframe.contentDocument) {"
+    "  return iframe.contentDocument.body.innerText || '';"
+    "}"
+    "var editor = document.querySelector('#kix-appview') || document.querySelector('#docs-editor') || document.querySelector('[data-doc-id]');"
+    "if (editor) { return editor.innerText || ''; }"
+    "return '';"
+    "})()"
+)
+
 _JS_GOOGLE_SHEETS = (
     "(function(){"
     "var rows = Array.from(document.querySelectorAll('.waffle td'));"
@@ -41,7 +83,6 @@ _JS_GOOGLE_SHEETS = (
     "})()"
 )
 
-# General web page: strip to visible body text, collapse whitespace.
 _JS_GENERAL = (
     "(function(){"
     "var el = document.body;"
@@ -54,31 +95,163 @@ _JS_GENERAL = (
 
 # ── URL classifiers ───────────────────────────────────────────────────────────
 
+
 def _is_google_docs(url: str) -> bool:
     return "docs.google.com/document/" in url
+
 
 def _is_google_sheets(url: str) -> bool:
     return "docs.google.com/spreadsheets/" in url
 
 
-# ── AppleScript runners ───────────────────────────────────────────────────────
+def _is_external_web(url: str) -> bool:
+    """Return True for fetchable web URLs and exclude localhost/loopback/file."""
+    if not url:
+        return False
 
-def _run_js_chrome(js: str, app_name: str, timeout: float = 3.0) -> Optional[str]:
-    """Execute JS in the frontmost Chrome/Chromium tab via AppleScript."""
-    script = (
-        f'tell application "{app_name}" to '
-        f'execute front window\'s active tab javascript "{_escape_as(js)}"'
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+        return False
+    if host.startswith("127."):
+        return False
+    return True
+
+
+def _is_supported_windows_browser(app_name: str) -> bool:
+    normalized = (app_name or "").strip().lower()
+    supported = {
+        "chrome",
+        "google chrome",
+        "msedge",
+        "microsoft edge",
+        "brave",
+        "brave browser",
+    }
+    return normalized in supported
+
+
+def _is_supported_macos_browser(app_name: str) -> bool:
+    return app_name in {"Safari", "Google Chrome", "Google Chrome Canary"}
+
+
+# ── Shared transport and helpers ─────────────────────────────────────────────
+
+
+def _extract_http_text(url: str) -> BrowserExtractionResult:
+    """Fetch and extract text from a normal external page using trafilatura."""
+    try:
+        import trafilatura
+    except ImportError:
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error="trafilatura is not installed",
+        )
+
+    try:
+        import requests
+    except ModuleNotFoundError:
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error="requests is not installed",
+        )
+
+    try:
+        response = requests.get(url, timeout=15, allow_redirects=True)
+    except requests.exceptions.Timeout:
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error="Request timed out (15 s)",
+        )
+    except requests.exceptions.ConnectionError as exc:
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error=f"Connection error: {exc}",
+        )
+    except Exception as exc:
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error=f"Fetch failed: {exc}",
+        )
+
+    if response.status_code == 404:
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error="Page not found (404)",
+        )
+    if response.status_code == 403:
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error="Access forbidden (403)",
+        )
+    if response.status_code >= 400:
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error=f"HTTP error {response.status_code}",
+        )
+
+    html = response.text or ""
+    if not html:
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error="Page returned empty response",
+        )
+
+    try:
+        text = trafilatura.extract(
+            html,
+            url=url,
+            favor_precision=True,
+            include_comments=False,
+            include_tables=True,
+            no_fallback=False,
+        )
+    except Exception as exc:
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error=f"Extraction failed: {exc}",
+        )
+
+    if not text or not text.strip():
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_HTTP_FALLBACK,
+            title=None,
+            error="Extraction returned no usable text",
+        )
+
+    return BrowserExtractionResult(
+        text=text.strip(),
+        source=SOURCE_HTTP_FALLBACK,
+        title=None,
+        error=None,
     )
-    return _run_applescript(script, timeout)
-
-
-def _run_js_safari(js: str, timeout: float = 3.0) -> Optional[str]:
-    """Execute JS in the frontmost Safari tab via AppleScript."""
-    script = (
-        f'tell application "Safari" to '
-        f'do JavaScript "{_escape_as(js)}" in current tab of front window'
-    )
-    return _run_applescript(script, timeout)
 
 
 def _run_applescript(script: str, timeout: float) -> Optional[str]:
@@ -101,65 +274,182 @@ def _run_applescript(script: str, timeout: float) -> Optional[str]:
 
 
 def _escape_as(js: str) -> str:
-    """Escape a JS string for embedding inside an AppleScript double-quoted string."""
+    """Escape JavaScript text for AppleScript string embedding."""
     return js.replace("\\", "\\\\").replace('"', '\\"')
 
 
-# ── Public interface ──────────────────────────────────────────────────────────
+def _run_js_chrome(js: str, app_name: str, timeout: float = 3.0) -> Optional[str]:
+    """Execute JS in the frontmost Chrome-family tab via AppleScript."""
+    script = (
+        f'tell application "{app_name}" to '
+        f'execute front window\'s active tab javascript "{_escape_as(js)}"'
+    )
+    return _run_applescript(script, timeout)
 
-SUPPORTED_BROWSERS = {"Safari", "Google Chrome", "Google Chrome Canary"}
+
+def _run_js_safari(js: str, timeout: float = 3.0) -> Optional[str]:
+    """Execute JS in the frontmost Safari tab via AppleScript."""
+    script = (
+        'tell application "Safari" to '
+        'do JavaScript "' + _escape_as(js) + '" in current tab of front window'
+    )
+    return _run_applescript(script, timeout)
+
+
+def _run_js_with_browser(js: str, app_name: str) -> Optional[str]:
+    if app_name == "Safari":
+        return _run_js_safari(js)
+    return _run_js_chrome(js, app_name)
+
+
+# ── Extractors ───────────────────────────────────────────────────────────────
+
+
+def _has_useful_text(text: Optional[str]) -> bool:
+    return bool(text and text.strip())
 
 
 class WebContentExtractor:
-    """
-    Extracts page text from browser tabs via JavaScript injection.
+    """Browser content extractor for live tabs and HTTP fallback."""
 
-    Call get_page_text() during the poll tick when the active app is a browser.
-    Returns None if the app is not a supported browser or extraction fails.
-    """
+    def extract_page(
+        self, url: str, app_name: str, platform: Optional[str] = None
+    ) -> BrowserExtractionResult:
+        if platform is None:
+            platform = sys.platform
+
+        if platform == "darwin":
+            return self._extract_macos(url, app_name)
+        if platform == "win32":
+            return self._extract_windows(url, app_name)
+
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_UNSUPPORTED,
+            title=None,
+            error=f"Browser text extraction is unsupported on platform {platform}",
+        )
 
     def get_page_text(self, url: str, app_name: str) -> Optional[str]:
-        """
-        Extract visible text from the active browser tab.
+        """Backward-compatible API returning only extracted text."""
+        return self.extract_page(url, app_name).text
 
-        Args:
-            url:      URL of the active tab (from BrowserTabInfo).
-            app_name: Name of the browser app (e.g. "Google Chrome").
+    def _extract_google_docs_live_text(
+        self, url: str, app_name: str
+    ) -> BrowserExtractionResult:
+        export_result = self._run_js(_JS_GOOGLE_DOCS_EXPORT, app_name)
+        if _has_useful_text(export_result):
+            return BrowserExtractionResult(
+                text=export_result.strip(),
+                source=SOURCE_GOOGLE_DOCS_LIVE,
+                title=None,
+                error=None,
+            )
 
-        Returns:
-            Extracted text string, or None on failure.
-        """
-        if app_name not in SUPPORTED_BROWSERS:
-            return None
+        fallback_result = self._run_js(_JS_GOOGLE_DOCS_DOM_FALLBACK, app_name)
+        if _has_useful_text(fallback_result):
+            return BrowserExtractionResult(
+                text=fallback_result.strip(),
+                source=SOURCE_GOOGLE_DOCS_LIVE,
+                title=None,
+                error=None,
+            )
 
-        js = self._pick_js(url)
-        text = self._run_js(js, app_name)
+        return BrowserExtractionResult(
+            text=None,
+            source=SOURCE_GOOGLE_DOCS_LIVE,
+            title=None,
+            error="Google Docs live extraction returned no usable text",
+        )
 
-        if text:
-            source_label = self._source_label(url)
-            logger.debug("[WEB] %s — %d chars from %s", app_name, len(text), source_label)
-        else:
-            logger.debug("[WEB] No text returned for %s in %s", url[:60], app_name)
+    def _extract_macos(self, url: str, app_name: str) -> BrowserExtractionResult:
+        if not _is_supported_macos_browser(app_name):
+            return BrowserExtractionResult(
+                text=None,
+                source=SOURCE_UNSUPPORTED,
+                title=None,
+                error=f"{app_name!r} is not a supported browser for macOS extraction",
+            )
 
-        return text
-
-    # ── internals ────────────────────────────────────────────────────────────
-
-    def _pick_js(self, url: str) -> str:
         if _is_google_docs(url):
-            return _JS_GOOGLE_DOCS
+            return self._extract_google_docs_live_text(url, app_name)
+
         if _is_google_sheets(url):
-            return _JS_GOOGLE_SHEETS
-        return _JS_GENERAL
+            text = self._run_js(_JS_GOOGLE_SHEETS, app_name)
+            if _has_useful_text(text):
+                return BrowserExtractionResult(
+                    text=text.strip(),
+                    source=SOURCE_GOOGLE_SHEETS_LIVE,
+                    title=None,
+                    error=None,
+                )
+            return BrowserExtractionResult(
+                text=None,
+                source=SOURCE_GOOGLE_SHEETS_LIVE,
+                title=None,
+                error="Google Sheets live extraction returned no usable text",
+            )
+
+        live_text = self._run_js(_JS_GENERAL, app_name)
+        if _has_useful_text(live_text):
+            if _is_external_web(url):
+                return BrowserExtractionResult(
+                    text=live_text.strip(),
+                    source=SOURCE_LIVE_TAB,
+                    title=None,
+                    error=None,
+                )
+            return BrowserExtractionResult(
+                text=live_text.strip(),
+                source=SOURCE_LIVE_TAB,
+                title=None,
+                error=None,
+            )
+
+        if _is_external_web(url):
+            return _extract_http_text(url)
+
+        return BrowserExtractionResult(
+            text=live_text,
+            source=SOURCE_LIVE_TAB,
+            title=None,
+            error="Live browser extraction returned no usable text",
+        )
+
+    def _extract_windows(self, url: str, app_name: str) -> BrowserExtractionResult:
+        if not _is_external_web(url):
+            return BrowserExtractionResult(
+                text=None,
+                source=SOURCE_NON_FETCHABLE,
+                title=None,
+                error=(
+                    "Windows browser extraction does not fetch localhost, "
+                    "loopback, or file URLs"
+                ),
+            )
+
+        if not _is_supported_windows_browser(app_name):
+            return BrowserExtractionResult(
+                text=None,
+                source=SOURCE_UNSUPPORTED,
+                title=None,
+                error=(
+                    f"Windows browser extraction does not support "
+                    f"app_name={app_name!r}"
+                ),
+            )
+
+        return _extract_http_text(url)
 
     def _run_js(self, js: str, app_name: str) -> Optional[str]:
-        if app_name == "Safari":
-            return _run_js_safari(js)
-        return _run_js_chrome(js, app_name)
+        return _run_js_with_browser(js, app_name)
 
-    def _source_label(self, url: str) -> str:
-        if _is_google_docs(url):
-            return "Google Docs"
-        if _is_google_sheets(url):
-            return "Google Sheets"
-        return "web page"
+
+def extract_page(url: str, app_name: str, platform: Optional[str] = None) -> BrowserExtractionResult:
+    """Module-level API for one-shot extraction with optional platform override."""
+    return WebContentExtractor().extract_page(url, app_name, platform=platform)
+
+
+def get_page_text(url: str, app_name: str, platform: Optional[str] = None) -> Optional[str]:
+    """Backward-compatible wrapper returning only extracted text."""
+    return extract_page(url, app_name, platform=platform).text

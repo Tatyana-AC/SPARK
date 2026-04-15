@@ -12,8 +12,12 @@ Poll tick (every 125 ms in spark_app_v2.py)
   |
   +-- AccessibilityManager.get_active_window_info()
   +-- PrivacyGuard.is_safe(...)
-  +-- get_browser_tab(app_name) when the app is a supported browser
-  +-- get_focused_element_text() or get_window_text()
+  +-- get_browser_tab(app_name) when app_name is supported
+  +-- host_pc/browser.py dispatches OS-specific tab metadata providers
+  +-- on macOS: host_pc/web_content.py browser text extraction (live-tab for supported Safari/Chrome-family tabs)
+  +-- on Windows: browser metadata from host_pc/browser_windows.py and HTTP extraction for fetchable external pages
+  +-- if browser text is not directly fetchable or extraction fails, fallback to get_focused_element_text()
+  +-- then fallback to get_window_text()
   |
   +-- WindowContextTracker.update(info, text, source, tab)
   |     |
@@ -80,7 +84,7 @@ Operational note:
 |---|---|---|
 | Change poll speed | `spark_app_v2.py` | `SparkPanel.POLL_INTERVAL = 125` |
 | Change privacy filtering | `spark_app_v2.py` | `PrivacyGuard` and `_on_poll_tick()` |
-| Change text extraction order | `spark_app_v2.py` and `host_pc/accessibility/` | `_on_poll_tick()`, `get_focused_element_text()`, `get_window_text()` |
+| Change text extraction order | `spark_app_v2.py`, `host_pc/browser.py`, `host_pc/web_content.py` | `_on_poll_tick()`, `get_browser_tab()`, `get_focused_element_text()`, `get_window_text()` |
 | Add another browser integration | `host_pc/browser.py` | `BROWSER_APPS` and `get_browser_tab()` |
 | Change what counts as a unique context | `host_pc/accessibility/base.py` | `WindowContextSnapshot.context_key` |
 | Change in-memory context tracking | `host_pc/accessibility/tracker.py` | `WindowContextTracker.update()` and history accessors |
@@ -114,7 +118,8 @@ Windows hotkey note:
 | `host_pc/accessibility/macos_provider.py` | macOS AX-based extraction and selection capture |
 | `host_pc/accessibility/windows_provider.py` | Windows accessibility and text capture path |
 | `host_pc/accessibility/tracker.py` | Current snapshot, previous-window history, and context-change detection |
-| `host_pc/browser.py` | Browser tab title/URL enrichment for supported desktop browsers |
+| `host_pc/browser.py` | OS-dispatched browser metadata entrypoint (`get_browser_tab`) |
+| `host_pc/browser_windows.py` | Windows browser tab metadata helper for title/URL extraction |
 | `host_pc/context.py` | LLM-ready context object built from current snapshots |
 | `host_pc/db.py` | Legacy host SQLite schema and helpers; not used by the active V2 path |
 | `host_pc/live_capture.py` | Live-capture line retention and poll-line dedupe |
@@ -122,6 +127,7 @@ Windows hotkey note:
 | `host_pc/release_output.py` | Formatting for the local RELEASE OUTPUT panel |
 | `host_pc/summarize_stream.py` | Structured summarize-request payload builder |
 | `host_pc/serial_sender.py` | Host CDC writer for `CONTEXT_NEW` / `CONTEXT_UPDATE` packets |
+| `host_pc/web_content.py` | OS-aware browser text extraction helper used by poll loop |
 | `core/protocol.py` | Shared packet framing, CRC, builders, and streaming parser |
 | `jetson/pico_llm_bridge.py` | Jetson-side UART broker, DB writer, and llama.cpp bridge |
 | `jetson/receiver.py` | Compatibility wrapper to the active Jetson bridge entrypoint |
@@ -233,6 +239,13 @@ A switch is counted when `WindowContextSnapshot.context_key` changes:
 
 - Browsers: `"app_name|url"`
 - Non-browsers: `"app_name|window_title"`
+
+## Poll-loop behavior note
+
+- For supported browser apps, the poll loop in `spark_app_v2.py` still follows this order:
+  - Browser text extraction attempt first (including Windows external-page HTTP fallback through `host_pc.web_content`)
+  - then focused-element text
+  - then full-window text
 
 The tracker keeps:
 

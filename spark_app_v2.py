@@ -1028,6 +1028,20 @@ class SparkPanel(QWidget):
     # Polling — identical logic to SparkPipeline._on_poll_tick
     # ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_browser_app_for_poll(app_name: str) -> bool:
+        normalized = (app_name or "").lower()
+        if normalized in {
+            "chrome",
+            "google chrome",
+            "msedge",
+            "microsoft edge",
+            "brave",
+            "brave browser",
+        }:
+            return True
+        return app_name in SUPPORTED_BROWSERS
+
     def _on_toggle_polling(self):
         if self.is_polling:
             self.poll_timer.stop()
@@ -1075,10 +1089,11 @@ class SparkPanel(QWidget):
         # Try to get text
         text, source = None, None
 
-        if info.app_name in SUPPORTED_BROWSERS and tab and tab.url:
+        if tab and tab.url and self._is_browser_app_for_poll(info.app_name):
             try:
-                text = self.web_extractor.get_page_text(tab.url, info.app_name)
-                if text:
+                browser_result = self.web_extractor.extract_page(tab.url, info.app_name)
+                if browser_result and browser_result.text and browser_result.text.strip():
+                    text = browser_result.text
                     source = TextSource.WEB_CONTENT
             except Exception as exc:
                 logger.warning("[POLL] web extraction failed for %s: %s", info.app_name, exc)

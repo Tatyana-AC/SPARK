@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover - environment-dependent test guard
     spark_app_v2 = None
 else:
     import spark_app_v2
+    from host_pc.web_content import BrowserExtractionResult
 
 
 class _DummyHotkeys:
@@ -593,6 +594,212 @@ class SparkPanelUiTests(unittest.TestCase):
 
             serial_sender.send_context_new.assert_called_once_with(snapshot)
             serial_sender.send_context_update.assert_not_called()
+
+    def test_poll_tick_uses_browser_extraction_when_available(self):
+        info = mock.Mock(
+            app_name="Google Chrome",
+            pid=123,
+            bundle_id="com.google.Chrome",
+            title="Editor",
+            process_name="chrome.exe",
+        )
+        tab = types.SimpleNamespace(tab_title="Docs", url="https://example.com")
+        browser_result = BrowserExtractionResult(text="browser text", source="live_tab", title=None, error=None)
+
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = info
+
+        tracker = mock.Mock()
+        tracker.get_current.return_value = None
+        tracker.get_all_previous.return_value = []
+
+        serial_sender = mock.Mock()
+        serial_sender.is_connected.return_value = True
+        serial_sender.send_context_new.return_value = True
+
+        web_extractor = mock.Mock()
+        web_extractor.extract_page.return_value = browser_result
+
+        with (
+            mock.patch.object(spark_app_v2, "AccessibilityManager", return_value=manager),
+            mock.patch.object(spark_app_v2, "GlobalHotkeyManager", return_value=_DummyHotkeys()),
+            mock.patch.object(spark_app_v2, "WindowContextTracker", return_value=tracker),
+            mock.patch.object(spark_app_v2, "SparkHIDClient", return_value=mock.Mock()),
+            mock.patch.object(spark_app_v2, "SerialSender", return_value=serial_sender),
+            mock.patch.object(spark_app_v2, "LiveCaptureFeed", return_value=mock.Mock(lines=["Polling not started..."])),
+            mock.patch.object(spark_app_v2, "get_browser_tab", return_value=tab),
+            mock.patch.object(spark_app_v2.SparkPanel, "_connect_hotkeys", return_value=None),
+            mock.patch.object(spark_app_v2.SparkPanel, "_connect_hid", return_value=None),
+            mock.patch.object(spark_app_v2.SparkPanel, "_restore_position", return_value=None),
+            mock.patch.object(spark_app_v2, "is_relevant_snapshot", return_value=True),
+        ):
+            panel = spark_app_v2.SparkPanel()
+            panel.web_extractor = web_extractor
+
+            panel._on_poll_tick()
+
+            tracker.update.assert_called_once()
+            update_args, update_kwargs = tracker.update.call_args
+            self.assertEqual(update_args[0], info)
+            self.assertEqual(update_args[1], "browser text")
+            self.assertEqual(update_args[2], spark_app_v2.TextSource.WEB_CONTENT)
+            self.assertEqual(update_kwargs["tab"], tab)
+            manager.get_focused_element_text.assert_not_called()
+            manager.get_window_text.assert_not_called()
+
+    def test_poll_tick_uses_browser_extraction_for_windows_browser_app_names(self):
+        info = mock.Mock(
+            app_name="chrome",
+            pid=123,
+            bundle_id="chrome.exe",
+            title="Editor",
+            process_name="chrome.exe",
+        )
+        tab = types.SimpleNamespace(tab_title="Docs", url="https://example.com")
+        browser_result = BrowserExtractionResult(
+            text="browser text",
+            source="live_tab",
+            title=None,
+            error=None,
+        )
+
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = info
+        web_extractor = mock.Mock()
+        web_extractor.extract_page.return_value = browser_result
+
+        tracker = mock.Mock()
+        tracker.get_current.return_value = None
+        tracker.get_all_previous.return_value = []
+
+        serial_sender = mock.Mock()
+        serial_sender.is_connected.return_value = True
+        serial_sender.send_context_new.return_value = True
+
+        with (
+            mock.patch.object(spark_app_v2, "AccessibilityManager", return_value=manager),
+            mock.patch.object(spark_app_v2, "GlobalHotkeyManager", return_value=_DummyHotkeys()),
+            mock.patch.object(spark_app_v2, "WindowContextTracker", return_value=tracker),
+            mock.patch.object(spark_app_v2, "SparkHIDClient", return_value=mock.Mock()),
+            mock.patch.object(spark_app_v2, "SerialSender", return_value=serial_sender),
+            mock.patch.object(spark_app_v2, "LiveCaptureFeed", return_value=mock.Mock(lines=["Polling not started..."])),
+            mock.patch.object(spark_app_v2, "get_browser_tab", return_value=tab),
+            mock.patch.object(spark_app_v2.SparkPanel, "_connect_hotkeys", return_value=None),
+            mock.patch.object(spark_app_v2.SparkPanel, "_connect_hid", return_value=None),
+            mock.patch.object(spark_app_v2.SparkPanel, "_restore_position", return_value=None),
+            mock.patch.object(spark_app_v2, "is_relevant_snapshot", return_value=True),
+        ):
+            panel = spark_app_v2.SparkPanel()
+            panel.web_extractor = web_extractor
+
+            panel._on_poll_tick()
+
+            tracker.update.assert_called_once()
+            update_args, update_kwargs = tracker.update.call_args
+            self.assertEqual(update_args[0], info)
+            self.assertEqual(update_args[1], "browser text")
+            self.assertEqual(update_args[2], spark_app_v2.TextSource.WEB_CONTENT)
+            self.assertEqual(update_kwargs["tab"], tab)
+            manager.get_focused_element_text.assert_not_called()
+            manager.get_window_text.assert_not_called()
+
+    def test_poll_tick_falls_back_to_focused_element_when_browser_text_missing(self):
+        info = mock.Mock(
+            app_name="Google Chrome",
+            pid=123,
+            bundle_id="com.google.Chrome",
+            title="Editor",
+            process_name="chrome.exe",
+        )
+        tab = types.SimpleNamespace(tab_title="Docs", url="https://example.com")
+        browser_result = BrowserExtractionResult(text="", source="live_tab", title=None, error="empty")
+
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = info
+        manager.get_focused_element_text.return_value = "focused text"
+        manager.get_window_text.return_value = "window text"
+
+        tracker = mock.Mock()
+        tracker.get_current.return_value = None
+        tracker.get_all_previous.return_value = []
+
+        serial_sender = mock.Mock()
+        serial_sender.is_connected.return_value = True
+        serial_sender.send_context_new.return_value = True
+
+        web_extractor = mock.Mock()
+        web_extractor.extract_page.return_value = browser_result
+
+        with (
+            mock.patch.object(spark_app_v2, "AccessibilityManager", return_value=manager),
+            mock.patch.object(spark_app_v2, "GlobalHotkeyManager", return_value=_DummyHotkeys()),
+            mock.patch.object(spark_app_v2, "WindowContextTracker", return_value=tracker),
+            mock.patch.object(spark_app_v2, "SparkHIDClient", return_value=mock.Mock()),
+            mock.patch.object(spark_app_v2, "SerialSender", return_value=serial_sender),
+            mock.patch.object(spark_app_v2, "LiveCaptureFeed", return_value=mock.Mock(lines=["Polling not started..."])),
+            mock.patch.object(spark_app_v2, "get_browser_tab", return_value=tab),
+            mock.patch.object(spark_app_v2.SparkPanel, "_connect_hotkeys", return_value=None),
+            mock.patch.object(spark_app_v2.SparkPanel, "_connect_hid", return_value=None),
+            mock.patch.object(spark_app_v2.SparkPanel, "_restore_position", return_value=None),
+            mock.patch.object(spark_app_v2, "is_relevant_snapshot", return_value=True),
+        ):
+            panel = spark_app_v2.SparkPanel()
+            panel.web_extractor = web_extractor
+
+            panel._on_poll_tick()
+
+            tracker.update.assert_called_once()
+            update_args, _ = tracker.update.call_args
+            self.assertEqual(update_args[2], spark_app_v2.TextSource.FOCUSED_ELEMENT)
+
+    def test_poll_tick_falls_back_to_window_when_focused_element_is_empty(self):
+        info = mock.Mock(
+            app_name="Google Chrome",
+            pid=123,
+            bundle_id="com.google.Chrome",
+            title="Editor",
+            process_name="chrome.exe",
+        )
+        tab = types.SimpleNamespace(tab_title="Docs", url="https://example.com")
+        browser_result = BrowserExtractionResult(text=None, source="live_tab", title=None, error="empty")
+
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = info
+        manager.get_focused_element_text.return_value = ""
+        manager.get_window_text.return_value = "window text"
+
+        tracker = mock.Mock()
+        tracker.get_current.return_value = None
+        tracker.get_all_previous.return_value = []
+
+        serial_sender = mock.Mock()
+        serial_sender.is_connected.return_value = True
+        serial_sender.send_context_new.return_value = True
+
+        web_extractor = mock.Mock()
+        web_extractor.extract_page.return_value = browser_result
+
+        with (
+            mock.patch.object(spark_app_v2, "AccessibilityManager", return_value=manager),
+            mock.patch.object(spark_app_v2, "GlobalHotkeyManager", return_value=_DummyHotkeys()),
+            mock.patch.object(spark_app_v2, "WindowContextTracker", return_value=tracker),
+            mock.patch.object(spark_app_v2, "SparkHIDClient", return_value=mock.Mock()),
+            mock.patch.object(spark_app_v2, "SerialSender", return_value=serial_sender),
+            mock.patch.object(spark_app_v2, "LiveCaptureFeed", return_value=mock.Mock(lines=["Polling not started..."])),
+            mock.patch.object(spark_app_v2, "get_browser_tab", return_value=tab),
+            mock.patch.object(spark_app_v2.SparkPanel, "_connect_hotkeys", return_value=None),
+            mock.patch.object(spark_app_v2.SparkPanel, "_connect_hid", return_value=None),
+            mock.patch.object(spark_app_v2.SparkPanel, "_restore_position", return_value=None),
+            mock.patch.object(spark_app_v2, "is_relevant_snapshot", return_value=True),
+        ):
+            panel = spark_app_v2.SparkPanel()
+            panel.web_extractor = web_extractor
+
+            panel._on_poll_tick()
+
+            tracker.update.assert_called_once()
+            update_args, _ = tracker.update.call_args
+            self.assertEqual(update_args[2], spark_app_v2.TextSource.FULL_WINDOW)
 
     def test_close_button_quits_app_instead_of_hiding_panel(self):
         panel = self._make_panel()
