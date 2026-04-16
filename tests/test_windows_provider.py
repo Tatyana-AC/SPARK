@@ -55,6 +55,26 @@ class WindowsAccessibilityProviderTests(unittest.TestCase):
         app.connect.assert_called_once_with(handle=hwnd)
         app.window.assert_called_once_with(handle=hwnd)
 
+    @patch.object(WindowsAccessibilityProvider, "_init_libraries", autospec=True)
+    def test_get_active_window_info_includes_window_handle(self, mock_init):
+        provider = WindowsAccessibilityProvider()
+        hwnd = 789
+        provider.win32gui = Mock()
+        provider.win32process = Mock()
+        provider.psutil = Mock()
+        provider.win32gui.GetForegroundWindow.return_value = hwnd
+        provider.win32gui.GetWindowText.return_value = "Window Title"
+        provider.win32process.GetWindowThreadProcessId.return_value = (None, 321)
+        provider.win32gui.GetWindowRect.return_value = (1, 2, 401, 202)
+        provider.psutil.Process.return_value.name.return_value = "chrome.exe"
+
+        info = provider.get_active_window_info()
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info.window_handle, hwnd)
+        self.assertEqual(info.pid, 321)
+        self.assertEqual(info.process_name, "chrome.exe")
+
 
 if __name__ == "__main__":
     unittest.main()

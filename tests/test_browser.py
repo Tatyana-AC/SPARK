@@ -34,7 +34,7 @@ class BrowserTests(unittest.TestCase):
             tab = browser.get_browser_tab("chrome")
 
         self.assertIs(tab, expected)
-        helper.assert_called_once_with("chrome")
+        helper.assert_called_once_with("chrome", None)
 
     def test_unsupported_platform_returns_none(self):
         with (

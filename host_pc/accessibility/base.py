@@ -30,10 +30,14 @@ class WindowInfo:
     pid: int
     bundle_id: Optional[str] = None
     bounds: Optional[Dict[str, int]] = None
+    window_handle: Optional[int] = None
     
     def __repr__(self) -> str:
         """String representation of window info."""
-        return f"WindowInfo(app={self.app_name}, title={self.title}, pid={self.pid})"
+        return (
+            f"WindowInfo(app={self.app_name}, title={self.title}, pid={self.pid}, "
+            f"window_handle={self.window_handle})"
+        )
 
 
 @dataclass

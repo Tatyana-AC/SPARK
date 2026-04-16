@@ -50,7 +50,8 @@ from host_pc.summarize_stream import (
      build_test_summary_request,
 )
 from host_pc.single_instance import SingleInstanceGuard
-from host_pc.web_content import WebContentExtractor, SUPPORTED_BROWSERS
+from host_pc.web_content import WebContentExtractor
+from host_pc.web_content import _is_supported_macos_browser, _is_supported_windows_browser
 from host_pc.jetson_db_snapshot import (
     SnapshotHandle,
     TablePage,
@@ -349,6 +350,7 @@ class ContextCard(QFrame):
 
         self.sub_lbl = QLabel(subtitle)
         self.sub_lbl.setObjectName("card_subtitle")
+        self.sub_lbl.setWordWrap(True)
         col.addWidget(self.sub_lbl)
         lay.addLayout(col)
 
@@ -1430,17 +1432,77 @@ class SparkPanel(QWidget):
 
     @staticmethod
     def _is_browser_app_for_poll(app_name: str) -> bool:
-        normalized = (app_name or "").lower()
-        if normalized in {
-            "chrome",
-            "google chrome",
-            "msedge",
-            "microsoft edge",
-            "brave",
-            "brave browser",
-        }:
-            return True
-        return app_name in SUPPORTED_BROWSERS
+        normalized = (app_name or "").strip().lower()
+        if normalized.endswith(".exe"):
+            normalized = normalized[:-4]
+        return _is_supported_windows_browser(normalized) or _is_supported_macos_browser(app_name)
+
+    def _extract_web_fallback_text_for_windows_browser(self, app_name: str):
+        from host_pc import web_content_windows
+
+        try:
+            focused_text = self.manager.get_focused_element_text()
+            focused_eval = web_content_windows.evaluate_focused_fallback(focused_text)
+            if focused_eval and focused_eval.is_useful and focused_eval.text:
+                logger.debug("[POLL] accepted focused fallback for %s", app_name)
+                return focused_eval.text, TextSource.WEB_CONTENT
+        except Exception as exc:
+            logger.warning(
+                "[POLL] focused fallback extraction failed for %s: %s",
+                app_name,
+                exc,
+            )
+
+        try:
+            window_text = self.manager.get_window_text()
+            window_eval = web_content_windows.evaluate_window_fallback(window_text)
+            if window_eval and window_eval.is_useful and window_eval.text:
+                logger.debug("[POLL] accepted window fallback for %s", app_name)
+                return window_eval.text, TextSource.WEB_CONTENT
+        except Exception as exc:
+            logger.warning(
+                "[POLL] window fallback extraction failed for %s: %s",
+                app_name,
+                exc,
+            )
+
+        return None, None
+
+    def _extract_accessibility_fallback_text(self, app_name: str):
+        try:
+            text = self.manager.get_focused_element_text()
+            if text:
+                return text, TextSource.FOCUSED_ELEMENT
+        except Exception as exc:
+            logger.warning(
+                "[POLL] get_focused_element_text failed for %s: %s",
+                app_name,
+                exc,
+            )
+
+        try:
+            text = self.manager.get_window_text()
+            if text:
+                return text, TextSource.FULL_WINDOW
+        except Exception as exc:
+            logger.warning(
+                "[POLL] get_window_text failed for %s: %s",
+                app_name,
+                exc,
+            )
+
+        return None, None
+
+    @staticmethod
+    def _build_active_context_subtitle(info, tab) -> str:
+        detail = tab.tab_title if (tab and tab.tab_title) else info.title
+        if not tab:
+            return detail
+
+        url = tab.url or ""
+        context_key = f"{info.app_name}|{url}" if url else f"{info.app_name}|{info.title}"
+        url_display = url or "(missing)"
+        return f"{detail}\nURL: {url_display}\nKey: {context_key}"
 
     def _on_toggle_polling(self):
         if self.is_polling:
@@ -1479,8 +1541,12 @@ class SparkPanel(QWidget):
             return
         # ---------------------
 
-        tab = get_browser_tab(info.app_name)
-        detail = f"{tab.tab_title}" if (tab and tab.tab_title) else info.title
+        window_target = getattr(info, "window_handle", None)
+        if not isinstance(window_target, int) or isinstance(window_target, bool):
+            window_target = None
+
+        tab = get_browser_tab(info.app_name, window_target=window_target)
+        detail = self._build_active_context_subtitle(info, tab)
         if tab and not self.privacy_guard.is_safe(info.bundle_id, tab.tab_title):
             self.ctx_card_active.update_data(info.app_name, "Protected URL", active=True)
             return
@@ -1488,31 +1554,51 @@ class SparkPanel(QWidget):
 
         # Try to get text
         text, source = None, None
+        browser_result = None
 
-        if tab and tab.url and self._is_browser_app_for_poll(info.app_name):
+        if tab and self._is_browser_app_for_poll(info.app_name):
             try:
-                browser_result = self.web_extractor.extract_page(tab.url, info.app_name)
-                if browser_result and browser_result.text and browser_result.text.strip():
+                browser_result = self.web_extractor.extract_page(
+                    tab.url or "",
+                    info.app_name,
+                    window_target=window_target,
+                )
+                if (
+                    browser_result
+                    and browser_result.is_useful
+                    and browser_result.text
+                    and browser_result.text.strip()
+                ):
                     text = browser_result.text
                     source = TextSource.WEB_CONTENT
             except Exception as exc:
                 logger.warning("[POLL] web extraction failed for %s: %s", info.app_name, exc)
+                browser_result = None
 
-        if not text:
-            try:
-                text = self.manager.get_focused_element_text()
-                if text:
-                    source = TextSource.FOCUSED_ELEMENT
-            except Exception as exc:
-                logger.warning("[POLL] get_focused_element_text failed for %s: %s", info.app_name, exc)
+            if text is None and browser_result is not None:
+                # Windows browser paths should reject noisy browser output and try
+                # accessibility fallbacks in a filtered order.
+                if sys.platform == "win32":
+                    if browser_result.text and not browser_result.is_useful:
+                        logger.debug(
+                            "[POLL] rejected noisy browser output for %s from source=%s",
+                            info.app_name,
+                            browser_result.source,
+                        )
+                    fallback_text, fallback_source = self._extract_web_fallback_text_for_windows_browser(
+                        info.app_name
+                    )
+                    if fallback_text:
+                        text = fallback_text
+                        source = fallback_source
 
-        if not text:
-            try:
-                text = self.manager.get_window_text()
-                if text:
-                    source = TextSource.FULL_WINDOW
-            except Exception as exc:
-                logger.warning("[POLL] get_window_text failed for %s: %s", info.app_name, exc)
+        if not text and not (sys.platform == "win32" and tab and browser_result is not None):
+            fallback_text, fallback_source = self._extract_accessibility_fallback_text(
+                info.app_name
+            )
+            if fallback_text:
+                text = fallback_text
+                source = fallback_source
 
         #Edit 
 

@@ -1,10 +1,112 @@
 import unittest
+import types
 from unittest import mock
 
 from host_pc import web_content
 
 
 class WebContentExtractorTests(unittest.TestCase):
+    def test_extract_page_forwards_window_target_to_windows_live_extraction(self):
+        extractor = web_content.WebContentExtractor()
+
+        live_result = types.SimpleNamespace(
+            text="live tab text",
+            source="live_tab",
+            error=None,
+            is_useful=True,
+            quality_score=0.9,
+        )
+
+        with mock.patch(
+            "host_pc.web_content_windows.extract_windows_live_tab_text",
+            return_value=live_result,
+        ) as extract_live:
+            result = extractor.extract_page(
+                "https://example.com/article",
+                "Chrome",
+                platform="win32",
+                window_target=123,
+            )
+
+        self.assertEqual(result.text, "live tab text")
+        extract_live.assert_called_once_with("https://example.com/article", "Chrome", window_target=123)
+
+    def test_windows_flow_tries_live_tab_before_http_fallback(self):
+        extractor = web_content.WebContentExtractor()
+
+        live_result = types.SimpleNamespace(
+            text="",
+            source="live_tab",
+            error="empty",
+            is_useful=False,
+            quality_score=0.0,
+        )
+
+        with mock.patch(
+            "host_pc.web_content_windows.extract_windows_live_tab_text",
+            return_value=live_result,
+        ) as extract_windows, mock.patch.object(
+            web_content,
+            "_extract_http_text",
+            return_value=web_content.BrowserExtractionResult(
+                text="fetched page text",
+                source="http_fallback",
+                title=None,
+                error=None,
+                is_useful=True,
+                quality_score=0.72,
+            ),
+        ) as extract_http:
+            result = extractor.extract_page(
+                "https://example.com/article",
+                "Chrome",
+                platform="win32",
+                window_target=777,
+            )
+
+        self.assertEqual(result.text, "fetched page text")
+        self.assertEqual(result.source, "http_fallback")
+        extract_windows.assert_called_once_with(
+            "https://example.com/article",
+            "Chrome",
+            window_target=777,
+        )
+        extract_http.assert_called_once_with("https://example.com/article")
+
+    def test_http_text_result_includes_usefulness_fields(self):
+        real_import = __import__
+
+        class FakeResponse:
+            status_code = 200
+            text = "<html><body><p>hello world from tests</p></body></html>"
+
+        fake_requests = types.SimpleNamespace(
+            get=lambda *args, **kwargs: FakeResponse(),
+            exceptions=types.SimpleNamespace(
+                Timeout=TimeoutError,
+                ConnectionError=ConnectionError,
+            ),
+        )
+
+        fake_trafilatura = types.SimpleNamespace(
+            extract=lambda *args, **kwargs: "hello world from tests",
+        )
+
+        def import_with_http_success(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "requests":
+                return fake_requests
+            if name == "trafilatura":
+                return fake_trafilatura
+            return real_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=import_with_http_success):
+            result = web_content._extract_http_text("https://example.com/article")
+
+        self.assertTrue(result.is_useful)
+        self.assertEqual(result.error, None)
+        self.assertEqual(result.text, "hello world from tests")
+        self.assertGreater(result.quality_score, 0.0)
+
     def test_google_docs_prefers_export_first_strategy(self):
         extractor = web_content.WebContentExtractor()
 
@@ -27,6 +129,14 @@ class WebContentExtractorTests(unittest.TestCase):
     def test_windows_external_url_uses_http_fallback(self):
         extractor = web_content.WebContentExtractor()
 
+        live_result = types.SimpleNamespace(
+            text=None,
+            source="live_tab",
+            error="empty",
+            is_useful=False,
+            quality_score=0.0,
+        )
+
         with mock.patch.object(
             web_content,
             "_extract_http_text",
@@ -36,7 +146,10 @@ class WebContentExtractorTests(unittest.TestCase):
                 title=None,
                 error=None,
             ),
-        ) as extract_http:
+        ) as extract_http, mock.patch(
+            "host_pc.web_content_windows.extract_windows_live_tab_text",
+            return_value=live_result,
+        ):
             result = extractor.extract_page(
                 "https://example.com/article",
                 "Google Chrome",
@@ -46,6 +159,72 @@ class WebContentExtractorTests(unittest.TestCase):
         self.assertEqual(result.source, "http_fallback")
         self.assertEqual(result.text, "fetched page text")
         extract_http.assert_called_once_with("https://example.com/article")
+
+    def test_windows_url_less_browser_extraction_still_tries_windows_live_tab(self):
+        extractor = web_content.WebContentExtractor()
+
+        live_result = types.SimpleNamespace(
+            text="live tab content",
+            source="live_tab",
+            error=None,
+            is_useful=True,
+            quality_score=0.8,
+        )
+
+        with mock.patch(
+            "host_pc.web_content_windows.extract_windows_live_tab_text",
+            return_value=live_result,
+        ) as extract_live, mock.patch.object(
+            web_content,
+            "_extract_http_text",
+        ) as extract_http:
+            result = extractor.extract_page(
+                "",
+                "Chrome",
+                platform="win32",
+            )
+
+        extract_live.assert_called_once_with("", "Chrome", window_target=None)
+        extract_http.assert_not_called()
+        self.assertEqual(result.text, "live tab content")
+        self.assertEqual(result.source, "live_tab")
+        self.assertTrue(result.is_useful)
+
+    def test_windows_url_less_browser_extraction_returns_non_fetchable_when_live_fails(self):
+        extractor = web_content.WebContentExtractor()
+
+        live_result = types.SimpleNamespace(
+            text=None,
+            source="live_tab",
+            error="Unable to read live content",
+            is_useful=False,
+            quality_score=0.0,
+        )
+
+        with mock.patch(
+            "host_pc.web_content_windows.extract_windows_live_tab_text",
+            return_value=live_result,
+        ) as extract_live:
+            result = extractor.extract_page(
+                "",
+                "Chrome",
+                platform="win32",
+            )
+
+        extract_live.assert_called_once_with("", "Chrome", window_target=None)
+        self.assertEqual(result.source, "live_tab")
+        self.assertIsNone(result.text)
+        self.assertEqual(
+            result.error,
+            "Unable to read live content",
+        )
+
+    def test_supported_windows_browser_names_are_normalized(self):
+        self.assertTrue(web_content._is_supported_windows_browser("Chrome"))
+        self.assertTrue(web_content._is_supported_windows_browser("chrome.exe"))
+        self.assertTrue(web_content._is_supported_windows_browser("Google Chrome"))
+        self.assertTrue(web_content._is_supported_windows_browser("Microsoft Edge"))
+        self.assertFalse(web_content._is_supported_windows_browser("Notepad"))
 
     def test_windows_unsupported_browser_returns_structured_failure(self):
         extractor = web_content.WebContentExtractor()

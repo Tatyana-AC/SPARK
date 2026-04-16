@@ -81,10 +81,17 @@ def _get_macos_browser_tab(app_name: str) -> Optional[BrowserTabInfo]:
     )
 
 
-def _get_windows_browser_tab(app_name: str) -> Optional[BrowserTabInfo]:
+def _get_windows_browser_tab(
+    app_name: str, window_target: Optional[int] = None
+) -> Optional[BrowserTabInfo]:
     """Get browser metadata on Windows.
 
-    This is import-safe and fails closed when optional dependencies are absent.
+    Args:
+        app_name: Browser process name.
+        window_target: Optional window handle to query directly.
+
+    Returns:
+        Optional BrowserTabInfo instance.
     """
     try:
         from .browser_windows import get_browser_tab as _windows_get_browser_tab
@@ -92,13 +99,15 @@ def _get_windows_browser_tab(app_name: str) -> Optional[BrowserTabInfo]:
         logger.debug("Failed to import Windows browser helper: %s", exc)
         return None
 
-    return _windows_get_browser_tab(app_name)
+    return _windows_get_browser_tab(app_name, window_target)
 
 
-def get_browser_tab(app_name: str) -> Optional[BrowserTabInfo]:
+def get_browser_tab(
+    app_name: str, window_target: Optional[int] = None
+) -> Optional[BrowserTabInfo]:
     """Dispatch browser metadata lookup by platform."""
     if sys.platform == "darwin":
         return _get_macos_browser_tab(app_name)
     if sys.platform == "win32":
-        return _get_windows_browser_tab(app_name)
+        return _get_windows_browser_tab(app_name, window_target)
     return None

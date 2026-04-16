@@ -8,6 +8,7 @@ non-Windows environments.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -15,9 +16,28 @@ logger = logging.getLogger(__name__)
 
 WINDOWS_BROWSER_ALIASES = {
     "chrome": "chrome",
+    "google chrome": "chrome",
     "msedge": "msedge",
+    "microsoft edge": "msedge",
     "brave": "brave",
+    "brave browser": "brave",
 }
+
+
+def _normalize_browser_name(app_name: str) -> str:
+    """Return a canonical Windows browser process/browser name."""
+
+    normalized = (app_name or "").strip().lower()
+    if normalized.endswith(".exe"):
+        normalized = normalized[:-4]
+    return WINDOWS_BROWSER_ALIASES.get(normalized, normalized)
+
+
+def _is_supported_browser(app_name: str) -> bool:
+    """Return True when browser metadata helpers support the app name."""
+
+    normalized = _normalize_browser_name(app_name)
+    return normalized in WINDOWS_BROWSER_ALIASES.values()
 
 
 def _load_windows_libraries() -> tuple[Optional[Any], Optional[Any], Optional[Any]]:
@@ -38,7 +58,7 @@ def _load_windows_libraries() -> tuple[Optional[Any], Optional[Any], Optional[An
         return None, None, None
 
 
-def _connect_to_active_window():
+def _connect_to_active_window(window_handle: Optional[int] = None):
     """Connect to the active window using pywinauto and return a wrapper."""
 
     win32gui, _, Application = _load_windows_libraries()
@@ -46,7 +66,7 @@ def _connect_to_active_window():
         return None
 
     try:
-        hwnd = win32gui.GetForegroundWindow()
+        hwnd = win32gui.GetForegroundWindow() if window_handle is None else window_handle
         if not hwnd:
             logger.debug("No active window handle for browser metadata")
             return None
@@ -99,6 +119,32 @@ def _is_browser_address(value: str) -> bool:
     )
 
 
+_SCHEMELESS_WEB_PATTERN = re.compile(
+    r"^(?P<host>(?:localhost|(?:[a-z0-9-]+\.)+[a-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?)(?P<rest>[/?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_browser_address(value: str) -> Optional[str]:
+    candidate = (value or "").strip()
+    if not candidate:
+        return None
+
+    if _is_browser_address(candidate):
+        return candidate
+
+    if " " in candidate:
+        return None
+
+    match = _SCHEMELESS_WEB_PATTERN.match(candidate)
+    if not match:
+        return None
+
+    host = match.group("host") or ""
+    scheme = "http://" if host.lower().startswith("localhost") or re.match(r"^\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?$", host) else "https://"
+    return f"{scheme}{candidate}"
+
+
 def _find_address_bar(window: Any) -> Any:
     """Heuristically locate the browser address/search control."""
 
@@ -142,11 +188,26 @@ def _find_address_bar(window: Any) -> Any:
             pass
 
         control_value = _control_text(control)
-        return _is_browser_address(control_value)
+        return _normalize_browser_address(control_value) is not None
 
-    for control in candidate_controls:
+    def candidate_score(control: Any) -> tuple[int, int]:
+        score = 0
+        control_value = _control_text(control)
+        normalized_value = _normalize_browser_address(control_value)
+        if normalized_value:
+            score += 100
         if name_like_address(control):
-            return control
+            score += 25
+        try:
+            if control.friendly_class_name() == "Edit":
+                score += 5
+        except Exception:
+            pass
+        return score, -candidate_controls.index(control)
+
+    best_control = max(candidate_controls, key=candidate_score)
+    if candidate_score(best_control)[0] > 0:
+        return best_control
 
     return candidate_controls[0] if candidate_controls else None
 
@@ -158,8 +219,9 @@ def _read_address_bar_url(address_bar: Any) -> Optional[str]:
         return None
 
     value = _control_text(address_bar)
-    if value and _is_browser_address(value):
-        return value
+    normalized = _normalize_browser_address(value)
+    if normalized:
+        return normalized
 
     return None
 
@@ -176,14 +238,15 @@ def _read_tab_title(window: Any) -> Optional[str]:
         return None
 
 
-def get_browser_tab(app_name: str) -> Optional["BrowserTabInfo"]:
+def get_browser_tab(
+    app_name: str, window_target: Optional[int] = None
+) -> Optional["BrowserTabInfo"]:
     """Return active browser metadata for supported Windows browser processes."""
 
-    normalized = (app_name or "").strip().lower()
-    if normalized not in WINDOWS_BROWSER_ALIASES:
+    if not _is_supported_browser(app_name):
         return None
 
-    window = _connect_to_active_window()
+    window = _connect_to_active_window(window_target)
     if not window:
         return None
 

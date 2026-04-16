@@ -110,6 +110,7 @@ class WindowsAccessibilityProvider(AccessibilityProvider):
                 app_name=app_name,
                 process_name=process_name,
                 pid=pid,
+                window_handle=hwnd,
                 bounds=bounds
             )
         
