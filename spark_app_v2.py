@@ -116,6 +116,12 @@ logging.basicConfig(level=logging.INFO,
 configure_app_logging()
 logger = logging.getLogger(__name__)
 
+_IGNORED_POLL_WINDOW_TITLES = {
+    "spark app",
+    "spark full debug watcher",
+    "jetson db viewer",
+}
+
 
 def _same_poll_target(first, second) -> bool:
     if first is None or second is None:
@@ -125,6 +131,11 @@ def _same_poll_target(first, second) -> bool:
         and getattr(first, "app_name", None) == getattr(second, "app_name", None)
         and getattr(first, "title", None) == getattr(second, "title", None)
     )
+
+
+def _is_ignored_poll_window(info) -> bool:
+    title = (getattr(info, "title", "") or "").strip().lower()
+    return title in _IGNORED_POLL_WINDOW_TITLES
 
 HOTKEY_CONFIG = get_hotkey_config()
 CAPTURE_HOTKEY_LABEL = HOTKEY_CONFIG["capture_label"]
@@ -563,6 +574,7 @@ class JetsonDbViewerDialog(QDialog):
 
     def _start_refresh(self):
         self._refresh_request_token += 1
+        self._table_load_token += 1
         request_token = self._refresh_request_token
         self.refresh_in_flight = True
         self.refresh_btn.setEnabled(False)
@@ -606,19 +618,29 @@ class JetsonDbViewerDialog(QDialog):
             return
 
         prior_snapshot = self.current_snapshot
+        selected_table = self.current_table if self.current_table in table_names else (table_names[0] if table_names else "")
         self.current_snapshot = snapshot
-        self.current_table = table_names[0] if table_names else ""
+        self.current_table = selected_table
         self.current_table_has_more = False
         self._current_table_columns = []
         self.row_offset = 0
 
-        self._populate_table_selector(table_names)
-        if table_page is not None:
-            self._render_table_page(table_page)
-            self.current_table_has_more = bool(table_page.has_more)
-            self.row_offset = len(table_page.rows)
+        self._populate_table_selector(table_names, selected_table)
+        display_page = table_page
+        if selected_table and table_page is not None and table_page.table_name != selected_table:
+            display_page = load_table_rows(
+                snapshot.path,
+                selected_table,
+                limit=self._page_size,
+                offset=0,
+            )
+
+        if display_page is not None:
+            self._render_table_page(display_page)
+            self.current_table_has_more = bool(display_page.has_more)
+            self.row_offset = len(display_page.rows)
             self.status_label.setText(
-                f"Loaded {len(table_page.rows)} rows from {table_page.table_name}"
+                f"Loaded {len(display_page.rows)} rows from {display_page.table_name}"
             )
         else:
             self.rows_table.clearContents()
@@ -648,12 +670,12 @@ class JetsonDbViewerDialog(QDialog):
         self.refresh_btn.setEnabled(True)
         self.load_more_btn.setEnabled(bool(self.current_table and self.current_table_has_more))
 
-    def _populate_table_selector(self, table_names: list[str]):
+    def _populate_table_selector(self, table_names: list[str], selected_table: str | None = None):
         self.table_selector.blockSignals(True)
         self.table_selector.clear()
         if table_names:
             self.table_selector.addItems(table_names)
-            self.table_selector.setCurrentText(table_names[0])
+            self.table_selector.setCurrentText(selected_table or table_names[0])
         self.table_selector.blockSignals(False)
         if not table_names:
             self.load_more_btn.setEnabled(False)
@@ -1536,7 +1558,7 @@ class SparkPanel(QWidget):
             self._push_poll_capture_line("No active window detected")
             return
         # Ignore the SPARK panel itself
-        if info.pid == os.getpid():
+        if info.pid == os.getpid() or _is_ignored_poll_window(info):
             return
         # --- PRIVACY CHECK ---
         if not self.privacy_guard.is_safe(info.bundle_id, info.title):
@@ -1619,7 +1641,8 @@ class SparkPanel(QWidget):
 
         if (text and text.strip() and source) or metadata_only_browser_switch:
             latest_info = self.manager.get_active_window_info()
-            if not _same_poll_target(info, latest_info):
+            browser_bound_sample = bool(tab and self._is_browser_app_for_poll(info.app_name))
+            if not browser_bound_sample and not _same_poll_target(info, latest_info):
                 logger.info(
                     "[POLL] Dropped stale context sample because active window changed before commit"
                 )

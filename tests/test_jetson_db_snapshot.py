@@ -408,6 +408,90 @@ def test_list_user_tables_prefers_known_tables_and_sorts_deterministically_when_
     ]
 
 
+def test_list_user_tables_closes_snapshot_connection_even_with_context_manager(tmp_path, monkeypatch):
+    class _FakeConnection:
+        def __init__(self):
+            self.closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            class _Rows:
+                def fetchall(self_inner):
+                    return [("sessions",)]
+
+            return _Rows()
+
+        def close(self):
+            self.closed = True
+
+    fake_connection = _FakeConnection()
+    monkeypatch.setattr(snapshot_mod, "open_snapshot_connection", lambda _path: fake_connection)
+
+    tables = list_user_tables(tmp_path / "snapshot.db")
+
+    assert tables == ["sessions"]
+    assert fake_connection.closed is True
+
+
+def test_load_table_rows_closes_snapshot_connection_even_with_context_manager(tmp_path, monkeypatch):
+    class _FakeConnection:
+        def __init__(self):
+            self.closed = False
+            self.row_factory = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, *_args, **_kwargs):
+            if "sqlite_master" in sql:
+                class _Rows:
+                    def fetchall(self_inner):
+                        return [("sessions",)]
+
+                return _Rows()
+            if "PRAGMA table_info" in sql:
+                class _Rows:
+                    def fetchall(self_inner):
+                        return []
+
+                return _Rows()
+            class _Rows:
+                def fetchall(self_inner):
+                    return [sqlite3.Row]
+
+            return _Rows()
+
+        def close(self):
+            self.closed = True
+
+    fake_connection = _FakeConnection()
+    monkeypatch.setattr(snapshot_mod, "open_snapshot_connection", lambda _path: fake_connection)
+    monkeypatch.setattr(snapshot_mod, "list_user_tables", lambda _path: ["sessions"])
+    monkeypatch.setattr(snapshot_mod, "_table_order_clause", lambda *_args, **_kwargs: None)
+
+    class _Row(dict):
+        pass
+
+    fake_connection.execute = lambda sql, *_args, **_kwargs: type(
+        "_Rows",
+        (),
+        {"fetchall": lambda self: [_Row(id=1, text="row1")]},
+    )()
+
+    page = load_table_rows(tmp_path / "snapshot.db", "sessions", limit=1, offset=0)
+
+    assert page.rows == [{"id": 1, "text": "row1"}]
+    assert fake_connection.closed is True
+
+
 def test_default_jetson_db_path_is_used_when_no_source_path_is_provided(tmp_path, monkeypatch):
     default_source = tmp_path / "default_source.db"
     _make_snapshot_source_db(default_source)

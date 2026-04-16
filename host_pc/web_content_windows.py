@@ -56,9 +56,10 @@ STRONG_BROWSER_SHELL_TOKENS = {
     "onetab",
     "bitwarden",
 }
+PAGE_BOILERPLATE_FRAGMENTS = {
+    "from wikipedia, the free encyclopedia",
+}
 WINDOWS_LIVE_EXTRACTION_BUDGET_SECONDS = 0.9
-WINDOWS_LIVE_EXTRACTION_MAX_CANDIDATES = 120
-MAX_AGGREGATED_CHARS = 4000
 
 
 @dataclass
@@ -266,18 +267,15 @@ def _collect_candidate_controls(window: Any) -> list[Any]:
 def _merge_candidate_text(parts: list[str]) -> str:
     merged: list[str] = []
     seen: set[str] = set()
-    total = 0
     for part in parts:
         normalized = _normalize_text(part)
         if not normalized or normalized in seen:
             continue
-        piece_len = len(normalized)
-        if total and total + 1 + piece_len > MAX_AGGREGATED_CHARS:
-            break
+        if normalized.lower() in PAGE_BOILERPLATE_FRAGMENTS:
+            continue
         seen.add(normalized)
         merged.append(normalized)
-        total += piece_len + (1 if total else 0)
-    return " ".join(merged)
+    return "\n\n".join(merged)
 
 
 def _aggregate_useful_candidates(candidates: list[WindowsLiveExtractionResult]) -> Optional[WindowsLiveExtractionResult]:
@@ -288,12 +286,18 @@ def _aggregate_useful_candidates(candidates: list[WindowsLiveExtractionResult]) 
     if not merged_text:
         return None
 
-    merged_result = evaluate_candidate(
-        ScoredTextCandidate(text=merged_text, source_hint=candidates[0].source or "uia_control")
+    source = next(
+        (candidate.source for candidate in candidates if candidate.source and candidate.source.startswith("uia_document")),
+        candidates[0].source or "uia_control",
     )
-    if not merged_result.is_useful:
-        return None
-    return merged_result
+    quality = max(candidate.quality_score for candidate in candidates)
+    return WindowsLiveExtractionResult(
+        text=merged_text,
+        source=source,
+        error=None,
+        is_useful=True,
+        quality_score=max(quality, 0.7),
+    )
 
 
 def extract_windows_live_tab_text(
@@ -332,7 +336,7 @@ def extract_windows_live_tab_text(
     controls = _collect_candidate_controls(window)
     start = time.monotonic()
 
-    for index, control in enumerate(controls[:WINDOWS_LIVE_EXTRACTION_MAX_CANDIDATES]):
+    for index, control in enumerate(controls):
         if time.monotonic() - start > WINDOWS_LIVE_EXTRACTION_BUDGET_SECONDS:
             if best_result and best_result.text:
                 return best_result
@@ -370,17 +374,12 @@ def extract_windows_live_tab_text(
             useful_candidates.append(evaluated)
             if not best_result or evaluated.quality_score > best_result.quality_score:
                 best_result = evaluated
-            if evaluated.quality_score >= 0.8:
-                return WindowsLiveExtractionResult(
-                    text=evaluated.text,
-                    source="live_tab",
-                    error=None,
-                    is_useful=True,
-                    quality_score=evaluated.quality_score,
-                )
 
     aggregated_result = _aggregate_useful_candidates(useful_candidates)
-    if aggregated_result and (not best_result or len(aggregated_result.text or "") > len(best_result.text or "")):
+    if aggregated_result and (
+        not best_result
+        or len(aggregated_result.text or "") > max(len(best_result.text or "") + 40, int(len(best_result.text or "") * 1.5))
+    ):
         return aggregated_result
 
     if best_result:

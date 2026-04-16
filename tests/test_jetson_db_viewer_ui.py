@@ -159,6 +159,45 @@ class JetsonDbViewerUiTests(unittest.TestCase):
         self.assertEqual(dialog.rows_table.item(1, 0).text(), "terminal")
         self.assertEqual(dialog.status_label.text(), "Loaded 2 rows from sessions")
 
+    def test_successful_refresh_preserves_selected_table_when_still_present(self):
+        dialog = spark_app_v2.JetsonDbViewerDialog()
+        dialog.current_snapshot = SnapshotHandle(path=Path("/tmp/old_snapshot.db"))
+        dialog.current_table = "button_events"
+        dialog._populate_table_selector(["sessions", "button_events"])
+        dialog.table_selector.setCurrentText("button_events")
+
+        snapshot = SnapshotHandle(path=Path("/tmp/new_snapshot.db"))
+        page = TablePage(
+            table_name="button_events",
+            rows=[{"button_id": 1, "timestamp": 123.0}],
+            has_more=False,
+        )
+
+        with (
+            mock.patch.object(spark_app_v2, "create_snapshot_with_retry", return_value=snapshot),
+            mock.patch.object(spark_app_v2, "list_user_tables", return_value=["sessions", "button_events"]),
+            mock.patch.object(spark_app_v2, "load_table_rows", side_effect=[page]),
+            mock.patch("spark_app_v2.threading.Thread", side_effect=_run_worker_thread_immediately),
+        ):
+            dialog._on_refresh()
+
+        self.assertEqual(dialog.current_table, "button_events")
+        self.assertEqual(dialog.table_selector.currentText(), "button_events")
+        self.assertEqual(dialog.rows_table.horizontalHeaderItem(0).text(), "button_id")
+
+    def test_refresh_increments_table_load_token_to_invalidate_stale_table_reads(self):
+        dialog = spark_app_v2.JetsonDbViewerDialog()
+        prior_token = dialog._table_load_token
+
+        with mock.patch("spark_app_v2.threading.Thread", side_effect=_run_worker_thread_immediately), mock.patch.object(
+            spark_app_v2,
+            "create_snapshot_with_retry",
+            side_effect=RuntimeError("refresh stop"),
+        ):
+            dialog._on_refresh_clicked()
+
+        self.assertEqual(dialog._table_load_token, prior_token + 1)
+
     def test_sessions_table_hides_internal_columns_and_formats_timestamps(self):
         dialog = spark_app_v2.JetsonDbViewerDialog()
 

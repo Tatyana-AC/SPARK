@@ -292,6 +292,48 @@ class WebContentWindowsTests(unittest.TestCase):
                 "_control_text",
                 side_effect=[title._text, frag1._text, frag2._text, frag3._text, frag4._text],
             ),
+        ): 
+            result = web_content_windows.extract_windows_live_tab_text(
+                "https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                "Chrome",
+                window_target=123,
+            )
+
+        self.assertTrue(result.is_useful)
+        self.assertTrue(result.text.startswith("The Boston Tea Party was a political protest"))
+        self.assertIn("political protest", result.text)
+        self.assertIn("Boston Harbor", result.text)
+        self.assertIn("\n\n", result.text)
+        self.assertGreater(len(result.text), len(frag2._text))
+
+    def test_live_extraction_does_not_truncate_aggregated_text_at_old_char_cap(self):
+        fragments = [
+            FakeControl(
+                text=(
+                    f"Paragraph {i}: The Boston Tea Party article contains detailed historical context "
+                    f"about protest, tea taxation, colonial resistance, and political escalation section {i}."
+                ),
+                control_type="Document",
+            )
+            for i in range(1, 50)
+        ]
+
+        with (
+            mock.patch.object(
+                web_content_windows.browser_windows,
+                "_connect_to_active_window",
+                return_value=FakeWindow("Boston Tea Party - Wikipedia - Google Chrome"),
+            ),
+            mock.patch.object(
+                web_content_windows,
+                "_collect_candidate_controls",
+                return_value=fragments,
+            ),
+            mock.patch.object(
+                web_content_windows.browser_windows,
+                "_control_text",
+                side_effect=[fragment._text for fragment in fragments],
+            ),
         ):
             result = web_content_windows.extract_windows_live_tab_text(
                 "https://en.wikipedia.org/wiki/Boston_Tea_Party",
@@ -300,10 +342,52 @@ class WebContentWindowsTests(unittest.TestCase):
             )
 
         self.assertTrue(result.is_useful)
-        self.assertIn("free encyclopedia", result.text)
-        self.assertIn("political protest", result.text)
-        self.assertIn("Boston Harbor", result.text)
-        self.assertGreater(len(result.text), len(frag2._text))
+        self.assertIn("Paragraph 1:", result.text)
+        self.assertIn("Paragraph 49:", result.text)
+        self.assertGreater(len(result.text), 4000)
+
+    def test_live_extraction_can_reach_useful_candidate_beyond_old_candidate_limit(self):
+        noise_controls = [
+            FakeControl(text=f"Noise {i} Search Profile Extensions", control_type="Pane")
+            for i in range(120)
+        ]
+        content = FakeControl(
+            text=(
+                "The Boston Tea Party was an act of protest on December 16, 1773 during the American Revolution."
+            ),
+            control_type="Document",
+        )
+        controls = noise_controls + [content]
+
+        with (
+            mock.patch.object(
+                web_content_windows.browser_windows,
+                "_connect_to_active_window",
+                return_value=FakeWindow("Boston Tea Party - Wikipedia - Google Chrome"),
+            ),
+            mock.patch.object(
+                web_content_windows,
+                "_collect_candidate_controls",
+                return_value=controls,
+            ),
+            mock.patch.object(
+                web_content_windows.browser_windows,
+                "_control_text",
+                side_effect=[control._text for control in controls],
+            ),
+            mock.patch(
+                "host_pc.web_content_windows.time.monotonic",
+                side_effect=[0.0] + [0.1] * 200,
+            ),
+        ):
+            result = web_content_windows.extract_windows_live_tab_text(
+                "https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                "Chrome",
+                window_target=123,
+            )
+
+        self.assertTrue(result.is_useful)
+        self.assertIn("act of protest on December 16, 1773", result.text)
 
 
 if __name__ == "__main__":

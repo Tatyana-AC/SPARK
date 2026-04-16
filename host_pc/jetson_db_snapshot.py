@@ -74,7 +74,8 @@ def open_snapshot_connection(snapshot_path: Path | str) -> sqlite3.Connection:
 
 def list_user_tables(snapshot_path: Path | str) -> list[str]:
     """List user tables in deterministic display order."""
-    with open_snapshot_connection(snapshot_path) as connection:
+    connection = open_snapshot_connection(snapshot_path)
+    try:
         rows = connection.execute(
             """
             SELECT name
@@ -84,6 +85,8 @@ def list_user_tables(snapshot_path: Path | str) -> list[str]:
             ORDER BY name ASC
             """
         ).fetchall()
+    finally:
+        connection.close()
 
     tables = [row[0] for row in rows]
     preferred = [name for name in ("sessions", "button_events") if name in tables]
@@ -127,7 +130,8 @@ def load_table_rows(
     _validate_table_name(snapshot_path, table_name)
     page_size = limit + 1
 
-    with open_snapshot_connection(snapshot_path) as connection:
+    connection = open_snapshot_connection(snapshot_path)
+    try:
         connection.row_factory = sqlite3.Row
         order_clause = _table_order_clause(connection, table_name)
         query = (
@@ -136,6 +140,8 @@ def load_table_rows(
             "LIMIT ? OFFSET ?"
         )
         rows = connection.execute(query, (page_size, offset)).fetchall()
+    finally:
+        connection.close()
 
     has_more = len(rows) > limit
     row_dicts = [dict(row) for row in rows[:limit]]
