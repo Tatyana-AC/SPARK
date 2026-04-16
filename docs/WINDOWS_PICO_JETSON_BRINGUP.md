@@ -162,6 +162,12 @@ Before launching another copy, make sure older `spark_app_v2.py` processes are c
 - `read error`
 - Raw HID timeouts
 
+Process note:
+
+- On Windows, launching `spark_app_v2.py` from `.venv\Scripts\python.exe` can appear as a parent/child `python.exe` pair in process listings.
+- Treat that launcher pair as one app start, not as proof that two independent SPARK app instances are running.
+- Only count it as a duplicate-host problem when you see multiple independent launch chains or multiple visible app windows.
+
 ## 7. End-to-end verification
 
 Minimum checks:

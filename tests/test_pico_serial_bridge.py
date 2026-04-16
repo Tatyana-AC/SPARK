@@ -44,6 +44,18 @@ class FailingUART(FakeUART):
         raise OSError("uart write failed")
 
 
+class PartialWriteUART(FakeUART):
+    def __init__(self, accepted_sizes, payload=b""):
+        super().__init__(payload=payload)
+        self._accepted_sizes = list(accepted_sizes)
+
+    def write(self, data):
+        accepted = self._accepted_sizes.pop(0) if self._accepted_sizes else len(data)
+        accepted = max(0, min(int(accepted), len(data)))
+        self.writes.append(bytes(data[:accepted]))
+        return accepted
+
+
 class SerialBridgeTests(unittest.TestCase):
     def test_relay_once_forwards_cdc_bytes_to_uart_in_bounded_chunk(self):
         from pico.serial_bridge import SerialBridge
@@ -57,6 +69,19 @@ class SerialBridgeTests(unittest.TestCase):
         self.assertEqual(written, 8)
         self.assertEqual(uart.writes, [b"abcdefgh"])
         self.assertEqual(cdc.in_waiting, 18)
+
+    def test_relay_once_retries_until_full_chunk_is_written_to_uart(self):
+        from pico.serial_bridge import SerialBridge
+
+        cdc = FakeCDC(b"abcdefgh")
+        uart = PartialWriteUART([3, 3, 2])
+        bridge = SerialBridge(cdc, uart)
+
+        written = bridge.relay_once(max_chunk_size=8)
+
+        self.assertEqual(written, 8)
+        self.assertEqual(uart.writes, [b"abc", b"def", b"gh"])
+        self.assertEqual(cdc.in_waiting, 0)
 
     def test_relay_once_does_not_consume_uart_response_bytes(self):
         from pico.serial_bridge import SerialBridge

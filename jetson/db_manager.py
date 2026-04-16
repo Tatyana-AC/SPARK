@@ -18,6 +18,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_SESSION_RECENCY_ORDER = "COALESCE(host_observed_at, updated_at) DESC, id DESC"
 
 
 def _normalize(value: str | None) -> str:
@@ -97,7 +98,7 @@ class JetsonDB:
 
     def _restore_active_session(self) -> None:
         row = self._conn.execute(
-            "SELECT id, context_key FROM sessions ORDER BY updated_at DESC, id DESC LIMIT 1"
+            f"SELECT id, context_key FROM sessions ORDER BY {_SESSION_RECENCY_ORDER} LIMIT 1"
         ).fetchone()
         if row is None:
             return
@@ -212,7 +213,7 @@ class JetsonDB:
 
     def get_recent_sessions(self, limit: int = 20):
         return self._conn.execute(
-            "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?",
+            f"SELECT * FROM sessions ORDER BY {_SESSION_RECENCY_ORDER} LIMIT ?",
             (limit,),
         ).fetchall()
 

@@ -114,6 +114,16 @@ logging.basicConfig(level=logging.INFO,
 configure_app_logging()
 logger = logging.getLogger(__name__)
 
+
+def _same_poll_target(first, second) -> bool:
+    if first is None or second is None:
+        return False
+    return (
+        getattr(first, "pid", None) == getattr(second, "pid", None)
+        and getattr(first, "app_name", None) == getattr(second, "app_name", None)
+        and getattr(first, "title", None) == getattr(second, "title", None)
+    )
+
 HOTKEY_CONFIG = get_hotkey_config()
 CAPTURE_HOTKEY_LABEL = HOTKEY_CONFIG["capture_label"]
 RELEASE_HOTKEY_LABEL = HOTKEY_CONFIG["release_label"]
@@ -1446,6 +1456,12 @@ class SparkPanel(QWidget):
         #Edit 
 
         if text and text.strip() and source:
+            latest_info = self.manager.get_active_window_info()
+            if not _same_poll_target(info, latest_info):
+                logger.info(
+                    "[POLL] Dropped stale context sample because active window changed before commit"
+                )
+                return
             preview = text[:120].replace("\n", " ")
             self._push_poll_capture_line(f"[{info.app_name}] {preview}")
             self.tracker.update(info, text, source, tab=tab)

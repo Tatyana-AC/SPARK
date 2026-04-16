@@ -290,6 +290,45 @@ def test_load_table_rows_pages_sessions_newest_first(tmp_path):
     assert not second_page.has_more
 
 
+def test_load_table_rows_orders_sessions_by_host_observed_at_before_updated_at(tmp_path):
+    source_path = tmp_path / "source.db"
+    conn = sqlite3.connect(source_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE sessions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context_key TEXT NOT NULL,
+                content_fingerprint TEXT NOT NULL,
+                app_name TEXT NOT NULL,
+                window_title TEXT NOT NULL,
+                process_name TEXT NOT NULL,
+                pid INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                tab_title TEXT,
+                url TEXT,
+                text TEXT NOT NULL DEFAULT '',
+                host_observed_at REAL,
+                started_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            INSERT INTO sessions (context_key, content_fingerprint, app_name, window_title, process_name, pid, source, text, host_observed_at, started_at, updated_at)
+            VALUES
+              ('a', 'a', 'older-host', 'older-host', 'a', 1, 'a', 'row1', 100.0, 10.0, 500.0),
+              ('b', 'b', 'newer-host', 'newer-host', 'b', 2, 'b', 'row2', 300.0, 20.0, 100.0),
+              ('c', 'c', 'middle-host', 'middle-host', 'c', 3, 'c', 'row3', 200.0, 30.0, 400.0);
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    handle = create_validated_snapshot(source_path)
+    first_page = load_table_rows(handle.path, "sessions", limit=3, offset=0)
+
+    assert [row["app_name"] for row in first_page.rows] == ["newer-host", "middle-host", "older-host"]
+
+
 def test_load_table_rows_uses_primary_key_order_for_without_rowid_table(tmp_path):
     source_path = tmp_path / "without_rowid.db"
     conn = sqlite3.connect(source_path)

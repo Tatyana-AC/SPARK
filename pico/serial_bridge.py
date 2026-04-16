@@ -11,6 +11,14 @@ class SerialBridge:
         read_size = min(max_chunk_size, available)
         chunk = self._cdc_data.read(read_size)
         if chunk:
-            self._uart.write(chunk)
+            offset = 0
+            while offset < len(chunk):
+                written = self._uart.write(chunk[offset:])
+                if written is None:
+                    written = 0
+                written = int(written)
+                if written <= 0:
+                    raise OSError("uart write returned no progress")
+                offset += written
             return len(chunk)
         return 0

@@ -141,6 +141,20 @@ class SerialSenderTests(unittest.TestCase):
         self.assertEqual(parser_packets[0]["type"], PKT_CONTEXT_UPDATE)
         self.assertEqual(parser_packets[0]["text"], "updated")
 
+    def test_send_context_new_preserves_full_text_payload(self):
+        sender = serial_sender.SerialSender(port="COM7")
+        sender._serial = FakeSerialPort()
+        parser_packets = []
+        parser = PacketParser(on_packet=parser_packets.append)
+
+        ok = sender.send_context_new(make_snapshot(text="x" * 2000))
+
+        self.assertTrue(ok)
+        parser.feed(sender._serial.writes[0])
+        self.assertEqual(parser_packets[0]["type"], PKT_CONTEXT_NEW)
+        self.assertEqual(len(parser_packets[0]["text"]), 2000)
+        self.assertEqual(parser_packets[0]["text"], "x" * 2000)
+
     def test_send_raw_appends_eot_when_requested(self):
         sender = serial_sender.SerialSender(port="COM7")
         sender._serial = FakeSerialPort()

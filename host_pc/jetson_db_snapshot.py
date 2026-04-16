@@ -105,7 +105,7 @@ def _infer_fallback_table_order(connection: sqlite3.Connection, table_name: str)
 
 def _table_order_clause(connection: sqlite3.Connection, table_name: str) -> str | None:
     if table_name == "sessions":
-        return "updated_at DESC, id DESC"
+        return "COALESCE(host_observed_at, updated_at) DESC, id DESC"
     if table_name == "button_events":
         return "timestamp DESC, id DESC"
     return _infer_fallback_table_order(connection, table_name)
