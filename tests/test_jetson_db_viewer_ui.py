@@ -1,5 +1,6 @@
 import unittest
 import contextlib
+import datetime as dt
 from pathlib import Path
 from unittest import mock
 from urllib.parse import unquote
@@ -42,6 +43,8 @@ class JetsonDbViewerUiTests(unittest.TestCase):
         dialog = spark_app_v2.JetsonDbViewerDialog()
 
         self.assertEqual(dialog.windowTitle(), "Jetson DB Viewer")
+        self.assertEqual(dialog.width(), 1400)
+        self.assertEqual(dialog.height(), 920)
         self.assertTrue(dialog.refresh_btn.isEnabled())
         self.assertEqual(dialog.status_label.text(), "Ready")
         self.assertEqual(dialog.status_label.property("read_only"), True)
@@ -54,6 +57,33 @@ class JetsonDbViewerUiTests(unittest.TestCase):
         self.assertEqual(dialog.row_offset, 0)
         self.assertFalse(dialog.refresh_in_flight)
         self.assertEqual(dialog._refresh_request_token, 0)
+        self.assertTrue(dialog.rows_table.wordWrap())
+
+    def test_showing_dialog_auto_refreshes_once(self):
+        dialog = spark_app_v2.JetsonDbViewerDialog()
+        snapshot = SnapshotHandle(path=Path("/tmp/snapshot.db"))
+
+        with (
+            mock.patch.object(spark_app_v2, "create_snapshot_with_retry", return_value=snapshot),
+            mock.patch.object(spark_app_v2, "list_user_tables", return_value=["sessions"]),
+            mock.patch.object(
+                spark_app_v2,
+                "load_table_rows",
+                return_value=TablePage(
+                    table_name="sessions",
+                    rows=[{"app_name": "chrome", "text": "session one"}],
+                    has_more=False,
+                ),
+            ),
+            mock.patch("spark_app_v2.threading.Thread", side_effect=_run_worker_thread_immediately),
+        ):
+            dialog.show()
+            self.app.processEvents()
+
+        self.assertEqual(dialog._refresh_request_token, 1)
+        self.assertEqual(dialog.rows_table.rowCount(), 1)
+        self.assertEqual(dialog.status_label.text(), "Loaded 1 rows from sessions")
+        dialog.close()
 
     def test_refresh_click_disables_button_until_load_starts(self):
         dialog = spark_app_v2.JetsonDbViewerDialog()
@@ -106,8 +136,8 @@ class JetsonDbViewerUiTests(unittest.TestCase):
                 return_value=TablePage(
                     table_name="sessions",
                     rows=[
-                        {"id": 1, "text": "session one"},
-                        {"id": 2, "text": "session two"},
+                        {"id": 1, "app_name": "chrome", "text": "session one"},
+                        {"id": 2, "app_name": "terminal", "text": "session two"},
                     ],
                     has_more=False,
                 ),
@@ -124,10 +154,67 @@ class JetsonDbViewerUiTests(unittest.TestCase):
         self.assertIsNotNone(dialog.current_snapshot)
         self.assertEqual(dialog.rows_table.rowCount(), 2)
         self.assertEqual(dialog.rows_table.columnCount(), 2)
-        self.assertEqual(dialog.rows_table.horizontalHeaderItem(0).text(), "id")
+        self.assertEqual(dialog.rows_table.horizontalHeaderItem(0).text(), "app_name")
         self.assertEqual(dialog.rows_table.item(0, 1).text(), "session one")
-        self.assertEqual(dialog.rows_table.item(1, 0).text(), "2")
+        self.assertEqual(dialog.rows_table.item(1, 0).text(), "terminal")
         self.assertEqual(dialog.status_label.text(), "Loaded 2 rows from sessions")
+
+    def test_sessions_table_hides_internal_columns_and_formats_timestamps(self):
+        dialog = spark_app_v2.JetsonDbViewerDialog()
+
+        dialog._render_table_page(
+            TablePage(
+                table_name="sessions",
+                rows=[
+                    {
+                        "id": 1,
+                        "context_key": "chrome|https://example.com",
+                        "content_fingerprint": "abc123",
+                        "app_name": "chrome",
+                        "window_title": "Theo stream",
+                        "process_name": "chrome.exe",
+                        "pid": 42,
+                        "source": "web_content",
+                        "tab_title": "Theo",
+                        "url": "https://youtube.com/watch?v=1",
+                        "text": "session one",
+                        "host_observed_at": 1776301308.9238226,
+                        "started_at": 946893268.691254,
+                        "updated_at": 946893300.0,
+                    }
+                ],
+                has_more=False,
+            )
+        )
+
+        headers = [dialog.rows_table.horizontalHeaderItem(i).text() for i in range(dialog.rows_table.columnCount())]
+        self.assertEqual(
+            headers,
+            ["app_name", "window_title", "url", "text", "host_observed_at"],
+        )
+        self.assertEqual(dialog.rows_table.item(0, 0).text(), "chrome")
+        self.assertEqual(
+            dialog.rows_table.item(0, 4).text(),
+            dt.datetime.fromtimestamp(1776301308.9238226).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    def test_sessions_text_column_wraps_and_expands_row_height(self):
+        dialog = spark_app_v2.JetsonDbViewerDialog()
+        long_text = "wrapped text " * 40
+
+        dialog.resize(700, 460)
+        dialog._render_table_page(
+            TablePage(
+                table_name="sessions",
+                rows=[{"app_name": "chrome", "text": long_text, "host_observed_at": 1776301308.9238226}],
+                has_more=False,
+            )
+        )
+
+        headers = [dialog.rows_table.horizontalHeaderItem(i).text() for i in range(dialog.rows_table.columnCount())]
+        text_col = headers.index("text")
+        self.assertEqual(dialog.rows_table.item(0, text_col).text(), long_text)
+        self.assertGreater(dialog.rows_table.rowHeight(0), dialog.rows_table.fontMetrics().height() + 8)
 
     def test_failed_refresh_keeps_last_good_snapshot_visible(self):
         dialog = spark_app_v2.JetsonDbViewerDialog()
@@ -277,7 +364,7 @@ class JetsonDbViewerUiTests(unittest.TestCase):
         self.assertEqual(dialog.current_table, "sessions")
         self.assertEqual(dialog.current_table_has_more, True)
         self.assertEqual(dialog.row_offset, 50)
-        self.assertEqual(dialog.rows_table.item(0, 0).text(), "1")
+        self.assertEqual(dialog.rows_table.item(0, 0).text(), "existing")
 
     def test_load_more_appends_next_page_for_selected_table(self):
         dialog = spark_app_v2.JetsonDbViewerDialog()
@@ -308,14 +395,13 @@ class JetsonDbViewerUiTests(unittest.TestCase):
 
         self.assertTrue(dialog.load_more_btn.isEnabled())
         self.assertEqual(dialog.rows_table.rowCount(), 2)
-        self.assertEqual(dialog.rows_table.item(1, 0).text(), "2")
+        self.assertEqual(dialog.rows_table.item(1, 0).text(), "session two")
 
         with mock.patch.object(spark_app_v2, "load_table_rows", side_effect=[second_page]) as load_rows_mock:
             dialog._on_load_more()
 
         self.assertEqual(dialog.rows_table.rowCount(), 3)
-        self.assertEqual(dialog.rows_table.item(2, 0).text(), "3")
-        self.assertEqual(dialog.rows_table.item(2, 1).text(), "session three")
+        self.assertEqual(dialog.rows_table.item(2, 0).text(), "session three")
         self.assertFalse(dialog.load_more_btn.isEnabled())
         self.assertEqual(dialog.status_label.text(), "Loaded 1 more rows from sessions")
         load_rows_mock.assert_called_once_with(snapshot.path, "sessions", limit=100, offset=2)
@@ -367,7 +453,7 @@ class JetsonDbViewerUiTests(unittest.TestCase):
             self.assertIsNone(dialog.current_snapshot)
             self.assertEqual(dialog.current_table, "sessions")
             self.assertEqual(dialog.rows_table.rowCount(), 1)
-            self.assertEqual(dialog.rows_table.item(0, 1).text(), "active row")
+            self.assertEqual(dialog.rows_table.item(0, 0).text(), "active row")
             self.assertFalse(dialog.refresh_in_flight)
 
     def test_stale_refresh_failure_after_close_is_inert(self):
@@ -395,7 +481,7 @@ class JetsonDbViewerUiTests(unittest.TestCase):
             self.assertEqual(dialog.current_snapshot, None)
             self.assertFalse(dialog.refresh_in_flight)
             self.assertEqual(dialog.rows_table.rowCount(), 1)
-            self.assertEqual(dialog.rows_table.item(0, 0).text(), "1")
+            self.assertEqual(dialog.rows_table.item(0, 0).text(), "live row")
             self.assertEqual(dialog.status_label.text(), "Refreshing Jetson DB snapshot…")
             self.assertFalse(dialog.load_more_btn.isEnabled())
             delete_snapshot.assert_called_once_with(prior_snapshot)
@@ -426,7 +512,7 @@ class JetsonDbViewerUiTests(unittest.TestCase):
         delete_snapshot.assert_called_once_with(prior_snapshot)
         self.assertIsNotNone(dialog.current_snapshot)
         self.assertEqual(dialog.current_snapshot.path, Path("/tmp/new_snapshot.db"))
-        self.assertEqual(dialog.rows_table.item(0, 1).text(), "new row")
+        self.assertEqual(dialog.rows_table.item(0, 0).text(), "new row")
 
 
 if __name__ == "__main__":

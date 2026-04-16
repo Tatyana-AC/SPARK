@@ -11,6 +11,7 @@ Hotkeys (global, work from any app):
 import os
 import sys
 import signal
+import datetime as dt
 import logging
 import logging.handlers
 import threading
@@ -479,11 +480,24 @@ class CustomContextDialog(QDialog):
 
 
 class JetsonDbViewerDialog(QDialog):
+    _HIDDEN_SESSION_COLUMNS = {
+        "id",
+        "context_key",
+        "content_fingerprint",
+        "process_name",
+        "pid",
+        "source",
+        "tab_title",
+        "started_at",
+        "updated_at",
+    }
+    _TIMESTAMP_COLUMNS = {"host_observed_at", "started_at", "updated_at"}
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Jetson DB Viewer")
         self.setModal(True)
-        self.resize(700, 460)
+        self.resize(1400, 920)
 
         self.current_snapshot = None
         self.current_table = ""
@@ -493,6 +507,7 @@ class JetsonDbViewerDialog(QDialog):
         self._refresh_request_token = 0
         self._table_load_token = 0
         self._is_closed = False
+        self._auto_refresh_pending = True
         self._page_size = 100
         self._current_table_columns: list[str] = []
         self._refresh_signals = JetsonDbRefreshSignals()
@@ -525,7 +540,14 @@ class JetsonDbViewerDialog(QDialog):
         layout.addWidget(self.status_label)
 
         self.rows_table = QTableWidget(0, 0, self)
+        self.rows_table.setWordWrap(True)
         layout.addWidget(self.rows_table)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._auto_refresh_pending:
+            self._auto_refresh_pending = False
+            QTimer.singleShot(0, self._on_refresh_clicked)
 
     def _on_refresh(self):
         self._on_refresh_clicked()
@@ -725,7 +747,7 @@ class JetsonDbViewerDialog(QDialog):
         self.load_more_btn.setEnabled(self.current_table_has_more)
 
     def _render_table_page(self, table_page: TablePage):
-        rows = table_page.rows
+        rows = self._display_rows_for_table(table_page.table_name, table_page.rows)
         if not rows:
             self.rows_table.clearContents()
             self.rows_table.setRowCount(0)
@@ -742,10 +764,14 @@ class JetsonDbViewerDialog(QDialog):
 
         for row_i, row in enumerate(rows):
             for col_i, key in enumerate(columns):
-                self.rows_table.setItem(row_i, col_i, QTableWidgetItem(str(row.get(key, ""))))
+                item = QTableWidgetItem(str(row.get(key, "")))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                self.rows_table.setItem(row_i, col_i, item)
+
+        self._resize_rows_for_content(columns)
 
     def _append_table_page(self, table_page: TablePage):
-        rows = table_page.rows
+        rows = self._display_rows_for_table(table_page.table_name, table_page.rows)
         if not rows:
             return
 
@@ -759,7 +785,42 @@ class JetsonDbViewerDialog(QDialog):
 
         for row_i, row in enumerate(rows):
             for col_i, key in enumerate(columns):
-                self.rows_table.setItem(start_row + row_i, col_i, QTableWidgetItem(str(row.get(key, ""))))
+                item = QTableWidgetItem(str(row.get(key, "")))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                self.rows_table.setItem(start_row + row_i, col_i, item)
+
+        self._resize_rows_for_content(columns)
+
+    @classmethod
+    def _format_viewer_timestamp(cls, value):
+        if value in (None, ""):
+            return ""
+        try:
+            return dt.datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError, OSError, OverflowError):
+            return str(value)
+
+    @classmethod
+    def _display_rows_for_table(cls, table_name: str, rows: list[dict]) -> list[dict]:
+        display_rows = []
+        for row in rows:
+            display_row = {}
+            for key, value in row.items():
+                if table_name == "sessions" and key in cls._HIDDEN_SESSION_COLUMNS:
+                    continue
+                if key in cls._TIMESTAMP_COLUMNS:
+                    display_row[key] = cls._format_viewer_timestamp(value)
+                else:
+                    display_row[key] = value
+            display_rows.append(display_row)
+        return display_rows
+
+    def _resize_rows_for_content(self, columns: list[str]) -> None:
+        if not columns:
+            return
+        if "text" in columns:
+            self.rows_table.setColumnWidth(columns.index("text"), 420)
+        self.rows_table.resizeRowsToContents()
 
     def closeEvent(self, event):
         self._is_closed = True
