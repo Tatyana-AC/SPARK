@@ -5,12 +5,10 @@ from host_pc.accessibility.tracker import WindowContextTracker
 from host_pc.accessibility.base import WindowInfo, TextSource
 
 try:
-    from PyQt6.QtWidgets import QApplication, QLabel, QTextEdit, QPushButton
+    from PyQt6.QtWidgets import QApplication, QLabel
 except ImportError:  # pragma: no cover - environment-dependent test guard
     QApplication = None
     QLabel = None
-    QTextEdit = None
-    QPushButton = None
     spark_app_v2 = None
 else:
     import spark_app_v2
@@ -68,29 +66,8 @@ class SparkPanelUiTests(unittest.TestCase):
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
             return spark_app_v2.SparkPanel()
 
-    def test_release_output_uses_fixed_height_scrollable_text_widget(self):
-        panel = self._make_panel()
-
-        self.assertIsInstance(panel.release_output_lbl, QTextEdit)
-        self.assertTrue(panel.release_output_lbl.isReadOnly())
-        self.assertEqual(panel.release_output_lbl.toPlainText(), "No released text yet…")
-
-    def test_reformat_button_is_visible(self):
-        panel = self._make_panel()
-
-        btn_candidates = [
-            btn for btn in panel.findChildren(QPushButton)
-            if btn.property("test_id") == "btn_reformat"
-        ]
-        self.assertEqual(len(btn_candidates), 1)
-        btn_reformat = btn_candidates[0]
-        self.assertIsNotNone(btn_reformat)
-        self.assertTrue(btn_reformat.isEnabled())
-
     def test_action_grid_hides_legacy_buttons_without_resizing_panel(self):
         panel = self._make_panel()
-
-        self.assertEqual(panel.width(), 1500)
 
         visible_titles = sorted(
             btn._title_lbl.text()

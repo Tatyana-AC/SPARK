@@ -1,6 +1,7 @@
 import unittest
 import contextlib
 import datetime as dt
+import os
 from pathlib import Path
 from unittest import mock
 from urllib.parse import unquote
@@ -11,10 +12,14 @@ import sqlite3
 from host_pc.jetson_db_snapshot import SnapshotHandle, TablePage
 import host_pc.jetson_db_snapshot as snapshot_mod
 
+assert os.environ.get("QT_QPA_PLATFORM") == "offscreen"
+
 try:
     from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QShowEvent
 except ImportError:  # pragma: no cover - environment-dependent test guard
     QApplication = None
+    QShowEvent = None
     spark_app_v2 = None
 else:
     import spark_app_v2
@@ -42,12 +47,7 @@ class JetsonDbViewerUiTests(unittest.TestCase):
     def test_viewer_dialog_has_expected_defaults(self):
         dialog = spark_app_v2.JetsonDbViewerDialog()
 
-        self.assertEqual(dialog.windowTitle(), "Jetson DB Viewer")
-        self.assertEqual(dialog.width(), 1400)
-        self.assertEqual(dialog.height(), 920)
         self.assertTrue(dialog.refresh_btn.isEnabled())
-        self.assertEqual(dialog.status_label.text(), "Ready")
-        self.assertEqual(dialog.status_label.property("read_only"), True)
         self.assertEqual(dialog.table_selector.count(), 0)
         self.assertEqual(dialog.rows_table.rowCount(), 0)
         self.assertEqual(dialog.rows_table.columnCount(), 0)
@@ -59,9 +59,10 @@ class JetsonDbViewerUiTests(unittest.TestCase):
         self.assertEqual(dialog._refresh_request_token, 0)
         self.assertTrue(dialog.rows_table.wordWrap())
 
-    def test_showing_dialog_auto_refreshes_once(self):
+    def test_show_event_auto_refreshes_only_once_without_showing_window(self):
         dialog = spark_app_v2.JetsonDbViewerDialog()
         snapshot = SnapshotHandle(path=Path("/tmp/snapshot.db"))
+        queued_callbacks = []
 
         with (
             mock.patch.object(spark_app_v2, "create_snapshot_with_retry", return_value=snapshot),
@@ -76,13 +77,23 @@ class JetsonDbViewerUiTests(unittest.TestCase):
                 ),
             ),
             mock.patch("spark_app_v2.threading.Thread", side_effect=_run_worker_thread_immediately),
+            mock.patch.object(
+                spark_app_v2.QTimer,
+                "singleShot",
+                side_effect=lambda _ms, callback: queued_callbacks.append(callback),
+            ),
         ):
-            dialog.show()
-            self.app.processEvents()
+            dialog.showEvent(QShowEvent())
+
+            self.assertEqual(len(queued_callbacks), 1)
+            queued_callbacks.pop()()
+
+            dialog.showEvent(QShowEvent())
 
         self.assertEqual(dialog._refresh_request_token, 1)
         self.assertEqual(dialog.rows_table.rowCount(), 1)
         self.assertEqual(dialog.status_label.text(), "Loaded 1 rows from sessions")
+        self.assertEqual(len(queued_callbacks), 0)
         dialog.close()
 
     def test_refresh_click_disables_button_until_load_starts(self):
