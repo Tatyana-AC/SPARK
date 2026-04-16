@@ -1,6 +1,8 @@
 import types
 import unittest
 from unittest import mock
+from host_pc.accessibility.tracker import WindowContextTracker
+from host_pc.accessibility.base import WindowInfo, TextSource
 
 try:
     from PyQt6.QtWidgets import QApplication, QLabel, QTextEdit, QPushButton
@@ -1129,8 +1131,85 @@ class SparkPanelUiTests(unittest.TestCase):
             "chrome",
             window_target=222,
         )
-        self.assertEqual(tracker.update.call_count, 0)
-        serial_sender.send_context_new.assert_not_called()
+        tracker.update.assert_called_once()
+        update_args, update_kwargs = tracker.update.call_args
+        self.assertEqual(update_args[0], info)
+        self.assertEqual(update_args[1], "")
+        self.assertEqual(update_args[2], spark_app_v2.TextSource.WEB_CONTENT)
+        self.assertEqual(update_kwargs["tab"], tab)
+
+    def test_poll_tick_sends_new_browser_session_immediately_when_only_metadata_is_available(self):
+        old_info = WindowInfo(
+            title="Old Tab - Google Chrome",
+            app_name="chrome",
+            process_name="chrome.exe",
+            pid=123,
+            bundle_id="chrome.exe",
+            window_handle=111,
+        )
+        new_info = WindowInfo(
+            title="Tab A - Google Chrome",
+            app_name="chrome",
+            process_name="chrome.exe",
+            pid=123,
+            bundle_id="chrome.exe",
+            window_handle=111,
+        )
+        tracker = WindowContextTracker()
+        tracker.update(
+            old_info,
+            "old tab text",
+            TextSource.WEB_CONTENT,
+            tab=types.SimpleNamespace(tab_title="Old Tab - Google Chrome", url="https://example.com/old"),
+        )
+
+        manager = mock.Mock()
+        manager.get_active_window_info.side_effect = [new_info, new_info]
+        manager.get_focused_element_text.return_value = None
+        manager.get_window_text.return_value = None
+
+        serial_sender = mock.Mock()
+        serial_sender.is_connected.return_value = True
+        serial_sender.send_context_new.return_value = True
+
+        web_extractor = mock.Mock()
+        web_extractor.extract_page.return_value = BrowserExtractionResult(
+            text=None,
+            source="live_tab",
+            title=None,
+            error="loading",
+            is_useful=False,
+        )
+
+        with (
+            mock.patch.object(spark_app_v2, "AccessibilityManager", return_value=manager),
+            mock.patch.object(spark_app_v2, "GlobalHotkeyManager", return_value=_DummyHotkeys()),
+            mock.patch.object(spark_app_v2, "WindowContextTracker", return_value=tracker),
+            mock.patch.object(spark_app_v2, "SparkHIDClient", return_value=mock.Mock()),
+            mock.patch.object(spark_app_v2, "SerialSender", return_value=serial_sender),
+            mock.patch.object(spark_app_v2, "LiveCaptureFeed", return_value=mock.Mock(lines=["Polling not started..."])),
+            mock.patch.object(
+                spark_app_v2,
+                "get_browser_tab",
+                return_value=types.SimpleNamespace(tab_title="Tab A - Google Chrome", url="https://example.com/tab-a"),
+            ),
+            mock.patch.object(spark_app_v2.SparkPanel, "_connect_hotkeys", return_value=None),
+            mock.patch.object(spark_app_v2.SparkPanel, "_connect_hid", return_value=None),
+            mock.patch.object(spark_app_v2.SparkPanel, "_restore_position", return_value=None),
+            mock.patch.object(spark_app_v2.sys, "platform", "win32"),
+        ):
+            panel = spark_app_v2.SparkPanel()
+            panel.web_extractor = web_extractor
+
+            panel._on_poll_tick()
+
+        current = tracker.get_current()
+        self.assertIsNotNone(current)
+        self.assertEqual(current.url, "https://example.com/tab-a")
+        self.assertEqual(current.text, "")
+        serial_sender.send_context_new.assert_called_once()
+        sent_snapshot = serial_sender.send_context_new.call_args.args[0]
+        self.assertEqual(sent_snapshot.url, "https://example.com/tab-a")
 
     def test_poll_tick_rejects_noisy_browser_output_and_uses_filtered_window_fallback(self):
         info = mock.Mock(

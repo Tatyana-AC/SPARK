@@ -37,8 +37,28 @@ BROWSER_NOISE_TOKENS = {
     "history",
     "help",
 }
+STRONG_BROWSER_SHELL_TOKENS = {
+    "back",
+    "forward",
+    "reload",
+    "address",
+    "bookmarks",
+    "extensions",
+    "profile",
+    "settings",
+    "menu",
+    "favorites",
+    "home",
+    "history",
+    "grammarly",
+    "ublock",
+    "origin",
+    "onetab",
+    "bitwarden",
+}
 WINDOWS_LIVE_EXTRACTION_BUDGET_SECONDS = 0.9
 WINDOWS_LIVE_EXTRACTION_MAX_CANDIDATES = 120
+MAX_AGGREGATED_CHARS = 4000
 
 
 @dataclass
@@ -95,6 +115,10 @@ def _noise_ratio(tokens: list[str]) -> float:
     return noise_count / float(len(tokens))
 
 
+def _strong_shell_token_count(tokens: list[str]) -> int:
+    return len({token for token in tokens if token in STRONG_BROWSER_SHELL_TOKENS})
+
+
 def evaluate_candidate(candidate: ScoredTextCandidate) -> WindowsLiveExtractionResult:
     text = _normalize_text(candidate.text)
     if not text:
@@ -128,6 +152,16 @@ def evaluate_candidate(candidate: ScoredTextCandidate) -> WindowsLiveExtractionR
     unique_ratio = len(set(tokens)) / float(len(tokens))
     label_ratio = _noise_ratio(tokens)
     repeat_ratio = _repeat_ratio(tokens)
+    strong_shell_count = _strong_shell_token_count(tokens)
+
+    if candidate.source_hint in {"focused_element", "full_window", "uia_pane", "uia_edit", "uia_control"} and strong_shell_count >= 3:
+        return WindowsLiveExtractionResult(
+            text=None,
+            source=candidate.source_hint,
+            error="candidate text rejected by heuristics",
+            is_useful=False,
+            quality_score=0.0,
+        )
 
     length_score = min(1.0, len(text) / 2000.0)
     quality_score = (
@@ -185,6 +219,24 @@ def _control_source_hint(control: Any) -> str:
     return "uia_control"
 
 
+def _looks_like_browser_chrome_candidate(text: str, app_name: str, window_title: str) -> bool:
+    normalized_text = _normalize_text(text).lower()
+    normalized_title = _normalize_text(window_title).lower()
+    normalized_app = (app_name or "").strip().lower()
+
+    if normalized_title and normalized_text == normalized_title:
+        return True
+
+    browser_brand_tokens = {"google chrome", "microsoft edge", "brave", "chrome", "msedge"}
+    if normalized_app:
+        browser_brand_tokens.add(normalized_app)
+
+    if any(token in normalized_text for token in browser_brand_tokens) and len(normalized_text) < 180:
+        return True
+
+    return False
+
+
 def _collect_candidate_controls(window: Any) -> list[Any]:
     controls = []
     if not window or not hasattr(window, "descendants"):
@@ -211,13 +263,44 @@ def _collect_candidate_controls(window: Any) -> list[Any]:
     return controls
 
 
+def _merge_candidate_text(parts: list[str]) -> str:
+    merged: list[str] = []
+    seen: set[str] = set()
+    total = 0
+    for part in parts:
+        normalized = _normalize_text(part)
+        if not normalized or normalized in seen:
+            continue
+        piece_len = len(normalized)
+        if total and total + 1 + piece_len > MAX_AGGREGATED_CHARS:
+            break
+        seen.add(normalized)
+        merged.append(normalized)
+        total += piece_len + (1 if total else 0)
+    return " ".join(merged)
+
+
+def _aggregate_useful_candidates(candidates: list[WindowsLiveExtractionResult]) -> Optional[WindowsLiveExtractionResult]:
+    if len(candidates) < 2:
+        return None
+
+    merged_text = _merge_candidate_text([candidate.text or "" for candidate in candidates])
+    if not merged_text:
+        return None
+
+    merged_result = evaluate_candidate(
+        ScoredTextCandidate(text=merged_text, source_hint=candidates[0].source or "uia_control")
+    )
+    if not merged_result.is_useful:
+        return None
+    return merged_result
+
+
 def extract_windows_live_tab_text(
     url: str,
     app_name: str,
     window_target: Optional[int] = None,
 ) -> WindowsLiveExtractionResult:
-    start = time.monotonic()
-
     try:
         window = browser_windows._connect_to_active_window(window_target)
     except Exception as exc:
@@ -239,7 +322,15 @@ def extract_windows_live_tab_text(
         )
 
     best_result: Optional[WindowsLiveExtractionResult] = None
+    useful_candidates: list[WindowsLiveExtractionResult] = []
+    window_title = ""
+    try:
+        window_title = window.window_text() or ""
+    except Exception:
+        window_title = ""
+
     controls = _collect_candidate_controls(window)
+    start = time.monotonic()
 
     for index, control in enumerate(controls[:WINDOWS_LIVE_EXTRACTION_MAX_CANDIDATES]):
         if time.monotonic() - start > WINDOWS_LIVE_EXTRACTION_BUDGET_SECONDS:
@@ -266,6 +357,9 @@ def extract_windows_live_tab_text(
         if not raw_text:
             continue
 
+        if _looks_like_browser_chrome_candidate(raw_text, app_name, window_title):
+            continue
+
         candidate = ScoredTextCandidate(
             text=raw_text,
             source_hint=_control_source_hint(control),
@@ -273,6 +367,7 @@ def extract_windows_live_tab_text(
         )
         evaluated = evaluate_candidate(candidate)
         if evaluated.is_useful:
+            useful_candidates.append(evaluated)
             if not best_result or evaluated.quality_score > best_result.quality_score:
                 best_result = evaluated
             if evaluated.quality_score >= 0.8:
@@ -283,6 +378,10 @@ def extract_windows_live_tab_text(
                     is_useful=True,
                     quality_score=evaluated.quality_score,
                 )
+
+    aggregated_result = _aggregate_useful_candidates(useful_candidates)
+    if aggregated_result and (not best_result or len(aggregated_result.text or "") > len(best_result.text or "")):
+        return aggregated_result
 
     if best_result:
         return best_result

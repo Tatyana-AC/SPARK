@@ -1494,13 +1494,18 @@ class SparkPanel(QWidget):
         return None, None
 
     @staticmethod
+    def _build_context_key(info, tab) -> str:
+        url = tab.url if (tab and getattr(tab, "url", None)) else ""
+        return f"{info.app_name}|{url}" if url else f"{info.app_name}|{info.title}"
+
+    @staticmethod
     def _build_active_context_subtitle(info, tab) -> str:
         detail = tab.tab_title if (tab and tab.tab_title) else info.title
         if not tab:
             return detail
 
         url = tab.url or ""
-        context_key = f"{info.app_name}|{url}" if url else f"{info.app_name}|{info.title}"
+        context_key = SparkPanel._build_context_key(info, tab)
         url_display = url or "(missing)"
         return f"{detail}\nURL: {url_display}\nKey: {context_key}"
 
@@ -1555,6 +1560,8 @@ class SparkPanel(QWidget):
         # Try to get text
         text, source = None, None
         browser_result = None
+        current_snapshot = self.tracker.get_current()
+        next_context_key = self._build_context_key(info, tab) if tab else None
 
         if tab and self._is_browser_app_for_poll(info.app_name):
             try:
@@ -1600,20 +1607,34 @@ class SparkPanel(QWidget):
                 text = fallback_text
                 source = fallback_source
 
+        metadata_only_browser_switch = bool(
+            tab
+            and self._is_browser_app_for_poll(info.app_name)
+            and not (text and text.strip())
+            and next_context_key
+            and (current_snapshot is None or current_snapshot.context_key != next_context_key)
+        )
+
         #Edit 
 
-        if text and text.strip() and source:
+        if (text and text.strip() and source) or metadata_only_browser_switch:
             latest_info = self.manager.get_active_window_info()
             if not _same_poll_target(info, latest_info):
                 logger.info(
                     "[POLL] Dropped stale context sample because active window changed before commit"
                 )
                 return
-            preview = text[:120].replace("\n", " ")
-            self._push_poll_capture_line(f"[{info.app_name}] {preview}")
-            self.tracker.update(info, text, source, tab=tab)
+            committed_text = text if (text and text.strip()) else ""
+            committed_source = source if source else TextSource.WEB_CONTENT
+            if committed_text:
+                preview = committed_text[:120].replace("\n", " ")
+                self._push_poll_capture_line(f"[{info.app_name}] {preview}")
+            else:
+                self._push_poll_capture_line(f"[{info.app_name}] (browser metadata only)")
+
+            self.tracker.update(info, committed_text, committed_source, tab=tab)
             current = self.tracker.get_current()
-            if current and is_relevant_snapshot(current):
+            if current and (is_relevant_snapshot(current) or metadata_only_browser_switch):
                 if not self.serial_sender.is_connected():
                     self.serial_sender.connect()
                 key = current.context_key
