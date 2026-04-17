@@ -57,8 +57,10 @@ DEFAULT_BAUD_RATE = 115200
 DEFAULT_LLM_URL = "http://127.0.0.1:8080"
 DEFAULT_RECONNECT_DELAY = 2.0
 DEFAULT_DB_PATH = "jetson_spark.db"
+DEFAULT_AUDIT_LOG_PATH = "llm_request_response_audit.log"
 MAX_SUMMARIZE_CHARS_PER_PACKET = 64
 INTER_PACKET_DELAY_S = 0.01
+AUDIT_DIVIDER = "=" * 80
 
 _PKT_NAMES = {
     PKT_BUTTON_PRESS: "button_press",
@@ -364,9 +366,60 @@ def _build_payload(prompt: str, system_prompt: str, *, stream: bool, structured:
     return payload
 
 
-def query_llm_streaming(url: str, prompt: str, system_prompt: str, timeout: int, *, structured: bool = False):
+def _prepare_llm_http_request(
+    url: str,
+    prompt: str,
+    system_prompt: str,
+    *,
+    stream: bool,
+    structured: bool,
+) -> tuple[str, dict]:
     endpoint = f"{url}/v1/chat/completions"
-    payload = _build_payload(prompt, system_prompt, stream=True, structured=structured)
+    payload = _build_payload(prompt, system_prompt, stream=stream, structured=structured)
+    return endpoint, payload
+
+
+def _append_llm_audit_record(
+    audit_log_path: str | Path | None,
+    *,
+    command: str | None,
+    endpoint: str,
+    request_payload: dict,
+    response_text: str,
+) -> None:
+    if not audit_log_path:
+        return
+
+    path = Path(audit_log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        f"{AUDIT_DIVIDER}\n",
+        "SPARK LLM AUDIT\n",
+        f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S %z')}\n",
+        f"Command: {command or '(raw_prompt)'}\n",
+        f"Endpoint: {endpoint}\n",
+        "\n",
+        "===== REQUEST JSON BEGIN =====\n",
+        f"{json.dumps(request_payload, indent=2)}\n",
+        "===== REQUEST JSON END =====\n",
+        "\n",
+        "===== RESPONSE TEXT BEGIN =====\n",
+        response_text or "",
+    ]
+    if response_text and not response_text.endswith("\n"):
+        lines.append("\n")
+    lines.extend(
+        [
+            "===== RESPONSE TEXT END =====\n",
+            f"{AUDIT_DIVIDER}\n\n",
+        ]
+    )
+    with path.open("a", encoding="utf-8") as fh:
+        fh.writelines(lines)
+
+
+def query_llm_streaming(endpoint: str, payload: dict, timeout: int):
     with requests.post(endpoint, json=payload, stream=True, timeout=timeout) as resp:
         resp.raise_for_status()
         for line in resp.iter_lines(decode_unicode=True):
@@ -384,9 +437,7 @@ def query_llm_streaming(url: str, prompt: str, system_prompt: str, timeout: int,
                 continue
 
 
-def query_llm_blocking(url: str, prompt: str, system_prompt: str, timeout: int, *, structured: bool = False) -> str:
-    endpoint = f"{url}/v1/chat/completions"
-    payload = _build_payload(prompt, system_prompt, stream=False, structured=structured)
+def query_llm_blocking(endpoint: str, payload: dict, timeout: int) -> str:
     resp = requests.post(endpoint, json=payload, timeout=timeout)
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
@@ -489,14 +540,21 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
             logger.exception("Failed to send no-match keyword search response")
         return
 
+    endpoint, request_payload = _prepare_llm_http_request(
+        args.llm_url,
+        llm_prompt,
+        llm_system_prompt,
+        stream=args.stream,
+        structured=structured,
+    )
+
     try:
+        audit_response_text = ""
         if args.stream:
             if structured:
                 # Buffer the full streamed response so we can parse as JSON.
                 buf: list[str] = []
-                for chunk in query_llm_streaming(
-                    args.llm_url, llm_prompt, llm_system_prompt, args.timeout, structured=True
-                ):
+                for chunk in query_llm_streaming(endpoint, request_payload, args.timeout):
                     buf.append(chunk)
                 raw = "".join(buf)
                 formatted = format_structured_summary(raw)
@@ -506,34 +564,56 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
                     len(formatted),
                 )
                 _emit_summary_response(ser, formatted)
+                audit_response_text = formatted
             else:
                 streamed_any = False
                 chunk_count = 0
-                for chunk in query_llm_streaming(
-                    args.llm_url, llm_prompt, llm_system_prompt, args.timeout
-                ):
+                emitted_chunks: list[str] = []
+                for chunk in query_llm_streaming(endpoint, request_payload, args.timeout):
                     streamed_any = True
                     chunk_count += 1
+                    emitted_chunks.append(chunk)
                     _emit_summary_response(ser, chunk)
                 if not streamed_any:
                     _emit_summary_response(ser, "")
+                audit_response_text = "".join(emitted_chunks)
                 logger.info("Summarize request completed with %d streamed chunk(s)", chunk_count)
         else:
-            response = query_llm_blocking(
-                args.llm_url, llm_prompt, llm_system_prompt, args.timeout, structured=structured
-            )
+            response = query_llm_blocking(endpoint, request_payload, args.timeout)
             if structured:
                 response = format_structured_summary(response)
             _emit_summary_response(ser, response)
+            audit_response_text = response
             logger.info("Summarize request completed with blocking response (%d chars)", len(response))
         time.sleep(INTER_PACKET_DELAY_S)
         _write_bridge_packet(ser, build_summarize_done(), label="summarize_done")
+        try:
+            _append_llm_audit_record(
+                args.audit_log,
+                command=command,
+                endpoint=endpoint,
+                request_payload=request_payload,
+                response_text=audit_response_text,
+            )
+        except Exception:
+            logger.exception("Failed to append LLM audit record")
     except Exception as exc:
         logger.exception("LLM request failed")
+        error_text = f"[ERROR] {exc}"
         try:
-            _write_bridge_packet(ser, build_error(f"[ERROR] {exc}"), label="error")
+            _write_bridge_packet(ser, build_error(error_text), label="error")
         except Exception:
             logger.exception("Failed to send error packet back to Pico")
+        try:
+            _append_llm_audit_record(
+                args.audit_log,
+                command=command,
+                endpoint=endpoint,
+                request_payload=request_payload,
+                response_text=error_text,
+            )
+        except Exception:
+            logger.exception("Failed to append LLM audit record after error")
 
 
 def open_serial_with_retry(port: str, baud: int, reconnect_delay: float):
@@ -704,6 +784,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_RECONNECT_DELAY,
         help="Seconds to wait before retrying serial reconnect (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--audit-log",
+        default=DEFAULT_AUDIT_LOG_PATH,
+        help=f"Append-only plain-text audit log for llama.cpp request/response pairs (default: {DEFAULT_AUDIT_LOG_PATH})",
     )
     parser.add_argument(
         "--verbose",

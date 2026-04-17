@@ -8,6 +8,7 @@ from unittest import mock
 
 from jetson.db_manager import JetsonDB
 from jetson.pico_llm_bridge import (
+    _append_llm_audit_record,
     build_llm_request,
     _build_respond_prompt,
     _build_summarize_prompt,
@@ -272,6 +273,85 @@ class BridgeLoggingTests(unittest.TestCase):
         info_log.assert_called_once_with("[UART OUT] %s bytes=%d", "summarize_done", 3)
 
 
+class AuditLoggingTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.audit_log = Path(self._tmpdir.name) / "llm_audit.log"
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_append_llm_audit_record_writes_divided_request_response_block(self):
+        payload = {
+            "messages": [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "user prompt"},
+            ],
+            "stream": False,
+        }
+
+        _append_llm_audit_record(
+            self.audit_log,
+            command="summarize_window",
+            endpoint="http://127.0.0.1:8080/v1/chat/completions",
+            request_payload=payload,
+            response_text="final outbound text",
+        )
+
+        text = self.audit_log.read_text(encoding="utf-8")
+        self.assertIn("SPARK LLM AUDIT", text)
+        self.assertIn("Command: summarize_window", text)
+        self.assertIn("Endpoint: http://127.0.0.1:8080/v1/chat/completions", text)
+        self.assertIn("===== REQUEST JSON BEGIN =====", text)
+        self.assertIn(json.dumps(payload, indent=2), text)
+        self.assertIn("===== RESPONSE TEXT BEGIN =====", text)
+        self.assertIn("final outbound text", text)
+        self.assertIn("=" * 80, text)
+
+    def test_handle_summarize_request_logs_exact_payload_and_streamed_final_output(self):
+        ser = mock.Mock()
+        request = json.dumps(
+            {
+                "command": "summarize_window",
+                "app_name": "Chrome",
+                "window_title": "Draft",
+                "window_text": "Visible context",
+            }
+        )
+        args = mock.Mock(
+            stream=True,
+            structured=False,
+            timeout=120,
+            llm_url="http://127.0.0.1:8080",
+            system_prompt=SYSTEM_PROMPT,
+            audit_log=str(self.audit_log),
+        )
+
+        fake_stream_response = mock.Mock()
+        fake_stream_response.__enter__ = mock.Mock(return_value=fake_stream_response)
+        fake_stream_response.__exit__ = mock.Mock(return_value=False)
+        fake_stream_response.raise_for_status = mock.Mock()
+        fake_stream_response.iter_lines = mock.Mock(
+            return_value=[
+                'data: {"choices":[{"delta":{"content":"hello "}}]}',
+                'data: {"choices":[{"delta":{"content":"world"}}]}',
+                "data: [DONE]",
+            ]
+        )
+
+        with mock.patch("jetson.pico_llm_bridge.requests.post", return_value=fake_stream_response) as post:
+            with mock.patch("jetson.pico_llm_bridge._write_bridge_packet"):
+                with mock.patch("jetson.pico_llm_bridge.time.sleep"):
+                    handle_summarize_request(ser, request, args, db=None)
+
+        post.assert_called_once()
+        text = self.audit_log.read_text(encoding="utf-8")
+        self.assertIn('"stream": true', text)
+        self.assertIn('"role": "system"', text)
+        self.assertIn('"role": "user"', text)
+        self.assertIn("hello world", text)
+
+
 class ReformatHandlingTests(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -288,6 +368,7 @@ class ReformatHandlingTests(unittest.TestCase):
             timeout=120,
             llm_url="http://127.0.0.1:8080",
             system_prompt=SYSTEM_PROMPT,
+            audit_log=None,
         )
 
     def test_reformat_selection_ignores_structured_response_mode(self):
@@ -305,8 +386,9 @@ class ReformatHandlingTests(unittest.TestCase):
                         handle_summarize_request(ser, request, self._make_args(), db=self.db)
 
         query.assert_called_once()
-        query_kwargs = query.call_args.kwargs
-        self.assertFalse(query_kwargs["structured"])
+        query_payload = query.call_args.args[1]
+        self.assertFalse(query_payload["stream"])
+        self.assertNotIn("response_format", query_payload)
         emit_chunks.assert_any_call(ser, '{"app": "x"}')
 
     def test_reformat_selection_without_session_sends_error(self):
@@ -340,8 +422,9 @@ class ReformatHandlingTests(unittest.TestCase):
                         handle_summarize_request(ser, request, self._make_args(), db=self.db)
 
         query.assert_called_once()
-        query_kwargs = query.call_args.kwargs
-        self.assertFalse(query_kwargs["structured"])
+        query_payload = query.call_args.args[1]
+        self.assertFalse(query_payload["stream"])
+        self.assertNotIn("response_format", query_payload)
         emit_chunks.assert_any_call(ser, "completed reply")
 
     def test_respond_selection_without_session_sends_error(self):
@@ -375,7 +458,9 @@ class ReformatHandlingTests(unittest.TestCase):
                         handle_summarize_request(ser, request, self._make_args(), db=self.db)
 
         query.assert_called_once()
-        self.assertFalse(query.call_args.kwargs["structured"])
+        query_payload = query.call_args.args[1]
+        self.assertFalse(query_payload["stream"])
+        self.assertNotIn("response_format", query_payload)
         emit_chunks.assert_any_call(ser, "matching summary")
 
     def test_keyword_search_without_matches_sends_normal_response(self):
