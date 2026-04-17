@@ -348,14 +348,55 @@ Describe 'Invoke-SetupSpark' {
         $script:watcherLaunches.Count | Should Be 1
         $script:watcherLaunches[0].PythonExe | Should Be 'python.exe'
     }
+
+    It 'cleans up existing desktop processes before starting services' {
+        $script:SkipSmokeTest = $true
+        $script:SkipAppLaunch = $false
+        $script:steps = @()
+
+        function script:Write-Section {}
+        function script:Write-Status {}
+        function script:Get-RepoPython { 'python.exe' }
+        function script:Get-PicoMount {
+            [pscustomobject]@{
+                Drive = 'D:'
+                CodePath = 'D:\code.py'
+                BootPath = 'D:\boot.py'
+            }
+        }
+        function script:Ensure-JetsonMount {
+            [pscustomobject]@{
+                Drive = 'Z:'
+                Provider = '\\sshfs.r\sidac@192.168.55.1\mnt\usb_drive'
+                VolumeName = ''
+            }
+        }
+        function script:Test-Path { $true }
+        function script:Assert-JetsonWritableMount { 'rw,relatime' }
+        function script:Deploy-PicoFirmware {}
+        function script:Sync-JetsonBridgeBundle {}
+        function script:Stop-SparkAppProcesses { $script:steps += 'stop-app' }
+        function script:Stop-WatchFullStackProcesses { $script:steps += 'stop-watcher' }
+        function script:Start-JetsonServices { $script:steps += 'start-jetson' }
+        function script:Wait-JetsonBridgeSettle {}
+        function script:Start-SparkApp { $script:steps += 'start-app' }
+        function script:Start-FullStackWatcher { $script:steps += 'start-watcher' }
+
+        Invoke-SetupSpark
+
+        $script:steps | Should Be @('stop-app', 'stop-watcher', 'start-jetson', 'start-app', 'start-watcher')
+    }
 }
 
 Describe 'Start-JetsonServices' {
-    It 'emits a remote script that avoids pgrep self-matches and hard-fails if the bridge is absent' {
+    It 'emits a remote script that restarts duplicate bridges and hard-fails unless exactly one remains' {
         $source = Get-Content (Join-Path $PSScriptRoot '..\setup_spark.ps1') -Raw
 
+        $source | Should Match 'BRIDGE_COUNT=\$\(pgrep -fc ''\[p\]ico_llm_bridge\.py'''
+        $source | Should Match 'found \$BRIDGE_COUNT running copies; restarting'
         $source | Should Match "pgrep -af '\[p\]ico_llm_bridge\.py'"
         $source | Should Match 'bridge failed to start'
+        $source | Should Match 'bridge failed to settle to a single process'
         $source | Should Match "pgrep -af '\[l\]lama-server\|\[p\]ico_llm_bridge\.py'"
     }
 }
@@ -414,6 +455,16 @@ Describe 'Run-SmokeTestWithRecovery' {
         $script:settleCalls | Should Be 1
         $script:softReloads | Should Be 0
         $script:sections | Should Be @('Smoke Test', 'Bridge Recovery', 'Smoke Test Retry')
+    }
+}
+
+Describe 'Restart-JetsonBridge' {
+    It 'requires exactly one bridge process after restart' {
+        $source = Get-Content (Join-Path $PSScriptRoot '..\setup_spark.ps1') -Raw
+
+        $source | Should Match 'BRIDGE_COUNT=\$\(pgrep -fc ''\[p\]ico_llm_bridge\.py'''
+        $source | Should Match 'bridge restart failed'
+        $source | Should Match '\[ "\$\{BRIDGE_COUNT:-0\}" -ne 1 \]'
     }
 }
 
@@ -480,25 +531,40 @@ Describe 'Start-SparkApp' {
         $script:startCall.WorkingDirectory | Should Be 'C:\SPARK'
     }
 
-    It 'does not launch a second app when one is already running' {
-        $script:startCalls = 0
+    It 'stops an existing app instance before relaunching' {
+        $script:startCall = $null
+        $script:stopCalls = 0
         $script:statusMessages = @()
 
         function script:Get-SparkAppProcesses {
             @([pscustomobject]@{ ProcessId = 1234 })
+        }
+        function script:Stop-SparkAppProcesses {
+            $script:stopCalls += 1
         }
         function script:Write-Status {
             param([string]$Label, [string]$Value)
             $script:statusMessages += [pscustomobject]@{ Label = $Label; Value = $Value }
         }
         function script:Start-Process {
-            $script:startCalls += 1
+            param(
+                [string]$FilePath,
+                [string[]]$ArgumentList,
+                [string]$WorkingDirectory
+            )
+
+            $script:startCall = [pscustomobject]@{
+                FilePath = $FilePath
+                ArgumentList = $ArgumentList
+                WorkingDirectory = $WorkingDirectory
+            }
         }
 
         Start-SparkApp -PythonExe 'python.exe'
 
-        $script:startCalls | Should Be 0
-        $script:statusMessages[-1].Value | Should Be 'spark_app_v2.py is already running'
+        $script:stopCalls | Should Be 1
+        $script:startCall.FilePath | Should Be 'powershell.exe'
+        $script:statusMessages[-1].Value | Should Be 'spark_app_v2.py launched in a visible console'
     }
 }
 
@@ -537,24 +603,39 @@ Describe 'Start-FullStackWatcher' {
         $script:statusMessages[-1].Value | Should Be 'watch_full_stack.py launched in a visible console'
     }
 
-    It 'does not launch a second watcher when one is already running' {
-        $script:startCalls = 0
+    It 'stops an existing watcher before relaunching' {
+        $script:startCall = $null
+        $script:stopCalls = 0
         $script:statusMessages = @()
 
         function script:Get-WatchFullStackProcesses {
             @([pscustomobject]@{ ProcessId = 5678 })
+        }
+        function script:Stop-WatchFullStackProcesses {
+            $script:stopCalls += 1
         }
         function script:Write-Status {
             param([string]$Label, [string]$Value)
             $script:statusMessages += [pscustomobject]@{ Label = $Label; Value = $Value }
         }
         function script:Start-Process {
-            $script:startCalls += 1
+            param(
+                [string]$FilePath,
+                [string[]]$ArgumentList,
+                [string]$WorkingDirectory
+            )
+
+            $script:startCall = [pscustomobject]@{
+                FilePath = $FilePath
+                ArgumentList = $ArgumentList
+                WorkingDirectory = $WorkingDirectory
+            }
         }
 
         Start-FullStackWatcher -PythonExe 'python.exe'
 
-        $script:startCalls | Should Be 0
-        $script:statusMessages[-1].Value | Should Be 'watch_full_stack.py is already running'
+        $script:stopCalls | Should Be 1
+        $script:startCall.FilePath | Should Be 'cmd.exe'
+        $script:statusMessages[-1].Value | Should Be 'watch_full_stack.py launched in a visible console'
     }
 }

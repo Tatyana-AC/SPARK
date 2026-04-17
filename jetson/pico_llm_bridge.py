@@ -139,6 +139,13 @@ RESPOND_SYSTEM_PROMPT = (
     "Return only the continuation text."
 )
 
+KEYWORD_SEARCH_SYSTEM_PROMPT = (
+    "You summarize the three most recent matching entries from SPARK history. "
+    "Return only a concise plain-text summary grounded in the matched entries."
+)
+_NO_KEYWORD_MATCHES_PREFIX = "(no keyword matches)"
+_KEYWORD_SNIPPET_CHARS = 120
+
 
 def _build_summarize_prompt(app_name: str, window_title: str, window_text: str) -> str:
     app_name = (app_name or "").strip() or "(unknown app)"
@@ -206,6 +213,58 @@ def _build_respond_prompt(
     )
 
 
+def _build_keyword_search_prompt(selected_text: str, matches) -> str:
+    selected_text = (selected_text or "").strip()
+    lines = [
+        "Summarize the three most recent matching entries for the selected keyword.",
+        "Stay grounded in the matched entries only.",
+        "Return only the summary text.",
+        f'Selected keyword: {selected_text}',
+        "",
+        "Matched entries:",
+    ]
+    for idx, row in enumerate(matches, start=1):
+        snippet = _extract_keyword_snippet(row["text"] or "", selected_text)
+        lines.extend(
+            [
+                f"Entry {idx}:",
+                f"App: {(row['app_name'] or '').strip() or '(unknown app)'}",
+                f"Window title: {(row['window_title'] or '').strip() or '(untitled window)'}",
+                "Matched text snippet:",
+                snippet,
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def _extract_keyword_snippet(text: str, selected_text: str, max_chars: int = _KEYWORD_SNIPPET_CHARS) -> str:
+    text = text or ""
+    selected_text = (selected_text or "").strip()
+    if not text:
+        return ""
+    if not selected_text:
+        trimmed = text[:max_chars].strip()
+        return trimmed if len(text) <= max_chars else f"{trimmed}…"
+
+    text_lower = text.lower()
+    selected_lower = selected_text.lower()
+    match_index = text_lower.find(selected_lower)
+    if match_index < 0:
+        trimmed = text[:max_chars].strip()
+        return trimmed if len(text) <= max_chars else f"{trimmed}…"
+
+    half_window = max_chars // 2
+    start = max(0, match_index - half_window)
+    end = min(len(text), match_index + len(selected_text) + half_window)
+    snippet = text[start:end].strip()
+    if start > 0:
+        snippet = f"…{snippet}"
+    if end < len(text):
+        snippet = f"{snippet}…"
+    return snippet
+
+
 def _parse_request(raw_prompt: str) -> dict:
     try:
         request = json.loads(raw_prompt)
@@ -256,6 +315,18 @@ def build_llm_request(
             request.get("previous_user_input", ""),
         )
         return RESPOND_SYSTEM_PROMPT, user_prompt
+
+    if command == "keyword_search":
+        if db is None:
+            return default_system_prompt, "(no database available)"
+        selected_text = request.get("selected_text", "")
+        matches = db.get_recent_sessions_matching_text(selected_text, limit=3)
+        if not matches:
+            return KEYWORD_SEARCH_SYSTEM_PROMPT, f'{_NO_KEYWORD_MATCHES_PREFIX}:{selected_text}'
+        return (
+            KEYWORD_SEARCH_SYSTEM_PROMPT,
+            _build_keyword_search_prompt(selected_text, matches),
+        )
 
     if command == "summarize":
         if db is None:
@@ -364,7 +435,7 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
         db=db,
         _request=request,
     )
-    structured = args.structured and command not in {"reformat_selection", "respond_selection"}
+    structured = args.structured and command not in {"reformat_selection", "respond_selection", "keyword_search"}
     logger.info(
         "Handling summarize request: chars=%d stream=%s structured=%s llm_url=%s command=%s",
         len(request_text or ""),
@@ -378,11 +449,13 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
     # a diagnostic warning back so the user knows what went wrong.
     _NO_CONTEXT_MARKERS = ("(no database available)", "(no active session)")
     if llm_prompt in _NO_CONTEXT_MARKERS:
-        if command in {"reformat_selection", "respond_selection"}:
+        if command in {"reformat_selection", "respond_selection", "keyword_search"}:
             warning_msg = (
                 "[ERROR] Cannot reformat without active context."
                 if command == "reformat_selection"
                 else "[ERROR] Cannot respond without active context."
+                if command == "respond_selection"
+                else "[ERROR] Cannot search without database."
             )
             logger.warning("%s skipped LLM: %s", command, warning_msg)
             try:
@@ -402,6 +475,18 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
             _write_bridge_packet(ser, build_summarize_done(), label="summarize_done")
         except Exception:
             logger.exception("Failed to send no-context warning back to Pico")
+        return
+
+    if command == "keyword_search" and llm_prompt.startswith(f"{_NO_KEYWORD_MATCHES_PREFIX}:"):
+        selected_text = llm_prompt.split(":", 1)[1].strip()
+        no_match_msg = f'No recent entries matched "{selected_text}".'
+        logger.info("Keyword search skipped LLM: %s", no_match_msg)
+        try:
+            _emit_summary_response(ser, no_match_msg)
+            time.sleep(INTER_PACKET_DELAY_S)
+            _write_bridge_packet(ser, build_summarize_done(), label="summarize_done")
+        except Exception:
+            logger.exception("Failed to send no-match keyword search response")
         return
 
     try:

@@ -67,6 +67,145 @@ class JetsonDBTests(unittest.TestCase):
         self.assertEqual(row["source"], "focused_element")
         self.assertEqual(row["content_fingerprint"], build_content_fingerprint(updated))
 
+    def test_context_new_reuses_latest_same_context_and_pid_instead_of_inserting_duplicate(self):
+        payload = make_payload(
+            app_name="Chrome",
+            process_name="chrome.exe",
+            pid=28536,
+            window_title="Boston Tea Party - Wikipedia",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="initial article text",
+        )
+        self.db.on_context_new(payload)
+
+        refreshed = make_payload(
+            app_name="Chrome",
+            process_name="chrome.exe",
+            pid=28536,
+            window_title="Boston Tea Party - Wikipedia",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="refreshed article text",
+            timestamp=456.78,
+        )
+        row_id = self.db.on_context_new(refreshed)
+        rows = self.db.get_recent_sessions(limit=10)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(row_id, rows[0]["id"])
+        self.assertEqual(rows[0]["text"], "refreshed article text")
+        self.assertEqual(rows[0]["host_observed_at"], 456.78)
+
+    def test_context_update_without_active_session_reattaches_to_latest_same_context_and_pid(self):
+        payload = make_payload(
+            app_name="Chrome",
+            process_name="chrome.exe",
+            pid=26572,
+            window_title="Boston Tea Party - Wikipedia",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="initial article text",
+        )
+        row_id = self.db.on_context_new(payload)
+        self.db._active_session_id = None
+        self.db._active_context_key = None
+
+        updated = make_payload(
+            app_name="Chrome",
+            process_name="chrome.exe",
+            pid=26572,
+            window_title="Boston Tea Party - Wikipedia",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="updated article text",
+            source="web_content",
+            timestamp=789.01,
+        )
+        self.db.on_context_update(updated)
+        rows = self.db.get_recent_sessions(limit=10)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], row_id)
+        self.assertEqual(rows[0]["text"], "updated article text")
+        self.assertEqual(rows[0]["host_observed_at"], 789.01)
+
+    def test_context_update_collapses_existing_duplicate_rows_for_same_live_session(self):
+        payload = make_payload(
+            app_name="Chrome",
+            process_name="chrome.exe",
+            pid=26572,
+            window_title="Boston Tea Party - Wikipedia",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="initial article text",
+        )
+        keep_id = self.db.on_context_new(payload)
+        duplicate_payload = make_payload(
+            app_name="Chrome",
+            process_name="chrome.exe",
+            pid=26572,
+            window_title="Boston Tea Party - Wikipedia",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="stale duplicate text",
+            timestamp=100.0,
+        )
+        duplicate_id = self.db._conn.execute(
+            """
+            INSERT INTO sessions (
+                context_key,
+                content_fingerprint,
+                app_name,
+                window_title,
+                process_name,
+                pid,
+                source,
+                tab_title,
+                url,
+                text,
+                host_observed_at,
+                started_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                build_context_key(duplicate_payload),
+                build_content_fingerprint(duplicate_payload),
+                duplicate_payload["app_name"],
+                duplicate_payload["window_title"],
+                duplicate_payload["process_name"],
+                duplicate_payload["pid"],
+                duplicate_payload["source"],
+                duplicate_payload["tab_title"],
+                duplicate_payload["url"],
+                duplicate_payload["text"],
+                duplicate_payload["timestamp"],
+                50.0,
+                50.0,
+            ),
+        ).lastrowid
+        self.db._conn.execute(
+            "INSERT INTO button_events (button_id, session_id, timestamp) VALUES (?, ?, ?)",
+            (3, duplicate_id, 75.0),
+        )
+        self.db._conn.commit()
+
+        updated = make_payload(
+            app_name="Chrome",
+            process_name="chrome.exe",
+            pid=26572,
+            window_title="Boston Tea Party - Wikipedia",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="updated article text",
+            timestamp=200.0,
+        )
+        self.db.on_context_update(updated)
+
+        rows = self.db.get_recent_sessions(limit=10)
+        button_row = self.db._conn.execute(
+            "SELECT session_id FROM button_events WHERE button_id = 3"
+        ).fetchone()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], keep_id)
+        self.assertEqual(button_row["session_id"], keep_id)
+
     def test_button_press_links_to_active_session(self):
         self.db.on_context_new(make_payload())
         self.db.on_button_press(2)
@@ -118,6 +257,40 @@ class JetsonDBTests(unittest.TestCase):
             self.assertEqual(row["host_observed_at"], 2000.0)
         finally:
             reopened.close()
+
+    def test_keyword_search_matches_multiword_query_across_newlines(self):
+        self.db.on_context_new(
+            make_payload(
+                app_name="Chrome",
+                process_name="chrome.exe",
+                pid=3001,
+                window_title="Boston Tea Party - Wikipedia",
+                url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                text="Parliament passed the Tea\nAct after pressure from merchants.",
+            )
+        )
+
+        matches = self.db.get_recent_sessions_matching_text("Tea Act", limit=3)
+
+        self.assertEqual(len(matches), 1)
+        self.assertIn("Tea\nAct", matches[0]["text"])
+
+    def test_keyword_search_matches_multiword_query_across_repeated_spaces(self):
+        self.db.on_context_new(
+            make_payload(
+                app_name="Chrome",
+                process_name="chrome.exe",
+                pid=3002,
+                window_title="Boston Tea Party - Wikipedia",
+                url="https://en.wikipedia.org/wiki/Boston_Tea_Party#2",
+                text="The East India Company lobbied Parliament  for  relief.",
+            )
+        )
+
+        matches = self.db.get_recent_sessions_matching_text("Parliament for relief", limit=3)
+
+        self.assertEqual(len(matches), 1)
+        self.assertIn("Parliament  for  relief", matches[0]["text"])
 
 
 if __name__ == "__main__":

@@ -424,6 +424,41 @@ class BridgeAppTests(unittest.TestCase):
             },
         )
 
+    def test_feature_3_forwards_keyword_search_payload_unchanged(self):
+        from pico.bridge_app import BridgeApp, RuntimeStatus
+        from pico.upload_protocol import AppCommand
+        from host_pc.summarize_stream import build_keyword_search_request
+
+        payload = build_keyword_search_request("irrational")
+        transport = types.SimpleNamespace(start_request=mock.Mock())
+        app = BridgeApp(
+            jetson_transport=transport,
+            runtime_status=lambda: RuntimeStatus(
+                cdc_debug_status="heartbeat|sent:27",
+                loop_checkpoint="after_response_sync",
+                request_active=False,
+                response_length=0,
+                response_complete=False,
+            ),
+        )
+
+        result = app.prepare_upload_result(AppCommand.FEATURE_3, payload)
+
+        transport.start_request.assert_called_once_with(payload.encode("utf-8"))
+        self.assertEqual(
+            result,
+            {
+                "accepted_text": payload,
+                "accepted_count": len(payload),
+                "skipped_count": 0,
+                "detail": "forwarded",
+                "response_text": "",
+                "response_active": True,
+                "response_complete": False,
+                "app_command": int(AppCommand.FEATURE_3),
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

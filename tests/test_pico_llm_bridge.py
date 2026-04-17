@@ -182,6 +182,77 @@ class BuildLlmRequestTests(unittest.TestCase):
 
         self.assertIn("no active session", prompt)
 
+    def test_keyword_search_command_uses_three_most_recent_matching_entries(self):
+        self.db.on_context_new(
+            _make_context_payload(
+                text="old irrational proof",
+                pid=1001,
+                url="https://example.com/old",
+                window_title="old",
+            )
+        )
+        self.db.on_context_new(
+            _make_context_payload(
+                text="newer irrational contradiction",
+                pid=1002,
+                url="https://example.com/newer",
+                window_title="newer",
+            )
+        )
+        self.db.on_context_new(
+            _make_context_payload(
+                text="freshest irrational lemma",
+                pid=1003,
+                url="https://example.com/freshest",
+                window_title="freshest",
+            )
+        )
+        self.db.on_context_new(
+            _make_context_payload(
+                text="freshest unrelated note",
+                pid=1004,
+                url="https://example.com/unrelated",
+                window_title="unrelated",
+            )
+        )
+
+        raw = json.dumps({
+            "command": "keyword_search",
+            "selected_text": "irrational",
+        })
+        system, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("summarize the three most recent matching entries", system.lower())
+        self.assertIn("freshest irrational lemma", prompt)
+        self.assertIn("newer irrational contradiction", prompt)
+        self.assertIn("old irrational proof", prompt)
+        self.assertNotIn("freshest unrelated note", prompt)
+
+    def test_keyword_search_prompt_uses_keyword_centered_snippets_instead_of_full_entry_text(self):
+        long_text = ("prefix " * 200) + "Parliament passed the Tea Act" + (" suffix" * 200)
+        self.db.on_context_new(_make_context_payload(text=long_text))
+
+        raw = json.dumps({
+            "command": "keyword_search",
+            "selected_text": "Parliament",
+        })
+        _, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("Parliament passed the Tea Act", prompt)
+        self.assertNotIn("prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix", prompt)
+        self.assertLess(len(prompt), 3000)
+
+    def test_keyword_search_without_matches_returns_no_match_marker(self):
+        self.db.on_context_new(_make_context_payload(text="freshest unrelated note"))
+
+        raw = json.dumps({
+            "command": "keyword_search",
+            "selected_text": "irrational",
+        })
+        _, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("no keyword matches", prompt)
+
 
 class BridgeLoggingTests(unittest.TestCase):
     def test_log_inbound_packet_logs_button_press(self):
@@ -288,6 +359,41 @@ class ReformatHandlingTests(unittest.TestCase):
         mk_error.assert_called_once()
         query.assert_not_called()
         writer.assert_called_once_with(ser, b"ERROR", label="error")
+
+    def test_keyword_search_ignores_structured_response_mode(self):
+        self.db.on_context_new(_make_context_payload(text="irrational proof example"))
+        ser = mock.Mock()
+        request = json.dumps({
+            "command": "keyword_search",
+            "selected_text": "irrational",
+        })
+
+        with mock.patch("jetson.pico_llm_bridge._emit_summary_response") as emit_chunks:
+            with mock.patch("jetson.pico_llm_bridge.query_llm_blocking", return_value="matching summary") as query:
+                with mock.patch("jetson.pico_llm_bridge._write_bridge_packet"):
+                    with mock.patch("jetson.pico_llm_bridge.time.sleep"):
+                        handle_summarize_request(ser, request, self._make_args(), db=self.db)
+
+        query.assert_called_once()
+        self.assertFalse(query.call_args.kwargs["structured"])
+        emit_chunks.assert_any_call(ser, "matching summary")
+
+    def test_keyword_search_without_matches_sends_normal_response(self):
+        self.db.on_context_new(_make_context_payload(text="freshest unrelated note"))
+        ser = mock.Mock()
+        request = json.dumps({
+            "command": "keyword_search",
+            "selected_text": "irrational",
+        })
+
+        with mock.patch("jetson.pico_llm_bridge._emit_summary_response") as emit_chunks:
+            with mock.patch("jetson.pico_llm_bridge.query_llm_blocking") as query:
+                with mock.patch("jetson.pico_llm_bridge._write_bridge_packet"):
+                    with mock.patch("jetson.pico_llm_bridge.time.sleep"):
+                        handle_summarize_request(ser, request, self._make_args(), db=self.db)
+
+        query.assert_not_called()
+        emit_chunks.assert_any_call(ser, 'No recent entries matched "irrational".')
 
 
 if __name__ == "__main__":

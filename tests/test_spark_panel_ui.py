@@ -191,6 +191,52 @@ class SparkPanelUiTests(unittest.TestCase):
         start_feature_request.assert_not_called()
         panel._set_status.assert_called_once_with("No text selected — highlight text first", spark_app_v2.RED)
 
+    def test_keyword_search_uses_selected_text_only(self):
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Editor")
+        manager.get_selected_text.return_value = "  irrational  "
+
+        panel = self._make_panel()
+        panel.manager = manager
+        panel.processed_text = "old captured text"
+
+        with (
+            mock.patch.object(spark_app_v2, "build_keyword_search_request") as build_keyword_search,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            build_keyword_search.return_value = "KEYWORD_REQUEST"
+            panel._on_keyword_search()
+
+        manager.get_selected_text.assert_called_once_with()
+        build_keyword_search.assert_called_once_with("  irrational  ")
+        start_feature_request.assert_called_once()
+        args, kwargs = start_feature_request.call_args
+        self.assertEqual(kwargs.get("app_command", args[0]), spark_app_v2.AppCommand.FEATURE_3)
+        request = kwargs.get("request", args[1] if len(args) > 1 else None)
+        self.assertEqual(request, "KEYWORD_REQUEST")
+
+    def test_keyword_search_fails_fast_when_selection_is_empty(self):
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Editor")
+        manager.get_selected_text.return_value = "   "
+
+        panel = self._make_panel()
+        panel.manager = manager
+        panel._set_status = mock.Mock()
+
+        with (
+            mock.patch.object(spark_app_v2, "build_keyword_search_request") as build_keyword_search,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            panel._on_keyword_search()
+
+        build_keyword_search.assert_not_called()
+        start_feature_request.assert_not_called()
+        panel._set_status.assert_called_once_with(
+            "No text selected — highlight a keyword first",
+            spark_app_v2.RED,
+        )
+
     def test_respond_uses_focused_text_without_selection(self):
         manager = mock.Mock()
         manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Mail draft")
@@ -353,6 +399,41 @@ class SparkPanelUiTests(unittest.TestCase):
         self.assertEqual(args[1], "request-payload")
         self.assertIn("on_update", kwargs)
 
+    def test_start_feature_request_uses_feature_3_round_trip(self):
+        hid_client = mock.Mock()
+        hid_client.is_connected.return_value = True
+
+        panel = self._make_panel(hid_client=hid_client)
+
+        def immediate_thread(*args, **kwargs):
+            if args:
+                target = args[0]
+                thread_args = args[1] if len(args) > 1 else tuple()
+            else:
+                target = kwargs["target"]
+                thread_args = kwargs.get("args", tuple())
+            t = mock.Mock()
+            t.start.side_effect = lambda: target(*thread_args)
+            return t
+
+        with (
+            mock.patch("spark_app_v2.threading.Thread", mock.Mock(side_effect=immediate_thread)) as thread_cls,
+            mock.patch.object(hid_client, "stream_round_trip_text", return_value="keyword summary") as stream_round_trip,
+        ):
+            panel._start_feature_request(
+                app_command=spark_app_v2.AppCommand.FEATURE_3,
+                request="request-payload",
+                capture_label="[KEYWORD] search recent context",
+                status_text="Sending keyword search request",
+            )
+
+        thread_cls.assert_called_once()
+        stream_round_trip.assert_called_once()
+        args, kwargs = stream_round_trip.call_args
+        self.assertEqual(args[0], spark_app_v2.AppCommand.FEATURE_3)
+        self.assertEqual(args[1], "request-payload")
+        self.assertIn("on_update", kwargs)
+
     def test_start_feature_request_preserves_existing_release_output(self):
         hid_client = mock.Mock()
         hid_client.is_connected.return_value = True
@@ -474,6 +555,29 @@ class SparkPanelUiTests(unittest.TestCase):
         panel._set_status.assert_called_once_with("Jetson response complete — output updated", spark_app_v2.GREEN)
         self.assertEqual(panel.release_output_lbl.toPlainText(), "continued response")
         clipboard.setText.assert_called_once_with("continued response")
+
+    def test_keyword_search_completion_status_text_is_feature_specific(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_3
+        panel._set_status = mock.Mock()
+        clipboard = mock.Mock()
+
+        with mock.patch.object(spark_app_v2.QApplication, "clipboard", return_value=clipboard):
+            panel._on_summarize_succeeded("keyword summary")
+
+        panel._set_status.assert_called_once_with("Jetson keyword search complete — output updated", spark_app_v2.GREEN)
+        self.assertEqual(panel.release_output_lbl.toPlainText(), "keyword summary")
+        clipboard.setText.assert_called_once_with("keyword summary")
+
+    def test_keyword_search_streaming_status_text_is_feature_specific(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_3
+        panel._set_status = mock.Mock()
+
+        panel._on_summarize_progress("partial keyword summary")
+
+        panel._set_status.assert_called_once_with("Streaming keyword search from Jetson…", spark_app_v2.ORANGE)
+        self.assertEqual(panel.release_output_lbl.toPlainText(), "partial keyword summary")
 
     def test_respond_streaming_status_text_is_feature_specific(self):
         panel = self._make_panel()
@@ -598,6 +702,38 @@ class SparkPanelUiTests(unittest.TestCase):
             panel._on_pico_debug_message("post_press:4")
 
         on_respond.assert_called_once_with()
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_three_post_press_triggers_keyword_search_without_starting_response_polling(self):
+        panel = self._make_panel()
+
+        with mock.patch.object(panel, "_on_keyword_search") as on_keyword_search:
+            panel._on_pico_debug_message("post_press:3")
+
+        on_keyword_search.assert_called_once_with()
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_three_post_press_is_ignored_while_request_in_flight(self):
+        panel = self._make_panel()
+        panel._summary_request_in_flight = True
+
+        with mock.patch.object(panel, "_on_keyword_search") as on_keyword_search:
+            panel._on_pico_debug_message("post_press:3")
+
+        on_keyword_search.assert_not_called()
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_three_post_press_is_debounced(self):
+        panel = self._make_panel()
+
+        with (
+            mock.patch.object(panel, "_on_keyword_search") as on_keyword_search,
+            mock.patch.object(spark_app_v2.time, "monotonic", side_effect=[10.0, 10.2]),
+        ):
+            panel._on_pico_debug_message("post_press:3")
+            panel._on_pico_debug_message("post_press:3")
+
+        on_keyword_search.assert_called_once_with()
         self.assertFalse(panel._response_poll_timer.isActive())
 
     def test_button_four_post_press_is_ignored_while_request_in_flight(self):

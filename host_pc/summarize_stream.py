@@ -64,3 +64,18 @@ def build_respond_request(previous_user_input: str) -> str:
             "previous_user_input": previous_user_input,
         }
     )
+
+
+def build_keyword_search_request(selected_text: str) -> str:
+    """Build a keyword_search request from selected text."""
+    selected_text = (selected_text or "").strip()
+
+    if len(selected_text) > _MAX_WINDOW_TEXT_CHARS:
+        selected_text = selected_text[:_MAX_WINDOW_TEXT_CHARS]
+
+    return json.dumps(
+        {
+            "command": "keyword_search",
+            "selected_text": selected_text,
+        }
+    )

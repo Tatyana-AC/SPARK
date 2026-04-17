@@ -502,8 +502,15 @@ fi
 
 sudo chmod 666 /dev/ttyTHS0
 
-if pgrep -af '[p]ico_llm_bridge.py' >/dev/null 2>&1; then
+BRIDGE_COUNT=$(pgrep -fc '[p]ico_llm_bridge.py' || true)
+
+if [ "${BRIDGE_COUNT:-0}" -eq 1 ]; then
     echo "bridge status: already running"
+elif [ "${BRIDGE_COUNT:-0}" -gt 1 ]; then
+    echo "bridge status: found $BRIDGE_COUNT running copies; restarting"
+    pkill -f '[p]ico_llm_bridge.py' || true
+    sleep 2
+    nohup bash -lc "cd '$BRIDGE_DIR' && exec ./run_bridge.sh" >"$BRIDGE_LOG" 2>&1 < /dev/null &
 else
     echo "bridge status: starting"
     nohup bash -lc "cd '$BRIDGE_DIR' && exec ./run_bridge.sh" >"$BRIDGE_LOG" 2>&1 < /dev/null &
@@ -515,6 +522,14 @@ if ! pgrep -af '[p]ico_llm_bridge.py' >/dev/null 2>&1; then
     echo "bridge failed to start"
     echo "bridge log tail:"
     tail -n 20 "$BRIDGE_LOG" || true
+    exit 1
+fi
+
+FINAL_BRIDGE_COUNT=$(pgrep -fc '[p]ico_llm_bridge.py' || true)
+if [ "${FINAL_BRIDGE_COUNT:-0}" -ne 1 ]; then
+    echo "bridge failed to settle to a single process (count=$FINAL_BRIDGE_COUNT)"
+    echo "process status:"
+    pgrep -af '[p]ico_llm_bridge.py' || true
     exit 1
 fi
 
@@ -542,8 +557,11 @@ sleep 2
 cd "$BRIDGE_DIR"
 nohup bash -lc "cd '$BRIDGE_DIR' && exec ./run_bridge.sh" >"$BRIDGE_LOG" 2>&1 < /dev/null &
 sleep 4
-if ! pgrep -af '[p]ico_llm_bridge.py' >/dev/null 2>&1; then
+BRIDGE_COUNT=$(pgrep -fc '[p]ico_llm_bridge.py' || true)
+if [ "${BRIDGE_COUNT:-0}" -ne 1 ]; then
     echo "bridge restart failed"
+    echo "process status:"
+    pgrep -af '[p]ico_llm_bridge.py' || true
     echo "bridge log tail:"
     tail -n 20 "$BRIDGE_LOG" || true
     exit 1
@@ -718,14 +736,14 @@ function Run-SmokeTestWithRecovery {
 
 function Get-SparkAppProcesses {
     Get-CimInstance Win32_Process | Where-Object {
-        $_.Name -match "^python(?:w)?(?:\.exe)?$" -and
+        $_.CommandLine -and
         $_.CommandLine -match "spark_app_v2\.py"
     }
 }
 
 function Get-WatchFullStackProcesses {
     Get-CimInstance Win32_Process | Where-Object {
-        $_.Name -match "^python(?:w)?(?:\.exe)?$" -and
+        $_.CommandLine -and
         $_.CommandLine -match "watch_full_stack\.py"
     }
 }
@@ -753,6 +771,29 @@ function Stop-SparkAppProcesses {
     Start-Sleep -Seconds 1
 }
 
+function Stop-WatchFullStackProcesses {
+    $processes = @(Get-WatchFullStackProcesses)
+    if ($processes.Count -eq 0) {
+        return
+    }
+
+    $ids = $processes | ForEach-Object { $_.ProcessId }
+    Write-Status "Watcher status" ("Stopping existing watch_full_stack.py instance(s): " + ($ids -join ", "))
+
+    foreach ($process in $processes) {
+        Stop-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
+    }
+
+    Start-Sleep -Seconds 2
+
+    $remaining = @(Get-WatchFullStackProcesses)
+    foreach ($process in $remaining) {
+        Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+
+    Start-Sleep -Seconds 1
+}
+
 function Start-SparkApp {
     param(
         [string]$PythonExe,
@@ -762,8 +803,7 @@ function Start-SparkApp {
     $existing = @(Get-SparkAppProcesses)
 
     if ($existing) {
-        Write-Status "App status" "spark_app_v2.py is already running"
-        return
+        Stop-SparkAppProcesses
     }
 
     $scriptPath = Join-Path $RepoRoot "spark_app_v2.py"
@@ -789,8 +829,7 @@ function Start-FullStackWatcher {
     $existing = @(Get-WatchFullStackProcesses)
 
     if ($existing) {
-        Write-Status "Watcher status" "watch_full_stack.py is already running"
-        return
+        Stop-WatchFullStackProcesses
     }
 
     $command = 'cd /d "{0}" && "{1}" watch_full_stack.py' -f $RepoRoot, $PythonExe
@@ -876,12 +915,15 @@ function Invoke-SetupSpark {
     Deploy-PicoFirmware -PythonExe $pythonExe -PicoDrive $picoMount.Drive
     Sync-JetsonBridgeBundle -JetsonDrive $jetsonMount.Drive
 
+    Write-Section "Cleanup"
+    Stop-SparkAppProcesses
+    Stop-WatchFullStackProcesses
+
     Write-Section "Jetson Services"
     Start-JetsonServices -RemotePath $JetsonRemotePath
     Wait-JetsonBridgeSettle -Seconds $BridgeSettleSeconds
 
     if (-not $SkipSmokeTest) {
-        Stop-SparkAppProcesses
         Run-SmokeTestWithRecovery -PythonExe $pythonExe -PicoDrive $picoMount.Drive -RemotePath $JetsonRemotePath
     }
 

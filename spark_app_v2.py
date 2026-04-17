@@ -44,6 +44,7 @@ from host_pc.serial_sender import SerialSender
 from host_pc.live_capture import LiveCaptureFeed
 from host_pc.snapshot_policy import is_relevant_snapshot, snapshot_fingerprint
 from host_pc.summarize_stream import (
+     build_keyword_search_request,
      build_respond_request,
      build_reformat_request,
      build_summary_request,
@@ -955,6 +956,7 @@ class SparkPanel(QWidget):
         self._last_device_response_signature = (0, False, False)
         self._device_response_poll_deadline = 0.0
         self._last_physical_reformat_trigger_at = 0.0
+        self._last_physical_keyword_trigger_at = 0.0
         self._last_physical_respond_trigger_at = 0.0
         self._last_pico_runtime_text = ""
         self._last_pico_runtime_emitted_at: float | None = None
@@ -1356,6 +1358,13 @@ class SparkPanel(QWidget):
         self.btn_custom_context.setEnabled(enabled)
 
     def _on_summarize_succeeded(self, text: str):
+        if self._active_feature_command == AppCommand.FEATURE_3:
+            self.release_output_lbl.setPlainText(text if text else "No keyword search result returned.")
+            if text:
+                QApplication.clipboard().setText(text)
+            self._set_status("Jetson keyword search complete — output updated", GREEN)
+            return
+
         if self._active_feature_command == AppCommand.FEATURE_4:
             self.release_output_lbl.setPlainText(text if text else "No response returned.")
             if text:
@@ -1373,6 +1382,9 @@ class SparkPanel(QWidget):
 
     def _on_summarize_progress(self, text: str):
         self.release_output_lbl.setPlainText(text)
+        if self._active_feature_command == AppCommand.FEATURE_3:
+            self._set_status("Streaming keyword search from Jetson…", ORANGE)
+            return
         if self._active_feature_command == AppCommand.FEATURE_4:
             self._set_status("Streaming response from Jetson…", ORANGE)
             return
@@ -1411,6 +1423,13 @@ class SparkPanel(QWidget):
                 return
             self._last_physical_reformat_trigger_at = now
             self._on_reformat()
+            return
+        if message == "post_press:3" and not self._summary_request_in_flight:
+            now = time.monotonic()
+            if (now - self._last_physical_keyword_trigger_at) < 1.0:
+                return
+            self._last_physical_keyword_trigger_at = now
+            self._on_keyword_search()
             return
         if message == "post_press:4" and not self._summary_request_in_flight:
             now = time.monotonic()
@@ -1853,6 +1872,25 @@ class SparkPanel(QWidget):
             request=request,
             capture_label="[REFORMAT] Reformat selected text",
             status_text="Sending reformat request to Jetson…",
+        )
+
+    def _on_keyword_search(self):
+        info = self.manager.get_active_window_info()
+        if info and not self.privacy_guard.is_safe(info.bundle_id, info.title):
+            self._set_status("Cannot search: Sensitive window detected", RED)
+            return
+
+        selected = self.manager.get_selected_text()
+        if not (selected and selected.strip()):
+            self._set_status("No text selected — highlight a keyword first", RED)
+            return
+
+        request = build_keyword_search_request(selected)
+        self._start_feature_request(
+            AppCommand.FEATURE_3,
+            request=request,
+            capture_label="[KEYWORD] Search recent context",
+            status_text="Sending keyword search request to Jetson…",
         )
 
     def _on_respond(self):
