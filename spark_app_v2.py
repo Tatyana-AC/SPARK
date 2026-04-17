@@ -44,6 +44,7 @@ from host_pc.serial_sender import SerialSender
 from host_pc.live_capture import LiveCaptureFeed
 from host_pc.snapshot_policy import is_relevant_snapshot, snapshot_fingerprint
 from host_pc.summarize_stream import (
+     build_respond_request,
      build_reformat_request,
      build_summary_request,
      build_summarize_command,
@@ -954,6 +955,7 @@ class SparkPanel(QWidget):
         self._last_device_response_signature = (0, False, False)
         self._device_response_poll_deadline = 0.0
         self._last_physical_reformat_trigger_at = 0.0
+        self._last_physical_respond_trigger_at = 0.0
         self._last_pico_runtime_text = ""
         self._last_pico_runtime_emitted_at: float | None = None
         self._last_runtime_response_flags = (False, False)
@@ -1354,6 +1356,13 @@ class SparkPanel(QWidget):
         self.btn_custom_context.setEnabled(enabled)
 
     def _on_summarize_succeeded(self, text: str):
+        if self._active_feature_command == AppCommand.FEATURE_4:
+            self.release_output_lbl.setPlainText(text if text else "No response returned.")
+            if text:
+                QApplication.clipboard().setText(text)
+            self._set_status("Jetson response complete — output updated", GREEN)
+            return
+
         self.release_output_lbl.setPlainText(text if text else "No summary returned.")
         if self._active_feature_command == AppCommand.FEATURE_2:
             if text:
@@ -1364,6 +1373,9 @@ class SparkPanel(QWidget):
 
     def _on_summarize_progress(self, text: str):
         self.release_output_lbl.setPlainText(text)
+        if self._active_feature_command == AppCommand.FEATURE_4:
+            self._set_status("Streaming response from Jetson…", ORANGE)
+            return
         if self._active_feature_command == AppCommand.FEATURE_2:
             self._set_status("Streaming reformat from Jetson…", ORANGE)
             return
@@ -1399,6 +1411,13 @@ class SparkPanel(QWidget):
                 return
             self._last_physical_reformat_trigger_at = now
             self._on_reformat()
+            return
+        if message == "post_press:4" and not self._summary_request_in_flight:
+            now = time.monotonic()
+            if (now - self._last_physical_respond_trigger_at) < 1.0:
+                return
+            self._last_physical_respond_trigger_at = now
+            self._on_respond()
 
     def _start_device_response_polling(self):
         self._device_response_poll_deadline = time.monotonic() + 30.0
@@ -1834,6 +1853,30 @@ class SparkPanel(QWidget):
             request=request,
             capture_label="[REFORMAT] Reformat selected text",
             status_text="Sending reformat request to Jetson…",
+        )
+
+    def _on_respond(self):
+        info = self.manager.get_active_window_info()
+        if info and not self.privacy_guard.is_safe(info.bundle_id, info.title):
+            self._set_status("Cannot respond: Sensitive window detected", RED)
+            return
+
+        draft_text = self.manager.get_focused_element_text()
+        if not (draft_text and draft_text.strip()):
+            draft_text = self.manager.get_window_text()
+        if not (draft_text and draft_text.strip()):
+            draft_text = self.processed_text
+
+        if not (draft_text and draft_text.strip()):
+            self._set_status("No draft text detected — place the cursor in the text field first", RED)
+            return
+
+        request = build_respond_request(draft_text)
+        self._start_feature_request(
+            AppCommand.FEATURE_4,
+            request=request,
+            capture_label="[RESPOND] Continue current draft",
+            status_text="Sending respond request to Jetson…",
         )
 
     def _on_view_jetson_db(self):

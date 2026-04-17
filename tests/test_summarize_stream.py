@@ -53,6 +53,24 @@ class SummarizeStreamTests(unittest.TestCase):
 
         self.assertEqual(len(request["selected_text"]), _MAX_WINDOW_TEXT_CHARS)
 
+    def test_build_respond_request_trims_and_serializes_previous_user_input(self):
+        from host_pc.summarize_stream import build_respond_request
+
+        payload = build_respond_request("  drafted reply so far  ")
+        request = json.loads(payload)
+
+        self.assertEqual(request["command"], "respond_selection")
+        self.assertEqual(request["previous_user_input"], "drafted reply so far")
+        self.assertEqual(len(request), 2)
+
+    def test_build_respond_request_truncates_to_upload_budget(self):
+        from host_pc.summarize_stream import build_respond_request, _MAX_WINDOW_TEXT_CHARS
+
+        payload = build_respond_request("x" * (_MAX_WINDOW_TEXT_CHARS + 1))
+        request = json.loads(payload)
+
+        self.assertEqual(len(request["previous_user_input"]), _MAX_WINDOW_TEXT_CHARS)
+
 
 if __name__ == "__main__":
     unittest.main()

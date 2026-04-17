@@ -9,6 +9,7 @@ from unittest import mock
 from jetson.db_manager import JetsonDB
 from jetson.pico_llm_bridge import (
     build_llm_request,
+    _build_respond_prompt,
     _build_summarize_prompt,
     _log_inbound_packet,
     handle_summarize_request,
@@ -157,6 +158,30 @@ class BuildLlmRequestTests(unittest.TestCase):
         self.assertIn("selected text", system)
         self.assertNotEqual(system, SYSTEM_PROMPT)
 
+    def test_respond_selection_command_pulls_from_db(self):
+        self.db.on_context_new(_make_context_payload(text="Visible draft context"))
+
+        raw = json.dumps({
+            "command": "respond_selection",
+            "previous_user_input": "Thanks for the update. I wanted to follow up on",
+        })
+        system, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("continue and complete the user's in-progress text", system.lower())
+        self.assertIn("Active application: Firefox", prompt)
+        self.assertIn("Window title: GitHub - SPARK", prompt)
+        self.assertIn("Visible draft context", prompt)
+        self.assertIn("Thanks for the update. I wanted to follow up on", prompt)
+
+    def test_respond_selection_without_active_session(self):
+        raw = json.dumps({
+            "command": "respond_selection",
+            "previous_user_input": "draft text",
+        })
+        _, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("no active session", prompt)
+
 
 class BridgeLoggingTests(unittest.TestCase):
     def test_log_inbound_packet_logs_button_press(self):
@@ -218,6 +243,41 @@ class ReformatHandlingTests(unittest.TestCase):
         request = json.dumps({
             "command": "reformat_selection",
             "selected_text": "inline code",
+        })
+
+        with mock.patch("jetson.pico_llm_bridge.build_error", return_value=b"ERROR") as mk_error:
+            with mock.patch("jetson.pico_llm_bridge.query_llm_blocking") as query:
+                with mock.patch("jetson.pico_llm_bridge._write_bridge_packet") as writer:
+                    handle_summarize_request(ser, request, self._make_args(), db=self.db)
+
+        mk_error.assert_called_once()
+        query.assert_not_called()
+        writer.assert_called_once_with(ser, b"ERROR", label="error")
+
+    def test_respond_selection_ignores_structured_response_mode(self):
+        self.db.on_context_new(_make_context_payload())
+        ser = mock.Mock()
+        request = json.dumps({
+            "command": "respond_selection",
+            "previous_user_input": "half-written reply",
+        })
+
+        with mock.patch("jetson.pico_llm_bridge._emit_summary_response") as emit_chunks:
+            with mock.patch("jetson.pico_llm_bridge.query_llm_blocking", return_value="completed reply") as query:
+                with mock.patch("jetson.pico_llm_bridge._write_bridge_packet"):
+                    with mock.patch("jetson.pico_llm_bridge.time.sleep"):
+                        handle_summarize_request(ser, request, self._make_args(), db=self.db)
+
+        query.assert_called_once()
+        query_kwargs = query.call_args.kwargs
+        self.assertFalse(query_kwargs["structured"])
+        emit_chunks.assert_any_call(ser, "completed reply")
+
+    def test_respond_selection_without_session_sends_error(self):
+        ser = mock.Mock()
+        request = json.dumps({
+            "command": "respond_selection",
+            "previous_user_input": "half-written reply",
         })
 
         with mock.patch("jetson.pico_llm_bridge.build_error", return_value=b"ERROR") as mk_error:

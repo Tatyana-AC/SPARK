@@ -167,6 +167,93 @@ class WindowsAccessibilityProvider(AccessibilityProvider):
         except Exception as e:
             logger.error(f"Failed to get selected text: {e}")
             return None
+
+    @staticmethod
+    def _normalize_text_value(value) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        if not value.strip():
+            return None
+        return value
+
+    def _read_control_text(self, control) -> Optional[str]:
+        candidates = []
+
+        if hasattr(control, "get_value"):
+            try:
+                value = self._normalize_text_value(control.get_value())
+                if value:
+                    candidates.append(value)
+            except Exception:
+                pass
+
+        if hasattr(control, "window_text"):
+            try:
+                value = self._normalize_text_value(control.window_text())
+                if value:
+                    candidates.append(value)
+            except Exception:
+                pass
+
+        if hasattr(control, "texts"):
+            try:
+                texts = control.texts()
+                if texts:
+                    joined = self._normalize_text_value("\n".join(str(text) for text in texts if str(text).strip()))
+                    if joined:
+                        candidates.append(joined)
+            except Exception:
+                pass
+
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda text: len(text.strip()))
+
+    @staticmethod
+    def _is_editor_like_control(control) -> bool:
+        element_info = getattr(control, "element_info", None)
+        control_type = str(getattr(element_info, "control_type", "") or "").strip().lower()
+        if control_type in {"edit", "document"}:
+            return True
+
+        class_name = str(getattr(element_info, "class_name", "") or "").strip().lower()
+        if any(token in class_name for token in ("edit", "richedit", "document")):
+            return True
+
+        if hasattr(control, "friendly_class_name"):
+            try:
+                friendly = str(control.friendly_class_name() or "").strip().lower()
+                if any(token in friendly for token in ("edit", "document")):
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    def _find_editor_like_text(self, control) -> Optional[str]:
+        candidates = []
+
+        if self._is_editor_like_control(control):
+            direct_text = self._read_control_text(control)
+            if direct_text:
+                candidates.append(direct_text)
+
+        if hasattr(control, "descendants"):
+            try:
+                for descendant in control.descendants():
+                    if not self._is_editor_like_control(descendant):
+                        continue
+                    text = self._read_control_text(descendant)
+                    if text:
+                        candidates.append(text)
+            except Exception:
+                pass
+
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda text: len(text.strip()))
     
     def get_focused_element_text(self) -> Optional[str]:
         """
@@ -184,15 +271,20 @@ class WindowsAccessibilityProvider(AccessibilityProvider):
             try:
                 focused = window.get_focus()
                 if focused:
-                    # Try to get edit text
-                    if hasattr(focused, 'get_value'):
-                        return focused.get_value()
-                    elif hasattr(focused, 'window_text'):
-                        return focused.window_text()
-                    elif hasattr(focused, 'texts'):
-                        texts = focused.texts()
-                        if texts:
-                            return ' '.join(texts)
+                    direct_text = self._read_control_text(focused)
+                    if self._is_editor_like_control(focused) and direct_text:
+                        return direct_text
+
+                    editor_text = self._find_editor_like_text(focused)
+                    if editor_text:
+                        return editor_text
+
+                    window_editor_text = self._find_editor_like_text(window)
+                    if window_editor_text:
+                        return window_editor_text
+
+                    if direct_text:
+                        return direct_text
             except Exception as e:
                 logger.debug(f"Failed to get focused control text: {e}")
             
@@ -218,6 +310,10 @@ class WindowsAccessibilityProvider(AccessibilityProvider):
             window = self._connect_to_active_window()
             if not window:
                 return None
+
+            editor_text = self._find_editor_like_text(window)
+            if editor_text:
+                return editor_text
             
             # Extract text from window hierarchy
             text_parts = []

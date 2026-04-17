@@ -37,11 +37,17 @@ class BridgeApp:
             int(AppCommand.FEATURE_2),
             ((int(AppCommand.FEATURE_2) & 0x00FF) << 8) | ((int(AppCommand.FEATURE_2) & 0xFF00) >> 8),
         }
+        feature_4_codes = {
+            int(AppCommand.FEATURE_4),
+            ((int(AppCommand.FEATURE_4) & 0x00FF) << 8) | ((int(AppCommand.FEATURE_4) & 0xFF00) >> 8),
+        }
 
         if command_code == int(AppCommand.FEATURE_1):
             return self._prepare_feature_1(text, status)
         if command_code in feature_2_codes:
             return self._prepare_feature_2(text, status)
+        if command_code in feature_4_codes:
+            return self._prepare_feature_4(text, status)
 
         return {
             "accepted_text": text,
@@ -61,6 +67,9 @@ class BridgeApp:
 
     def _prepare_feature_2(self, text, status):
         return self._forward_request_text(text, status, AppCommand.FEATURE_2)
+
+    def _prepare_feature_4(self, text, status):
+        return self._forward_request_text(text, status, AppCommand.FEATURE_4)
 
     def _forward_request_text(self, text, status, app_command):
         try:

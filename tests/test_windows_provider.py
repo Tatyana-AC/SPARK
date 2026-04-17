@@ -56,6 +56,90 @@ class WindowsAccessibilityProviderTests(unittest.TestCase):
         app.window.assert_called_once_with(handle=hwnd)
 
     @patch.object(WindowsAccessibilityProvider, "_init_libraries", autospec=True)
+    def test_get_focused_element_text_prefers_editor_like_descendant_text(self, mock_init):
+        provider = WindowsAccessibilityProvider()
+
+        editor = Mock()
+        editor.element_info.control_type = "Document"
+        editor.get_value.return_value = "This is the proof that the square root of 2 is irrational."
+
+        focused = Mock()
+        focused.get_value.return_value = ""
+        focused.window_text.return_value = ""
+        focused.texts.return_value = []
+        focused.descendants.return_value = [editor]
+        focused.element_info.control_type = "Pane"
+
+        window = Mock()
+        window.get_focus.return_value = focused
+
+        provider._connect_to_active_window = Mock(return_value=window)
+
+        text = provider.get_focused_element_text()
+
+        self.assertEqual(text, "This is the proof that the square root of 2 is irrational.")
+
+    @patch.object(WindowsAccessibilityProvider, "_init_libraries", autospec=True)
+    def test_get_focused_element_text_prefers_editor_body_over_tab_label(self, mock_init):
+        provider = WindowsAccessibilityProvider()
+
+        editor = Mock()
+        editor.element_info.control_type = "Document"
+        editor.get_value.return_value = "This is the proof that the square root of 2 is irrational."
+
+        focused = Mock()
+        focused.get_value.return_value = ""
+        focused.window_text.return_value = "math proof.txt"
+        focused.texts.return_value = ["math proof.txt"]
+        focused.descendants.return_value = [editor]
+        focused.element_info.control_type = "TabItem"
+
+        window = Mock()
+        window.get_focus.return_value = focused
+
+        provider._connect_to_active_window = Mock(return_value=window)
+
+        text = provider.get_focused_element_text()
+
+        self.assertEqual(text, "This is the proof that the square root of 2 is irrational.")
+
+    @patch.object(WindowsAccessibilityProvider, "_init_libraries", autospec=True)
+    def test_get_window_text_prefers_editor_like_descendant_over_window_chrome(self, mock_init):
+        provider = WindowsAccessibilityProvider()
+        provider.win32gui = Mock()
+        provider.pywinauto = Mock()
+
+        tab = Mock()
+        tab.element_info.control_type = "TabItem"
+        tab.get_value.return_value = ""
+        tab.window_text.return_value = "github token.txt"
+        tab.texts.return_value = ["github token.txt"]
+
+        toolbar = Mock()
+        toolbar.element_info.control_type = "ToolBar"
+        toolbar.get_value.return_value = ""
+        toolbar.window_text.return_value = "Bold"
+        toolbar.texts.return_value = ["Bold"]
+
+        editor = Mock()
+        editor.element_info.control_type = "Document"
+        editor.get_value.return_value = "This is the proof that the square root of 2 is irrational."
+
+        window = Mock()
+        window.descendants.return_value = [tab, toolbar, editor]
+
+        provider._connect_to_active_window = Mock(return_value=window)
+        provider._extract_window_text_recursive = Mock(
+            side_effect=lambda control, text_parts, depth=0: text_parts.extend(
+                ["github token.txt", "Bold", "This is the proof that the square root of 2 is irrational."]
+            )
+        )
+
+        text = provider.get_window_text()
+
+        self.assertEqual(text, "This is the proof that the square root of 2 is irrational.")
+
+    @patch.object(WindowsAccessibilityProvider, "_init_libraries", autospec=True)
     def test_get_active_window_info_includes_window_handle(self, mock_init):
         provider = WindowsAccessibilityProvider()
         hwnd = 789

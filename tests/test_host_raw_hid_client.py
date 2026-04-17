@@ -348,6 +348,32 @@ class HostRawHidClientTests(unittest.TestCase):
         self.assertEqual(writes[0][0], 0x13)
         self.assertEqual(writes[1][0], 0x10)
 
+    def test_upload_retries_once_after_incomplete_upload(self):
+        client = SparkHIDClient()
+        writes = []
+        statuses = iter(
+            [
+                UploadStatus(message_id=1, code=StatusCode.OK, value0=0, value1=0, detail=""),
+                UploadStatus(message_id=1, code=StatusCode.INCOMPLETE_UPLOAD, value0=0, value1=0, detail="missing"),
+                UploadStatus(message_id=2, code=StatusCode.OK, value0=0, value1=0, detail=""),
+                UploadStatus(message_id=2, code=StatusCode.OK, value0=0, value1=0, detail=""),
+            ]
+        )
+
+        with (
+            mock.patch.object(client, "_ensure_idle", return_value=None),
+            mock.patch.object(client, "_write", side_effect=lambda payload: writes.append(payload)),
+            mock.patch.object(client, "_read_status", side_effect=lambda *args, **kwargs: next(statuses)),
+            mock.patch.object(client, "_report_gap", return_value=None),
+        ):
+            result = client.upload(AppCommand.FEATURE_4, "retry me")
+
+        self.assertTrue(result.ok)
+        begin_reports = [payload for payload in writes if payload[0] == 0x10]
+        commit_reports = [payload for payload in writes if payload[0] == 0x12]
+        self.assertEqual(len(begin_reports), 2)
+        self.assertEqual(len(commit_reports), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

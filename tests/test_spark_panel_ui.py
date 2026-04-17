@@ -191,6 +191,98 @@ class SparkPanelUiTests(unittest.TestCase):
         start_feature_request.assert_not_called()
         panel._set_status.assert_called_once_with("No text selected — highlight text first", spark_app_v2.RED)
 
+    def test_respond_uses_focused_text_without_selection(self):
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Mail draft")
+        manager.get_focused_element_text.return_value = "  half written email  "
+
+        panel = self._make_panel()
+        panel.manager = manager
+        panel.processed_text = "old captured text"
+
+        with (
+            mock.patch.object(spark_app_v2, "build_respond_request") as build_respond,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            build_respond.return_value = "RESPOND_REQUEST"
+            panel._on_respond()
+
+        manager.get_focused_element_text.assert_called_once_with()
+        build_respond.assert_called_once_with("  half written email  ")
+        start_feature_request.assert_called_once()
+        args, kwargs = start_feature_request.call_args
+        self.assertEqual(kwargs.get("app_command", args[0]), spark_app_v2.AppCommand.FEATURE_4)
+        request = kwargs.get("request", args[1] if len(args) > 1 else None)
+        self.assertEqual(request, "RESPOND_REQUEST")
+
+    def test_respond_falls_back_to_processed_text_when_focused_text_is_empty(self):
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Mail draft")
+        manager.get_focused_element_text.return_value = "   "
+        manager.get_window_text.return_value = None
+
+        panel = self._make_panel()
+        panel.manager = manager
+        panel.processed_text = "saved draft text"
+
+        with (
+            mock.patch.object(spark_app_v2, "build_respond_request") as build_respond,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            build_respond.return_value = "RESPOND_REQUEST"
+            panel._on_respond()
+
+        build_respond.assert_called_once_with("saved draft text")
+        start_feature_request.assert_called_once()
+
+    def test_respond_falls_back_to_window_text_when_focused_text_is_empty(self):
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Note draft")
+        manager.get_focused_element_text.return_value = ""
+        manager.get_window_text.return_value = "This is the proof that the square root of 2 is irrational."
+
+        panel = self._make_panel()
+        panel.manager = manager
+        panel.processed_text = "old captured text"
+
+        with (
+            mock.patch.object(spark_app_v2, "build_respond_request") as build_respond,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            build_respond.return_value = "RESPOND_REQUEST"
+            panel._on_respond()
+
+        manager.get_focused_element_text.assert_called_once_with()
+        manager.get_window_text.assert_called_once_with()
+        build_respond.assert_called_once_with(
+            "This is the proof that the square root of 2 is irrational."
+        )
+        start_feature_request.assert_called_once()
+
+    def test_respond_fails_fast_when_no_draft_text_is_available(self):
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Mail draft")
+        manager.get_focused_element_text.return_value = None
+        manager.get_window_text.return_value = None
+
+        panel = self._make_panel()
+        panel.manager = manager
+        panel.processed_text = ""
+        panel._set_status = mock.Mock()
+
+        with (
+            mock.patch.object(spark_app_v2, "build_respond_request") as build_respond,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            panel._on_respond()
+
+        build_respond.assert_not_called()
+        start_feature_request.assert_not_called()
+        panel._set_status.assert_called_once_with(
+            "No draft text detected — place the cursor in the text field first",
+            spark_app_v2.RED,
+        )
+
     def test_start_feature_request_uses_feature_2_round_trip(self):
         hid_client = mock.Mock()
         hid_client.is_connected.return_value = True
@@ -223,6 +315,41 @@ class SparkPanelUiTests(unittest.TestCase):
         stream_round_trip.assert_called_once()
         args, kwargs = stream_round_trip.call_args
         self.assertEqual(args[0], spark_app_v2.AppCommand.FEATURE_2)
+        self.assertEqual(args[1], "request-payload")
+        self.assertIn("on_update", kwargs)
+
+    def test_start_feature_request_uses_feature_4_round_trip(self):
+        hid_client = mock.Mock()
+        hid_client.is_connected.return_value = True
+
+        panel = self._make_panel(hid_client=hid_client)
+
+        def immediate_thread(*args, **kwargs):
+            if args:
+                target = args[0]
+                thread_args = args[1] if len(args) > 1 else tuple()
+            else:
+                target = kwargs["target"]
+                thread_args = kwargs.get("args", tuple())
+            t = mock.Mock()
+            t.start.side_effect = lambda: target(*thread_args)
+            return t
+
+        with (
+            mock.patch("spark_app_v2.threading.Thread", mock.Mock(side_effect=immediate_thread)) as thread_cls,
+            mock.patch.object(hid_client, "stream_round_trip_text", return_value="continued response") as stream_round_trip,
+        ):
+            panel._start_feature_request(
+                app_command=spark_app_v2.AppCommand.FEATURE_4,
+                request="request-payload",
+                capture_label="[RESPOND] continue draft",
+                status_text="Sending respond request",
+            )
+
+        thread_cls.assert_called_once()
+        stream_round_trip.assert_called_once()
+        args, kwargs = stream_round_trip.call_args
+        self.assertEqual(args[0], spark_app_v2.AppCommand.FEATURE_4)
         self.assertEqual(args[1], "request-payload")
         self.assertIn("on_update", kwargs)
 
@@ -335,6 +462,29 @@ class SparkPanelUiTests(unittest.TestCase):
         self.assertEqual(panel.release_output_lbl.toPlainText(), "partial chunk")
         clipboard.setText.assert_not_called()
 
+    def test_respond_completion_status_text_is_feature_specific(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_4
+        panel._set_status = mock.Mock()
+        clipboard = mock.Mock()
+
+        with mock.patch.object(spark_app_v2.QApplication, "clipboard", return_value=clipboard):
+            panel._on_summarize_succeeded("continued response")
+
+        panel._set_status.assert_called_once_with("Jetson response complete — output updated", spark_app_v2.GREEN)
+        self.assertEqual(panel.release_output_lbl.toPlainText(), "continued response")
+        clipboard.setText.assert_called_once_with("continued response")
+
+    def test_respond_streaming_status_text_is_feature_specific(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_4
+        panel._set_status = mock.Mock()
+
+        panel._on_summarize_progress("partial response")
+
+        panel._set_status.assert_called_once_with("Streaming response from Jetson…", spark_app_v2.ORANGE)
+        self.assertEqual(panel.release_output_lbl.toPlainText(), "partial response")
+
     def test_finished_feature_request_drains_stale_hid_debug_events(self):
         hid_client = mock.Mock()
         hid_client.is_connected.return_value = True
@@ -439,6 +589,38 @@ class SparkPanelUiTests(unittest.TestCase):
 
         on_reformat.assert_called_once_with()
 
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_four_post_press_triggers_respond_without_starting_response_polling(self):
+        panel = self._make_panel()
+
+        with mock.patch.object(panel, "_on_respond") as on_respond:
+            panel._on_pico_debug_message("post_press:4")
+
+        on_respond.assert_called_once_with()
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_four_post_press_is_ignored_while_request_in_flight(self):
+        panel = self._make_panel()
+        panel._summary_request_in_flight = True
+
+        with mock.patch.object(panel, "_on_respond") as on_respond:
+            panel._on_pico_debug_message("post_press:4")
+
+        on_respond.assert_not_called()
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_four_post_press_is_debounced(self):
+        panel = self._make_panel()
+
+        with (
+            mock.patch.object(panel, "_on_respond") as on_respond,
+            mock.patch.object(spark_app_v2.time, "monotonic", side_effect=[10.0, 10.2]),
+        ):
+            panel._on_pico_debug_message("post_press:4")
+            panel._on_pico_debug_message("post_press:4")
+
+        on_respond.assert_called_once_with()
         self.assertFalse(panel._response_poll_timer.isActive())
 
     def test_buttons_three_and_four_do_not_start_response_polling(self):

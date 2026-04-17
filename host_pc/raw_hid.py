@@ -476,15 +476,16 @@ class SparkHIDClient:
         Handles BEGIN_UPLOAD → chunks → COMMIT_UPLOAD and returns the final
         status. Raises SparkProtocolError on transport or protocol errors.
         """
-        self._ensure_idle()
-        payload    = text.encode("utf-8")
-        message_id = self._next_message_id()
-        crc32      = zlib.crc32(payload) & 0xFFFFFFFF
-        total_len  = len(payload)
-        chunks     = [
+        payload = text.encode("utf-8")
+        crc32 = zlib.crc32(payload) & 0xFFFFFFFF
+        total_len = len(payload)
+        chunks = [
             payload[i : i + CHUNK_PAYLOAD_SIZE]
             for i in range(0, total_len, CHUNK_PAYLOAD_SIZE)
         ]
+
+        self._ensure_idle()
+        message_id = self._next_message_id()
 
         logger.info(
             f"upload msg={message_id} cmd=0x{app_command:04X} "
@@ -536,8 +537,19 @@ class SparkHIDClient:
         final = self._read_status(Command.COMMIT_UPLOAD, message_id)
         if final.ok:
             logger.info(f"upload complete: {final}")
-        else:
-            logger.warning(f"upload failed: {final}")
+            return final
+
+        logger.warning(f"upload failed: {final}")
+        if (
+            final.code == StatusCode.INCOMPLETE_UPLOAD
+            and not getattr(self, "_upload_retry_once_active", False)
+        ):
+            logger.warning("retrying upload once after transient incomplete upload")
+            self._upload_retry_once_active = True
+            try:
+                return self.upload(app_command, text)
+            finally:
+                self._upload_retry_once_active = False
         return final
 
     def abort(self, message_id: int) -> UploadStatus:

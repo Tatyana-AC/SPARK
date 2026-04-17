@@ -134,6 +134,11 @@ REFORMAT_SYSTEM_PROMPT = (
     "Return only the rewritten selected text."
 )
 
+RESPOND_SYSTEM_PROMPT = (
+    "You continue and complete the user's in-progress text using the active window context. "
+    "Return only the continuation text."
+)
+
 
 def _build_summarize_prompt(app_name: str, window_title: str, window_text: str) -> str:
     app_name = (app_name or "").strip() or "(unknown app)"
@@ -176,6 +181,31 @@ def _build_reformat_prompt(
     )
 
 
+def _build_respond_prompt(
+    app_name: str,
+    window_title: str,
+    window_text: str,
+    previous_user_input: str,
+) -> str:
+    app_name = (app_name or "").strip() or "(unknown app)"
+    window_title = (window_title or "").strip() or "(untitled window)"
+    window_text = (window_text or "").strip()
+    previous_user_input = previous_user_input if isinstance(previous_user_input, str) else ""
+    return (
+        "Continue and complete the user's in-progress text using only the provided context.\n"
+        "Treat the previous user input as the start of the draft.\n"
+        "Keep the continuation consistent with the active application context and visible content.\n"
+        "Return only the continuation text.\n"
+        "Do not add labels, explanations, commentary, or JSON.\n\n"
+        f"Active application: {app_name}\n"
+        f"Window title: {window_title}\n"
+        "Visible text:\n"
+        f"{window_text}\n"
+        "Previous user input:\n"
+        f"{previous_user_input}\n"
+    )
+
+
 def _parse_request(raw_prompt: str) -> dict:
     try:
         request = json.loads(raw_prompt)
@@ -212,6 +242,20 @@ def build_llm_request(
             request.get("selected_text", ""),
         )
         return REFORMAT_SYSTEM_PROMPT, user_prompt
+
+    if command == "respond_selection":
+        if db is None:
+            return default_system_prompt, "(no database available)"
+        session = db.get_active_session()
+        if session is None:
+            return default_system_prompt, "(no active session)"
+        user_prompt = _build_respond_prompt(
+            session["app_name"],
+            session["window_title"],
+            session["text"],
+            request.get("previous_user_input", ""),
+        )
+        return RESPOND_SYSTEM_PROMPT, user_prompt
 
     if command == "summarize":
         if db is None:
@@ -320,7 +364,7 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
         db=db,
         _request=request,
     )
-    structured = args.structured and command != "reformat_selection"
+    structured = args.structured and command not in {"reformat_selection", "respond_selection"}
     logger.info(
         "Handling summarize request: chars=%d stream=%s structured=%s llm_url=%s command=%s",
         len(request_text or ""),
@@ -334,9 +378,13 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
     # a diagnostic warning back so the user knows what went wrong.
     _NO_CONTEXT_MARKERS = ("(no database available)", "(no active session)")
     if llm_prompt in _NO_CONTEXT_MARKERS:
-        if command == "reformat_selection":
-            warning_msg = "[ERROR] Cannot reformat without active context."
-            logger.warning("Reformat skipped LLM: %s", warning_msg)
+        if command in {"reformat_selection", "respond_selection"}:
+            warning_msg = (
+                "[ERROR] Cannot reformat without active context."
+                if command == "reformat_selection"
+                else "[ERROR] Cannot respond without active context."
+            )
+            logger.warning("%s skipped LLM: %s", command, warning_msg)
             try:
                 _write_bridge_packet(ser, build_error(warning_msg), label="error")
             except Exception:

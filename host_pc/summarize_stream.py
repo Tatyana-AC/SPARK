@@ -49,3 +49,18 @@ def build_reformat_request(selected_text: str) -> str:
             "selected_text": selected_text,
         }
     )
+
+
+def build_respond_request(previous_user_input: str) -> str:
+    """Build a respond_selection request from automatically extracted draft text."""
+    previous_user_input = (previous_user_input or "").strip()
+
+    if len(previous_user_input) > _MAX_WINDOW_TEXT_CHARS:
+        previous_user_input = previous_user_input[:_MAX_WINDOW_TEXT_CHARS]
+
+    return json.dumps(
+        {
+            "command": "respond_selection",
+            "previous_user_input": previous_user_input,
+        }
+    )
