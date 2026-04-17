@@ -303,7 +303,7 @@ class WebContentWindowsTests(unittest.TestCase):
         self.assertTrue(result.text.startswith("The Boston Tea Party was a political protest"))
         self.assertIn("political protest", result.text)
         self.assertIn("Boston Harbor", result.text)
-        self.assertIn("\n\n", result.text)
+        self.assertNotIn("\n\n", result.text)
         self.assertGreater(len(result.text), len(frag2._text))
 
     def test_live_extraction_does_not_truncate_aggregated_text_at_old_char_cap(self):
@@ -388,6 +388,81 @@ class WebContentWindowsTests(unittest.TestCase):
 
         self.assertTrue(result.is_useful)
         self.assertIn("act of protest on December 16, 1773", result.text)
+
+    def test_live_extraction_merges_wikipedia_fragments_into_plain_paragraphs(self):
+        title = FakeControl(
+            text="Boston Tea Party - Wikipedia - Google Chrome",
+            control_type="Text",
+        )
+        fragments = [
+            FakeControl(
+                text=(
+                    "The Boston Tea Party was an act of protest on December 16, 1773 during the American Revolution."
+                ),
+                control_type="Document",
+            ),
+            FakeControl(
+                text=(
+                    "Initiated by the Sons of Liberty in Boston, the capital of Massachusetts, one of the Thirteen Colonies of British America, it escalated hostilities between Great Britain and the Patriots, who opposed British policy towards its American colonies.[1]"
+                ),
+                control_type="Document",
+            ),
+            FakeControl(
+                text=(
+                    "Less than two years later, on April 19, 1775, the Battles of Lexington and Concord, also in Massachusetts, launched the eight-year American Revolutionary War, which resulted in the independence of the colonies as the United States."
+                ),
+                control_type="Document",
+            ),
+            FakeControl(
+                text=(
+                    "The source of the protestors' anger was the passage of the Tea Act by the Parliament of Great Britain on May 10, 1773, which allowed the East India Company (EIC) to sell Chinese tea in the colonies without paying taxes apart from those imposed by the Townshend Acts."
+                ),
+                control_type="Document",
+            ),
+            FakeControl(
+                text=(
+                    'The Sons of Liberty strongly opposed both the Tea Act and Townshend Acts, which they saw as a violation of their "rights as Englishmen" to no taxation without representation.[2]'
+                ),
+                control_type="Document",
+            ),
+        ]
+
+        with (
+            mock.patch.object(
+                web_content_windows.browser_windows,
+                "_connect_to_active_window",
+                return_value=FakeWindow("Boston Tea Party - Wikipedia - Google Chrome"),
+            ),
+            mock.patch.object(
+                web_content_windows,
+                "_collect_candidate_controls",
+                return_value=[title, *fragments],
+            ),
+            mock.patch.object(
+                web_content_windows.browser_windows,
+                "_control_text",
+                side_effect=[title._text] + [fragment._text for fragment in fragments],
+            ),
+        ):
+            result = web_content_windows.extract_windows_live_tab_text(
+                "https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                "Chrome",
+                window_target=123,
+            )
+
+        self.assertTrue(result.is_useful)
+        paragraphs = result.text.split("\n\n")
+        self.assertEqual(len(paragraphs), 2)
+        self.assertEqual(
+            paragraphs[0],
+            "The Boston Tea Party was an act of protest on December 16, 1773 during the American Revolution. Initiated by the Sons of Liberty in Boston, the capital of Massachusetts, one of the Thirteen Colonies of British America, it escalated hostilities between Great Britain and the Patriots, who opposed British policy towards its American colonies. Less than two years later, on April 19, 1775, the Battles of Lexington and Concord, also in Massachusetts, launched the eight-year American Revolutionary War, which resulted in the independence of the colonies as the United States.",
+        )
+        self.assertEqual(
+            paragraphs[1],
+            'The source of the protestors\' anger was the passage of the Tea Act by the Parliament of Great Britain on May 10, 1773, which allowed the East India Company (EIC) to sell Chinese tea in the colonies without paying taxes apart from those imposed by the Townshend Acts. The Sons of Liberty strongly opposed both the Tea Act and Townshend Acts, which they saw as a violation of their "rights as Englishmen" to no taxation without representation.',
+        )
+        self.assertNotIn("[1]", result.text)
+        self.assertNotIn("[2]", result.text)
 
 
 if __name__ == "__main__":

@@ -60,6 +60,8 @@ PAGE_BOILERPLATE_FRAGMENTS = {
     "from wikipedia, the free encyclopedia",
 }
 WINDOWS_LIVE_EXTRACTION_BUDGET_SECONDS = 0.9
+_INLINE_CITATION_RE = re.compile(r"\[(?:\d+|[A-Za-z]+)(?:\s*,\s*(?:\d+|[A-Za-z]+))*\]")
+_PARAGRAPH_BREAK_MIN_CHARS = 350
 
 
 @dataclass
@@ -82,6 +84,31 @@ def _normalize_text(text: Optional[str]) -> str:
     if not text:
         return ""
     return re.sub("\\s+", " ", text).strip()
+
+
+def _strip_inline_citations(text: str) -> str:
+    cleaned = _INLINE_CITATION_RE.sub("", text)
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"\(\s+", "(", cleaned)
+    cleaned = re.sub(r"\s+\)", ")", cleaned)
+    return cleaned
+
+
+def _paragraph_chunks(text: str) -> list[str]:
+    paragraphs = []
+    for chunk in re.split(r"(?:\r?\n\s*){2,}", _strip_inline_citations(text)):
+        normalized = _normalize_text(chunk)
+        if normalized:
+            paragraphs.append(normalized)
+    return paragraphs
+
+
+def _ends_sentence(text: str) -> bool:
+    return bool(re.search(r"[.!?][\"')\]]*$", text))
+
+
+def _should_start_new_paragraph(current: str, next_part: str) -> bool:
+    return bool(current and len(current) >= _PARAGRAPH_BREAK_MIN_CHARS and _ends_sentence(current))
 
 
 def _tokenize(text: str) -> list[str]:
@@ -121,7 +148,8 @@ def _strong_shell_token_count(tokens: list[str]) -> int:
 
 
 def evaluate_candidate(candidate: ScoredTextCandidate) -> WindowsLiveExtractionResult:
-    text = _normalize_text(candidate.text)
+    display_text = "\n\n".join(_paragraph_chunks(candidate.text))
+    text = _normalize_text(display_text)
     if not text:
         return WindowsLiveExtractionResult(
             text=None,
@@ -179,7 +207,7 @@ def evaluate_candidate(candidate: ScoredTextCandidate) -> WindowsLiveExtractionR
         and quality_score >= 0.45
     ):
         return WindowsLiveExtractionResult(
-            text=text,
+            text=display_text or text,
             source=candidate.source_hint,
             error=None,
             is_useful=True,
@@ -267,14 +295,23 @@ def _collect_candidate_controls(window: Any) -> list[Any]:
 def _merge_candidate_text(parts: list[str]) -> str:
     merged: list[str] = []
     seen: set[str] = set()
+    current = ""
     for part in parts:
-        normalized = _normalize_text(part)
-        if not normalized or normalized in seen:
-            continue
-        if normalized.lower() in PAGE_BOILERPLATE_FRAGMENTS:
-            continue
-        seen.add(normalized)
-        merged.append(normalized)
+        for paragraph in _paragraph_chunks(part):
+            normalized = _normalize_text(paragraph)
+            if not normalized or normalized in seen:
+                continue
+            if normalized.lower() in PAGE_BOILERPLATE_FRAGMENTS:
+                continue
+            seen.add(normalized)
+            if current and not _should_start_new_paragraph(current, paragraph):
+                current = f"{current} {paragraph}"
+                continue
+            if current:
+                merged.append(current)
+            current = paragraph
+    if current:
+        merged.append(current)
     return "\n\n".join(merged)
 
 

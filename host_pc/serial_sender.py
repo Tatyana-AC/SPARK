@@ -33,6 +33,7 @@ ACK = b"\x06"
 EOT = b"\x04"
 RECONNECT_COOLDOWN_S = 3.0  # minimum seconds between connect() attempts
 PORT_FAILURE_COOLDOWN_S = 10.0
+_MAX_CONTEXT_PACKET_BYTES = 8192
 
 
 class SerialSender:
@@ -386,12 +387,40 @@ class SerialSender:
             "timestamp": snapshot.timestamp,
         }
 
+    @staticmethod
+    def _context_packet(payload: dict, build_packet) -> bytes:
+        packet = build_packet(payload)
+        if len(packet) <= _MAX_CONTEXT_PACKET_BYTES:
+            return packet
+
+        text = payload.get("text") or ""
+        if not text:
+            return packet
+
+        low = 0
+        high = len(text)
+        best_packet = packet
+        while low <= high:
+            mid = (low + high) // 2
+            candidate_payload = dict(payload)
+            candidate_payload["text"] = text[:mid]
+            candidate_packet = build_packet(candidate_payload)
+            if len(candidate_packet) <= _MAX_CONTEXT_PACKET_BYTES:
+                best_packet = candidate_packet
+                low = mid + 1
+            else:
+                high = mid - 1
+
+        return best_packet
+
     def send_context_new(self, snapshot) -> bool:
         if self._paused.is_set():
             return False
-        return self._send(build_context_new(self._snapshot_payload(snapshot)))
+        payload = self._snapshot_payload(snapshot)
+        return self._send(self._context_packet(payload, build_context_new))
 
     def send_context_update(self, snapshot) -> bool:
         if self._paused.is_set():
             return False
-        return self._send(build_context_update(self._snapshot_payload(snapshot)))
+        payload = self._snapshot_payload(snapshot)
+        return self._send(self._context_packet(payload, build_context_update))

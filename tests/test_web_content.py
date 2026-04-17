@@ -73,6 +73,53 @@ class WebContentExtractorTests(unittest.TestCase):
         )
         extract_http.assert_called_once_with("https://example.com/article")
 
+    def test_windows_wikipedia_prefers_http_article_text_over_live_fragments(self):
+        extractor = web_content.WebContentExtractor()
+
+        live_result = types.SimpleNamespace(
+            text="Sentence one.\n\nSentence two fragment",
+            source="uia_document",
+            error=None,
+            is_useful=True,
+            quality_score=0.92,
+        )
+        http_result = web_content.BrowserExtractionResult(
+            text=(
+                "The Boston Tea Party was an act of protest on December 16, 1773 during the American Revolution. "
+                "Initiated by the Sons of Liberty in Boston, the capital of Massachusetts, one of the Thirteen Colonies of British America, it escalated hostilities between Great Britain and the Patriots, who opposed British policy towards its American colonies.[1] "
+                "Less than two years later, on April 19, 1775, the Battles of Lexington and Concord, also in Massachusetts, launched the eight-year American Revolutionary War, which resulted in the independence of the colonies as the United States."
+            ),
+            source="http_fallback",
+            title=None,
+            error=None,
+            is_useful=True,
+            quality_score=0.72,
+        )
+
+        with mock.patch(
+            "host_pc.web_content_windows.extract_windows_live_tab_text",
+            return_value=live_result,
+        ) as extract_windows, mock.patch.object(
+            web_content,
+            "_extract_http_text",
+            return_value=http_result,
+        ) as extract_http:
+            result = extractor.extract_page(
+                "https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                "Chrome",
+                platform="win32",
+                window_target=777,
+            )
+
+        self.assertEqual(result.source, "http_fallback")
+        self.assertEqual(result.text, http_result.text)
+        extract_windows.assert_called_once_with(
+            "https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            "Chrome",
+            window_target=777,
+        )
+        extract_http.assert_called_once_with("https://en.wikipedia.org/wiki/Boston_Tea_Party")
+
     def test_http_text_result_includes_usefulness_fields(self):
         real_import = __import__
 
@@ -106,6 +153,43 @@ class WebContentExtractorTests(unittest.TestCase):
         self.assertEqual(result.error, None)
         self.assertEqual(result.text, "hello world from tests")
         self.assertGreater(result.quality_score, 0.0)
+
+    def test_http_text_fetch_uses_browser_user_agent(self):
+        real_import = __import__
+        seen_headers = {}
+
+        class FakeResponse:
+            status_code = 200
+            text = "<html><body><p>hello world from tests</p></body></html>"
+
+        def fake_get(*args, **kwargs):
+            seen_headers.update(kwargs.get("headers") or {})
+            return FakeResponse()
+
+        fake_requests = types.SimpleNamespace(
+            get=fake_get,
+            exceptions=types.SimpleNamespace(
+                Timeout=TimeoutError,
+                ConnectionError=ConnectionError,
+            ),
+        )
+
+        fake_trafilatura = types.SimpleNamespace(
+            extract=lambda *args, **kwargs: "hello world from tests",
+        )
+
+        def import_with_http_success(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "requests":
+                return fake_requests
+            if name == "trafilatura":
+                return fake_trafilatura
+            return real_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=import_with_http_success):
+            result = web_content._extract_http_text("https://example.com/article")
+
+        self.assertTrue(result.is_useful)
+        self.assertIn("Mozilla/5.0", seen_headers.get("User-Agent", ""))
 
     def test_google_docs_prefers_export_first_strategy(self):
         extractor = web_content.WebContentExtractor()

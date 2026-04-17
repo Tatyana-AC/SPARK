@@ -142,6 +142,11 @@ def _is_supported_macos_browser(app_name: str) -> bool:
     return app_name in {"Safari", "Google Chrome", "Google Chrome Canary"}
 
 
+def _prefer_http_article_text(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host.endswith("wikipedia.org")
+
+
 # ── Shared transport and helpers ─────────────────────────────────────────────
 
 
@@ -172,7 +177,19 @@ def _extract_http_text(url: str) -> BrowserExtractionResult:
         )
 
     try:
-        response = requests.get(url, timeout=15, allow_redirects=True)
+        response = requests.get(
+            url,
+            timeout=15,
+            allow_redirects=True,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
     except requests.exceptions.Timeout:
         return BrowserExtractionResult(
             text=None,
@@ -513,6 +530,11 @@ class WebContentExtractor:
             app_name,
             window_target=window_target,
         )
+
+        if _prefer_http_article_text(url):
+            http_result = _extract_http_text(url)
+            if http_result and http_result.text and _has_useful_text(http_result.text):
+                return http_result
 
         if not is_url_fetchable:
             if live_result and live_result.is_useful and live_result.text:

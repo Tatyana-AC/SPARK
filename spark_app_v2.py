@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
      QGridLayout, QSizePolicy,
      QSystemTrayIcon, QMenu,
      QDialog, QDialogButtonBox, QLineEdit, QTextEdit, QComboBox,
-     QTableWidget, QTableWidgetItem,
+     QTableWidget, QTableWidgetItem, QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint, QObject, pyqtSignal, QSettings
 from PyQt6.QtGui import QFont, QColor, QPainter, QPainterPath, QCursor, QIcon, QPixmap
@@ -554,6 +554,8 @@ class JetsonDbViewerDialog(QDialog):
 
         self.rows_table = QTableWidget(0, 0, self)
         self.rows_table.setWordWrap(True)
+        self.rows_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.rows_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         layout.addWidget(self.rows_table)
 
     def showEvent(self, event):
@@ -792,6 +794,8 @@ class JetsonDbViewerDialog(QDialog):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
                 self.rows_table.setItem(row_i, col_i, item)
 
+        self.rows_table.clearSelection()
+        self.rows_table.setCurrentCell(-1, -1)
         self._resize_rows_for_content(columns)
 
     def _append_table_page(self, table_page: TablePage):
@@ -813,6 +817,8 @@ class JetsonDbViewerDialog(QDialog):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
                 self.rows_table.setItem(start_row + row_i, col_i, item)
 
+        self.rows_table.clearSelection()
+        self.rows_table.setCurrentCell(-1, -1)
         self._resize_rows_for_content(columns)
 
     @classmethod

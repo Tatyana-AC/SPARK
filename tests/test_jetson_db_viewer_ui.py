@@ -15,10 +15,11 @@ import host_pc.jetson_db_snapshot as snapshot_mod
 assert os.environ.get("QT_QPA_PLATFORM") == "offscreen"
 
 try:
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QAbstractItemView
     from PyQt6.QtGui import QShowEvent
 except ImportError:  # pragma: no cover - environment-dependent test guard
     QApplication = None
+    QAbstractItemView = None
     QShowEvent = None
     spark_app_v2 = None
 else:
@@ -58,6 +59,17 @@ class JetsonDbViewerUiTests(unittest.TestCase):
         self.assertFalse(dialog.refresh_in_flight)
         self.assertEqual(dialog._refresh_request_token, 0)
         self.assertTrue(dialog.rows_table.wordWrap())
+        self.assertEqual(
+            dialog.rows_table.selectionMode(),
+            QAbstractItemView.SelectionMode.NoSelection,
+        )
+        self.assertEqual(dialog.rows_table.selectedItems(), [])
+        self.assertIsNone(dialog.rows_table.currentItem())
+
+    def test_viewer_does_not_override_table_styling(self):
+        dialog = spark_app_v2.JetsonDbViewerDialog()
+
+        self.assertEqual(dialog.rows_table.styleSheet(), "")
 
     def test_show_event_auto_refreshes_only_once_without_showing_window(self):
         dialog = spark_app_v2.JetsonDbViewerDialog()
@@ -265,6 +277,8 @@ class JetsonDbViewerUiTests(unittest.TestCase):
         text_col = headers.index("text")
         self.assertEqual(dialog.rows_table.item(0, text_col).text(), long_text)
         self.assertGreater(dialog.rows_table.rowHeight(0), dialog.rows_table.fontMetrics().height() + 8)
+        self.assertEqual(dialog.rows_table.selectedItems(), [])
+        self.assertIsNone(dialog.rows_table.currentItem())
 
     def test_failed_refresh_keeps_last_good_snapshot_visible(self):
         dialog = spark_app_v2.JetsonDbViewerDialog()
