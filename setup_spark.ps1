@@ -81,18 +81,23 @@ function Invoke-ProcessWithTimeout {
     }
 }
 
-function Get-RepoPython {
-    $venvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
-    if (Test-Path $venvPython) {
-        return $venvPython
+function Get-RepoVirtualEnvRoot {
+    $commonRepoRoot = Get-GitCommonRepoRoot
+    if ($commonRepoRoot) {
+        return $commonRepoRoot
     }
 
-    $commonRepoRoot = Get-GitCommonRepoRoot
-    if ($commonRepoRoot -and $commonRepoRoot -ne $RepoRoot) {
-        $sharedVenvPython = Join-Path $commonRepoRoot ".venv\Scripts\python.exe"
-        if (Test-Path $sharedVenvPython) {
-            return $sharedVenvPython
-        }
+    return $RepoRoot
+}
+
+function Get-RepoVirtualEnvPythonPath {
+    Join-Path (Get-RepoVirtualEnvRoot) ".venv\Scripts\python.exe"
+}
+
+function Get-RepoPython {
+    $venvPython = Get-RepoVirtualEnvPythonPath
+    if (Test-Path $venvPython) {
+        return $venvPython
     }
 
     $python = Get-Command python -ErrorAction SilentlyContinue
@@ -101,6 +106,126 @@ function Get-RepoPython {
     }
 
     throw "Could not find a Python interpreter or .venv\Scripts\python.exe."
+}
+
+function Get-BootstrapPython {
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($null -ne $py) {
+        return [pscustomobject]@{
+            FilePath        = $py.Source
+            PrefixArguments = @('-3')
+        }
+    }
+
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ($null -ne $python) {
+        return [pscustomobject]@{
+            FilePath        = $python.Source
+            PrefixArguments = @()
+        }
+    }
+
+    throw "Could not find a bootstrap Python interpreter. Install Python 3 and ensure `py` or `python` is on PATH."
+}
+
+function Ensure-RepoVirtualEnv {
+    $venvRoot = Get-RepoVirtualEnvRoot
+    $venvPython = Get-RepoVirtualEnvPythonPath
+    if (Test-Path $venvPython) {
+        Write-Status "Python env" "Using existing virtualenv at $venvRoot\.venv"
+        return $venvPython
+    }
+
+    $bootstrapPython = Get-BootstrapPython
+    $venvPath = Join-Path $venvRoot ".venv"
+    Write-Status "Python env" "Creating virtualenv at $venvPath"
+    Invoke-ProcessWithTimeout `
+        -FilePath $bootstrapPython.FilePath `
+        -ArgumentList ($bootstrapPython.PrefixArguments + @('-m', 'venv', $venvPath)) `
+        -TimeoutSeconds 180 `
+        -DisplayName 'Create virtual environment'
+
+    return $venvPython
+}
+
+function Get-RequirementsFingerprint {
+    $requirementsPath = Join-Path $RepoRoot "requirements.txt"
+    if (-not (Test-Path $requirementsPath)) {
+        throw "Could not find requirements.txt at $requirementsPath."
+    }
+
+    return (Get-FileHash -Algorithm SHA256 -Path $requirementsPath).Hash
+}
+
+function Get-RequirementsStampPath {
+    Join-Path (Get-RepoVirtualEnvRoot) ".venv\requirements.sha256"
+}
+
+function Get-DependencyProbeModules {
+    $modules = @(
+        'hid',
+        'serial',
+        'requests',
+        'PyQt6'
+    )
+
+    if ($env:OS -eq 'Windows_NT') {
+        $modules += @(
+            'pywinauto',
+            'win32api'
+        )
+    }
+
+    return $modules
+}
+
+function Test-RepoRequirementsCurrent {
+    param([string]$PythonExe)
+
+    $stampPath = Get-RequirementsStampPath
+    if (-not (Test-Path $stampPath)) {
+        return $false
+    }
+
+    $currentFingerprint = Get-RequirementsFingerprint
+    $recordedFingerprint = (Get-Content -Path $stampPath -Raw).Trim()
+    if ($recordedFingerprint -ne $currentFingerprint) {
+        return $false
+    }
+
+    $importScript = ((Get-DependencyProbeModules) | ForEach-Object { "import $_" }) -join '; '
+    & $PythonExe '-c' $importScript 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Ensure-RepoRequirementsInstalled {
+    param([string]$PythonExe)
+
+    $requirementsPath = Join-Path $RepoRoot "requirements.txt"
+    if (Test-RepoRequirementsCurrent -PythonExe $PythonExe) {
+        Write-Status "Python deps" "requirements.txt already satisfied"
+        return
+    }
+
+    Write-Status "Python deps" "Installing requirements.txt into the repo virtualenv"
+    Invoke-ProcessWithTimeout `
+        -FilePath $PythonExe `
+        -ArgumentList @('-m', 'pip', 'install', '--upgrade', 'pip') `
+        -TimeoutSeconds 300 `
+        -DisplayName 'Upgrade pip'
+    Invoke-ProcessWithTimeout `
+        -FilePath $PythonExe `
+        -ArgumentList @('-m', 'pip', 'install', '-r', $requirementsPath) `
+        -TimeoutSeconds 600 `
+        -DisplayName 'Install Python requirements'
+
+    Set-Content -Path (Get-RequirementsStampPath) -Value (Get-RequirementsFingerprint) -NoNewline
+}
+
+function Initialize-RepoPythonEnvironment {
+    $pythonExe = Ensure-RepoVirtualEnv
+    Ensure-RepoRequirementsInstalled -PythonExe $pythonExe
+    return $pythonExe
 }
 
 function Get-GitCommonRepoRoot {
@@ -313,6 +438,44 @@ function Ensure-JetsonMount {
     }
 
     throw "Jetson SSHFS mount did not appear after mapping attempt."
+}
+
+function Test-JetsonSshBatchMode {
+    param(
+        [string]$JetsonHostValue,
+        [string]$JetsonUserValue
+    )
+
+    $target = "$JetsonUserValue@$JetsonHostValue"
+    & ssh `
+        -o BatchMode=yes `
+        -o "ConnectTimeout=$JetsonSshConnectTimeoutSeconds" `
+        $target `
+        "exit 0" | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Assert-HostToolingReady {
+    param(
+        [string]$JetsonHostValue,
+        [string]$JetsonUserValue
+    )
+
+    $sshfsWin = "C:\Program Files\SSHFS-Win\bin\sshfs-win.exe"
+    if (-not (Test-Path $sshfsWin)) {
+        throw "SSHFS-Win was not found at $sshfsWin."
+    }
+
+    $ssh = Get-Command ssh -ErrorAction SilentlyContinue
+    if ($null -eq $ssh) {
+        throw "OpenSSH client was not found on PATH. Install the Windows OpenSSH Client feature and ensure `ssh` is available."
+    }
+
+    if (-not (Test-JetsonSshBatchMode -JetsonHostValue $JetsonHostValue -JetsonUserValue $JetsonUserValue)) {
+        throw "Batch-mode SSH authentication to $JetsonUserValue@$JetsonHostValue failed. Configure passwordless SSH before running setup_spark.ps1."
+    }
+
+    Write-Status "SSH tooling" "SSHFS-Win, ssh, and batch-mode auth are available"
 }
 
 function Invoke-JetsonSsh {
@@ -840,10 +1003,11 @@ function Start-FullStackWatcher {
 
 function Invoke-SetupSpark {
     Write-Section "Environment"
-    $pythonExe = Get-RepoPython
+    $pythonExe = Initialize-RepoPythonEnvironment
     Write-Status "Repo root" $RepoRoot
     Write-Status "Python" $pythonExe
     Write-Status "Jetson SSH" "$JetsonUser@$JetsonHost"
+    Assert-HostToolingReady -JetsonHostValue $JetsonHost -JetsonUserValue $JetsonUser
 
     Write-Section "Drive Detection"
     $picoMount = Get-PicoMount

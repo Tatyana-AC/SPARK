@@ -111,6 +111,18 @@ Important: install `hidapi`, not the separate `hid` package.
 
 Use `run_spark_setup_and_launch.ps1` for the current one-command Windows bring-up flow, or `run_spark_setup_and_launch.bat` when you want a double-clickable wrapper. Both scripts delegate to `setup_spark.ps1`.
 
+On current `setup_spark.ps1`, the launcher now bootstraps the repo Python environment before bring-up:
+
+- creates the repo `.venv` automatically when missing
+- installs or repairs `requirements.txt` into that virtualenv when the recorded dependency fingerprint is stale or core imports fail
+- validates `SSHFS-Win`, `ssh`, and batch-mode SSH auth before device detection or deployment starts
+
+That means a fresh Windows host no longer needs a pre-created `.venv` before using the launcher, but it still needs:
+
+- a base Python 3 install available through `py` or `python`
+- `SSHFS-Win` installed at `C:\Program Files\SSHFS-Win\bin\sshfs-win.exe`
+- working passwordless SSH access to the Jetson for the configured user/host
+
 That flow brings up the normal Windows debugging session by launching:
 
 - `spark_app_v2.py`

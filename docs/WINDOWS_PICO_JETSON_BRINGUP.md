@@ -20,12 +20,20 @@ Or use `run_spark_setup_and_launch.bat` if you want the same flow through a doub
 
 Both wrappers delegate to `setup_spark.ps1`. The rest of this document describes the equivalent manual steps when you need to debug bring-up one layer at a time.
 
+The wrapper flow now bootstraps the repo Python environment automatically before deployment:
+
+- create `.venv` when it does not exist yet
+- install or repair `requirements.txt` in that virtualenv when needed
+- validate `SSHFS-Win`, `ssh`, and batch-mode SSH auth before touching Pico or Jetson state
+
 ## Preconditions
 
 On the Windows host:
 
 - repo is checked out locally
-- `.venv` exists and `requirements.txt` is installed
+- a base Python 3 install is available through `py` or `python`
+- `SSHFS-Win` is installed at `C:\Program Files\SSHFS-Win\bin\sshfs-win.exe`
+- batch-mode SSH access to the Jetson already works for the configured user/host
 - the Pico appears as `D:\`
 - the Jetson share appears as `Z:\`
 

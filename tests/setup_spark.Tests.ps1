@@ -79,6 +79,143 @@ Describe 'Get-RepoPython' {
     }
 }
 
+Describe 'Ensure-RepoVirtualEnv' {
+    It 'creates the repo virtualenv with a bootstrap Python when the venv is missing' {
+        $script:RepoRoot = 'C:\SPARK'
+        $script:createCall = $null
+
+        function script:Get-RepoVirtualEnvRoot {
+            'C:\SPARK'
+        }
+        function script:Test-Path {
+            param([string]$Path)
+            if ($Path -eq 'C:\SPARK\.venv\Scripts\python.exe') {
+                return $false
+            }
+            return $true
+        }
+        function script:Get-BootstrapPython {
+            [pscustomobject]@{
+                FilePath = 'C:\Python311\python.exe'
+                PrefixArguments = @()
+            }
+        }
+        function script:Write-Status {}
+        function script:Invoke-ProcessWithTimeout {
+            param(
+                [string]$FilePath,
+                [string[]]$ArgumentList,
+                [int]$TimeoutSeconds,
+                [string]$DisplayName
+            )
+
+            $script:createCall = [pscustomobject]@{
+                FilePath = $FilePath
+                ArgumentList = $ArgumentList
+                TimeoutSeconds = $TimeoutSeconds
+                DisplayName = $DisplayName
+            }
+        }
+
+        $result = Ensure-RepoVirtualEnv
+
+        $result | Should Be 'C:\SPARK\.venv\Scripts\python.exe'
+        $script:createCall.FilePath | Should Be 'C:\Python311\python.exe'
+        $script:createCall.ArgumentList | Should Be @(
+            '-m'
+            'venv'
+            'C:\SPARK\.venv'
+        )
+        $script:createCall.TimeoutSeconds | Should Be 180
+        $script:createCall.DisplayName | Should Be 'Create virtual environment'
+    }
+}
+
+Describe 'Ensure-RepoRequirementsInstalled' {
+    It 'runs pip install and records the requirements fingerprint when dependencies are stale' {
+        $script:RepoRoot = 'C:\SPARK'
+        $script:processCalls = @()
+        $script:stampWrite = $null
+
+        function script:Test-RepoRequirementsCurrent {
+            param([string]$PythonExe)
+            return $false
+        }
+        function script:Get-RequirementsFingerprint {
+            'abc123'
+        }
+        function script:Write-Status {}
+        function script:Invoke-ProcessWithTimeout {
+            param(
+                [string]$FilePath,
+                [string[]]$ArgumentList,
+                [int]$TimeoutSeconds,
+                [string]$DisplayName
+            )
+
+            $script:processCalls += [pscustomobject]@{
+                FilePath = $FilePath
+                ArgumentList = $ArgumentList
+                TimeoutSeconds = $TimeoutSeconds
+                DisplayName = $DisplayName
+            }
+        }
+        function script:Set-Content {
+            param(
+                [string]$Path,
+                [string]$Value,
+                [switch]$NoNewline
+            )
+
+            $script:stampWrite = [pscustomobject]@{
+                Path = $Path
+                Value = $Value
+                NoNewline = $NoNewline.IsPresent
+            }
+        }
+
+        Ensure-RepoRequirementsInstalled -PythonExe 'C:\SPARK\.venv\Scripts\python.exe'
+
+        $script:processCalls.Count | Should Be 2
+        $script:processCalls[0].ArgumentList | Should Be @('-m', 'pip', 'install', '--upgrade', 'pip')
+        $script:processCalls[1].ArgumentList | Should Be @(
+            '-m'
+            'pip'
+            'install'
+            '-r'
+            'C:\SPARK\requirements.txt'
+        )
+        $script:stampWrite.Path | Should Be 'C:\SPARK\.venv\requirements.sha256'
+        $script:stampWrite.Value | Should Be 'abc123'
+        $script:stampWrite.NoNewline | Should Be $true
+    }
+}
+
+Describe 'Assert-HostToolingReady' {
+    It 'throws a clear error when batch-mode SSH authentication is unavailable' {
+        function script:Write-Status {}
+        function script:Test-Path {
+            param([string]$Path)
+            return $Path -eq 'C:\Program Files\SSHFS-Win\bin\sshfs-win.exe'
+        }
+        function script:Get-Command {
+            param([string]$Name)
+            if ($Name -eq 'ssh') {
+                return [pscustomobject]@{ Source = 'C:\Windows\System32\OpenSSH\ssh.exe' }
+            }
+            return $null
+        }
+        function script:Test-JetsonSshBatchMode {
+            param([string]$JetsonHostValue, [string]$JetsonUserValue)
+            return $false
+        }
+
+        {
+            Assert-HostToolingReady -JetsonHostValue '192.168.55.1' -JetsonUserValue 'sidac'
+        } | Should Throw 'Batch-mode SSH authentication to sidac@192.168.55.1 failed. Configure passwordless SSH before running setup_spark.ps1.'
+    }
+}
+
 Describe 'Deploy-PicoFirmware' {
     It 'runs deploy_to_pico.py against the detected Pico drive' {
         $script:RepoRoot = 'C:\SPARK'
@@ -230,6 +367,50 @@ Describe 'Assert-JetsonWritableMount' {
 }
 
 Describe 'Invoke-SetupSpark' {
+    It 'bootstraps the repo Python env and validates host tooling before drive detection' {
+        $script:steps = @()
+        $script:SkipSmokeTest = $true
+        $script:SkipAppLaunch = $true
+
+        function script:Write-Section {}
+        function script:Write-Status {}
+        function script:Initialize-RepoPythonEnvironment {
+            $script:steps += 'bootstrap-python'
+            return 'python.exe'
+        }
+        function script:Assert-HostToolingReady {
+            param([string]$JetsonHostValue, [string]$JetsonUserValue)
+            $script:steps += 'validate-host-tooling'
+        }
+        function script:Get-PicoMount {
+            $script:steps += 'detect-pico'
+            [pscustomobject]@{
+                Drive = 'D:'
+                CodePath = 'D:\code.py'
+                BootPath = 'D:\boot.py'
+            }
+        }
+        function script:Test-Path { $true }
+        function script:Ensure-JetsonMount {
+            [pscustomobject]@{
+                Drive = 'Z:'
+                Provider = '\\sshfs.r\sidac@192.168.55.1\mnt\usb_drive'
+                VolumeName = ''
+            }
+        }
+        function script:Assert-JetsonWritableMount { 'rw,relatime' }
+        function script:Deploy-PicoFirmware {}
+        function script:Sync-JetsonBridgeBundle {}
+        function script:Stop-SparkAppProcesses {}
+        function script:Stop-WatchFullStackProcesses {}
+        function script:Start-JetsonServices {}
+        function script:Wait-JetsonBridgeSettle {}
+
+        Invoke-SetupSpark
+
+        $script:steps[0..2] | Should Be @('bootstrap-python', 'validate-host-tooling', 'detect-pico')
+    }
+
     It 'falls back to SSH directory checks when the mapped Jetson path is inaccessible' {
         $script:remoteChecks = @()
         $script:picoDeploys = @()
@@ -240,7 +421,8 @@ Describe 'Invoke-SetupSpark' {
 
         function script:Write-Section {}
         function script:Write-Status {}
-        function script:Get-RepoPython { 'python' }
+        function script:Initialize-RepoPythonEnvironment { 'python' }
+        function script:Assert-HostToolingReady {}
         function script:Get-PicoMount {
             [pscustomobject]@{
                 Drive = 'D:'
@@ -311,7 +493,8 @@ Describe 'Invoke-SetupSpark' {
 
         function script:Write-Section {}
         function script:Write-Status {}
-        function script:Get-RepoPython { 'python.exe' }
+        function script:Initialize-RepoPythonEnvironment { 'python.exe' }
+        function script:Assert-HostToolingReady {}
         function script:Get-PicoMount {
             [pscustomobject]@{
                 Drive = 'D:'
@@ -356,7 +539,8 @@ Describe 'Invoke-SetupSpark' {
 
         function script:Write-Section {}
         function script:Write-Status {}
-        function script:Get-RepoPython { 'python.exe' }
+        function script:Initialize-RepoPythonEnvironment { 'python.exe' }
+        function script:Assert-HostToolingReady {}
         function script:Get-PicoMount {
             [pscustomobject]@{
                 Drive = 'D:'
