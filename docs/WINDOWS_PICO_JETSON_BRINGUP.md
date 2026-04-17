@@ -8,6 +8,18 @@ Use this when:
 - the Jetson USB/network drive is mounted on `Z:\`
 - the Jetson is reachable over SSH at `192.168.55.1`
 
+## Preferred launcher
+
+For the current one-command Windows workflow, start with:
+
+```powershell
+.\run_spark_setup_and_launch.ps1
+```
+
+Or use `run_spark_setup_and_launch.bat` if you want the same flow through a double-clickable wrapper.
+
+Both wrappers delegate to `setup_spark.ps1`. The rest of this document describes the equivalent manual steps when you need to debug bring-up one layer at a time.
+
 ## Preconditions
 
 On the Windows host:
@@ -167,6 +179,7 @@ Process note:
 - On Windows, launching `spark_app_v2.py` from `.venv\Scripts\python.exe` can appear as a parent/child `python.exe` pair in process listings.
 - Treat that launcher pair as one app start, not as proof that two independent SPARK app instances are running.
 - Only count it as a duplicate-host problem when you see multiple independent launch chains or multiple visible app windows.
+- The active app now also uses `SingleInstanceGuard`, so a true duplicate launch is expected to log an error and exit instead of opening a second usable panel.
 
 ## 7. End-to-end verification
 
@@ -177,6 +190,7 @@ Minimum checks:
 3. Jetson `/health` and `/v1/models` both return `200`.
 4. A context packet written through `host_pc.serial_sender.SerialSender` creates or updates a row in `jetson_spark.db`.
 5. A `FEATURE_1` summarize request returns streamed text through the real host -> Pico -> Jetson -> llama.cpp path.
+6. `View Jetson DB` can refresh a read-only snapshot and display the `sessions` table without mutating the live Jetson database.
 
 ## 8. Fast recovery checklist
 

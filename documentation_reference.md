@@ -15,9 +15,10 @@ Poll tick (every 125 ms in spark_app_v2.py)
   +-- get_browser_tab(app_name) when app_name is supported
   +-- host_pc/browser.py dispatches OS-specific tab metadata providers
   +-- on macOS: host_pc/web_content.py browser text extraction (live-tab for supported Safari/Chrome-family tabs)
-  +-- on Windows: browser metadata from host_pc/browser_windows.py and HTTP extraction for fetchable external pages
-  +-- if browser text is not directly fetchable or extraction fails, fallback to get_focused_element_text()
-  +-- then fallback to get_window_text()
+  +-- on Windows: browser metadata from host_pc/browser_windows.py, live UIA extraction from host_pc/web_content_windows.py,
+      then HTTP extraction for fetchable external pages when live extraction is weak
+  +-- if browser extraction stays weak or noisy, evaluate get_focused_element_text() through Windows browser-noise heuristics
+  +-- then evaluate get_window_text() through the same heuristics
   |
   +-- WindowContextTracker.update(info, text, source, tab)
   |     |
@@ -72,6 +73,19 @@ Custom Context
   -> local RELEASE OUTPUT panel update
 ```
 
+The current host app also exposes a Jetson DB debug surface:
+
+```text
+View Jetson DB
+  -> create_snapshot_with_retry()
+  -> open validated read-only snapshot copy
+  -> list_user_tables()
+  -> load_table_rows(..., limit=100, offset=...)
+  -> render current page in JetsonDbViewerDialog
+  -> optional Load More pagination
+  -> delete_snapshot(...) when swapped or closed
+```
+
 Operational note:
 
 - Before launching another SPARK app manually during debugging, close any older `spark_app_v2.py` processes first.
@@ -85,11 +99,16 @@ Operational note:
 | Change poll speed | `spark_app_v2.py` | `SparkPanel.POLL_INTERVAL = 125` |
 | Change privacy filtering | `spark_app_v2.py` | `PrivacyGuard` and `_on_poll_tick()` |
 | Change text extraction order | `spark_app_v2.py`, `host_pc/browser.py`, `host_pc/web_content.py` | `_on_poll_tick()`, `get_browser_tab()`, `get_focused_element_text()`, `get_window_text()` |
+| Change Windows browser live-extraction heuristics | `host_pc/web_content_windows.py` | `extract_windows_live_tab_text()`, `evaluate_focused_fallback()`, `evaluate_window_fallback()` |
 | Add another browser integration | `host_pc/browser.py` | `BROWSER_APPS` and `get_browser_tab()` |
+| Change Windows browser URL/title detection | `host_pc/browser_windows.py` | `_find_address_bar()`, `_read_address_bar_url()`, `get_active_browser_tab()` |
 | Change what counts as a unique context | `host_pc/accessibility/base.py` | `WindowContextSnapshot.context_key` |
 | Change in-memory context tracking | `host_pc/accessibility/tracker.py` | `WindowContextTracker.update()` and history accessors |
+| Change snapshot relevance gating before serial sends | `host_pc/snapshot_policy.py` | `is_relevant_snapshot()`, `snapshot_fingerprint()` |
 | Change Jetson-side persisted context shape | `jetson/db_manager.py` | `_create_tables()`, `on_context_new()`, `on_context_update()` |
+| Change Jetson DB viewer snapshot/paging behavior | `spark_app_v2.py`, `host_pc/jetson_db_snapshot.py` | `JetsonDbViewerDialog`, `create_snapshot_with_retry()`, `load_table_rows()` |
 | Change host panel position persistence | `spark_app_v2.py` | `QSettings` reads and writes for panel geometry |
+| Change duplicate-launch protection | `host_pc/single_instance.py`, `spark_app_v2.py` | `SingleInstanceGuard`, `main()` |
 | Change release output formatting | `host_pc/release_output.py` | `format_release_output()` |
 | Change Raw HID upload / response-read behavior | `host_pc/raw_hid.py` | `SparkHIDClient.upload()`, `get_response_info()`, `fetch_response()`, `stream_round_trip_text()` |
 | Change summarize request payload shape | `host_pc/summarize_stream.py` | `build_summary_request()` |
@@ -101,6 +120,8 @@ Operational note:
 | Change Pico USB identity or HID descriptor | `pico/usb_config.py` and `pico/boot.py` | USB constants and `usb_hid.enable(...)` |
 | Change deploy-to-board behavior | `tools/pico/deploy_to_pico.py` | `FIRMWARE_FILES`, `run_deploy()` |
 | Change hotkeys | `host_pc/hotkeys.py` | `get_hotkey_config()` and `GlobalHotkeyManager` |
+| Change the Windows launcher wrapper flow | `run_spark_setup_and_launch.ps1`, `run_spark_setup_and_launch.bat`, `setup_spark.ps1` | wrapper args and bring-up orchestration |
+| Change UI test backend behavior | `tests/conftest.py` | `QT_QPA_PLATFORM` setup |
 
 Windows hotkey note:
 - Current Windows defaults are `Win+Alt+C` for capture, `Win+Alt+V` for release, and `Win+Alt+Space` for toggle.
@@ -120,14 +141,18 @@ Windows hotkey note:
 | `host_pc/accessibility/tracker.py` | Current snapshot, previous-window history, and context-change detection |
 | `host_pc/browser.py` | OS-dispatched browser metadata entrypoint (`get_browser_tab`) |
 | `host_pc/browser_windows.py` | Windows browser tab metadata helper for title/URL extraction |
+| `host_pc/jetson_db_snapshot.py` | Read-only snapshot creation, validation, and paging helpers for the Jetson DB viewer |
 | `host_pc/context.py` | LLM-ready context object built from current snapshots |
 | `host_pc/db.py` | Legacy host SQLite schema and helpers; not used by the active V2 path |
 | `host_pc/live_capture.py` | Live-capture line retention and poll-line dedupe |
 | `host_pc/raw_hid.py` | Active host Raw HID upload client, response reader, and summarize stream poller |
 | `host_pc/release_output.py` | Formatting for the local RELEASE OUTPUT panel |
+| `host_pc/single_instance.py` | Single-instance guard used by `spark_app_v2.py` |
+| `host_pc/snapshot_policy.py` | Filtering and fingerprinting helpers for deciding when a snapshot is worth serializing |
 | `host_pc/summarize_stream.py` | Structured summarize-request payload builder |
 | `host_pc/serial_sender.py` | Host CDC writer for `CONTEXT_NEW` / `CONTEXT_UPDATE` packets |
 | `host_pc/web_content.py` | OS-aware browser text extraction helper used by poll loop |
+| `host_pc/web_content_windows.py` | Windows-specific live-tab extraction heuristics and filtered accessibility fallbacks |
 | `core/protocol.py` | Shared packet framing, CRC, builders, and streaming parser |
 | `jetson/pico_llm_bridge.py` | Jetson-side UART broker, DB writer, and llama.cpp bridge |
 | `jetson/receiver.py` | Compatibility wrapper to the active Jetson bridge entrypoint |
@@ -136,6 +161,8 @@ Windows hotkey note:
 | `pico/code.py` | Active Pico runtime loop for CDC relay, Jetson summarize transport, and HID handling |
 | `pico_reference/main.py` | Readable reference implementation, not the deployed entrypoint |
 | `tools/pico/deploy_to_pico.py` | Cross-platform deploy helper for a mounted `CIRCUITPY` board |
+| `run_spark_setup_and_launch.ps1` | Preferred Windows wrapper that delegates to `setup_spark.ps1` |
+| `run_spark_setup_and_launch.bat` | Double-clickable wrapper for the PowerShell launcher |
 
 ## Key Data Models
 
@@ -243,15 +270,18 @@ A switch is counted when `WindowContextSnapshot.context_key` changes:
 ## Poll-loop behavior note
 
 - For supported browser apps, the poll loop in `spark_app_v2.py` still follows this order:
-  - Browser text extraction attempt first (including Windows external-page HTTP fallback through `host_pc.web_content`)
-  - then focused-element text
-  - then full-window text
+  - Browser metadata lookup through `host_pc.browser`
+  - Browser text extraction attempt first
+  - On Windows, live UIA extraction first, then HTTP fallback for fetchable pages
+  - If browser extraction is still weak, evaluate focused-element text through the Windows browser-noise heuristics
+  - then evaluate full-window text through the same heuristics
 
 The tracker keeps:
 
 - one current snapshot
 - up to two previous snapshots in memory
 - no host-local persisted snapshot DB in the active `spark_app_v2.py` runtime
+- duplicate `spark_app_v2.py` launches are rejected by `SingleInstanceGuard`
 
 ## Legacy Notes
 

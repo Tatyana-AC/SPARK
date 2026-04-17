@@ -76,12 +76,21 @@ Nominal tick budget:
 - `MacOSAccessibilityProvider`
 - `WindowsAccessibilityProvider`
 
-Text extraction priority:
+For normal desktop apps, text extraction priority is still:
 
 1. focused element text
 2. front window text
 
-The first non-empty result is used and tracked with `TextSource`.
+For supported browsers, `spark_app_v2.py` now runs a browser-first pipeline before
+accepting raw accessibility fallbacks:
+
+1. resolve browser tab metadata through `host_pc/browser.py`
+2. on macOS, attempt live-tab extraction through `host_pc/web_content.py`
+3. on Windows, attempt live UIA document extraction through `host_pc/web_content_windows.py`
+4. on Windows, if the URL is fetchable and live extraction is weak, try HTTP article extraction through `host_pc/web_content.py`
+5. only then evaluate focused-element or front-window accessibility text, and on Windows accept those fallbacks only if the browser-noise heuristics say they look like real page content
+
+The selected text is tracked with `TextSource`, and browser-chrome-only captures are intentionally rejected before they reach Jetson.
 
 ### 2.3 Window Tracking
 
@@ -92,12 +101,22 @@ The first non-empty result is used and tracked with `TextSource`.
 
 On each poll tick:
 
+- if the active window is the SPARK panel, the debug watcher, or the Jetson DB viewer, ignore it
 - if the key changed, send `CONTEXT_NEW`
 - if the key is unchanged, send `CONTEXT_UPDATE`
 
 This yields exactly one Jetson session insert per contiguous window visit and repeated updates while the window remains active.
 
-### 2.4 Serial Payload Layouts
+### 2.4 Host Debug Surfaces
+
+The active host app exposes a read-only Jetson DB viewer for local debugging:
+
+- `View Jetson DB` creates a validated temporary snapshot copy of `jetson_spark.db`
+- snapshot reads use SQLite URI read-only mode
+- the dialog pages rows in bounded chunks (`limit=100` by default) and can append additional pages through `Load More`
+- refresh failures should preserve the last good snapshot and visible rows until a new snapshot is ready
+
+### 2.5 Serial Payload Layouts
 
 All structured serial packets use the shared framed contract in `core/protocol.py`:
 
@@ -237,6 +256,8 @@ The currently verified device-side behavior is:
 
 - bit 0: response complete
 - bit 1: downstream request active
+
+The host polls this response buffer on a second 125 ms timer so summarize streaming does not block the main context poll loop.
 
 ### 3.7 Upload Sequence
 

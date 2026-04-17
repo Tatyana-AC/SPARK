@@ -16,6 +16,8 @@ The current codebase is best understood as a host application plus protocol and 
 SPARK/
 |- spark_app_v2.py                 # Active host UI and hardware-integrated desktop panel
 |- spark_app.py                    # Older desktop UI path; still wired to keyboard HID manager
+|- run_spark_setup_and_launch.ps1  # Preferred Windows wrapper around setup_spark.ps1
+|- run_spark_setup_and_launch.bat  # Double-clickable wrapper for the PowerShell launcher
 |- host_pc/                        # Host-side runtime package
 |  |- accessibility/               # Cross-platform text capture
 |  |- hid/                         # Keyboard Raw HID manager abstraction
@@ -23,15 +25,20 @@ SPARK/
 |  |- browser_windows.py           # Windows browser tab metadata helper
 |  |- context.py                   # LLM-friendly host context object
 |  |- db.py                        # Legacy host-side local SQLite store; not used by spark_app_v2.py
+|  |- jetson_db_snapshot.py        # Read-only Jetson DB snapshot helpers for the viewer dialog
 |  |- hotkeys.py                   # Global hotkeys
 |  |- live_capture.py              # Live-capture feed dedupe helper
 |  |- raw_hid.py                   # Raw HID upload client for SPARK device
 |  |- serial_sender.py             # CDC serial sender to Pico Hub / Jetson path
-|  `- web_content.py               # OS-aware browser text extractor
+|  |- single_instance.py           # Single-instance guard for the active app
+|  |- snapshot_policy.py           # Snapshot relevance/fingerprinting helpers
+|  |- web_content.py               # OS-aware browser text extractor
+|  `- web_content_windows.py       # Windows browser live-tab heuristics and fallback filters
 |- core/                           # Shared wire protocol builder/parser
 |- jetson/                         # Deployable Jetson bridge bundle and DB layer
 |- pico/                           # Pico-runnable CircuitPython runtime files and smoke helpers
 |- pico_reference/                 # Readable Pico reference code that is not part of the deployed runtime
+|- spark_scraper_integration/      # Reference scraper/browser prototype stack
 |- tools/pico/                     # Host-side Pico deploy tooling and vendor cache
 |- lcd_screen_ui/                  # React/Vite LCD workflow UI kit for the ILI9341 target
 |- tests/                          # Focused unit tests
@@ -53,14 +60,16 @@ The host node is the user-facing desktop application.
   - Main active entrypoint.
   - Runs a 125 ms polling loop.
   - Captures active-window context through `AccessibilityManager`.
+  - Refuses duplicate launches through `SingleInstanceGuard`.
   - Updates in-memory context state via `WindowContextTracker`.
   - Maintains a deduped live-capture feed via `LiveCaptureFeed`.
   - Persists host window position through `QSettings`.
+  - Exposes `View Jetson DB`, which reads a validated snapshot copy of the Jetson database and pages rows in the UI.
   - Sends host context packets over serial to the Pico Hub using `SerialSender`.
   - Uploads release text to the SPARK device over Raw HID using `SparkHIDClient`.
   - Shows accepted release output locally in the UI after device acknowledgment.
   - Shows device connection state in the panel header.
-  - Sends `Summarize Window` requests over Raw HID and streams Jetson responses into `RELEASE OUTPUT`.
+  - Sends `Summarize Window` requests over Raw HID and streams Jetson responses into `RELEASE OUTPUT` through a second 125 ms response poll timer.
 - `spark_app.py`
   - Legacy/alternate desktop UI.
   - Still uses `KeyboardHIDManager` from `host_pc.hid`.
@@ -155,9 +164,15 @@ Files under `host_pc/accessibility/` are still the base of the host app:
   - OS-dispatched browser metadata entrypoint for supported desktop browsers.
 - `browser_windows.py`
   - Windows browser tab metadata helper used by `host_pc.browser`.
+- `jetson_db_snapshot.py`
+  - Creates validated read-only snapshot copies of `jetson_spark.db`.
+  - Provides deterministic table listing and bounded row paging for the viewer dialog.
 - `web_content.py`
   - OS-aware browser text extractor for supported macOS/Windows browser tabs.
   - Uses live-tab extraction with HTTP fallback depending on platform and URL.
+- `web_content_windows.py`
+  - Windows-specific live-tab extraction heuristics.
+  - Rejects browser chrome noise before accepting focused-element or full-window fallback text.
 - `context.py`
   - LLM-ready host context object.
 - `db.py`
@@ -171,6 +186,10 @@ Files under `host_pc/accessibility/` are still the base of the host app:
 - `live_capture.py`
   - Small helper extracted from V2 to manage live-capture display lines.
   - Important behavior: dedupes repeated poll entries, but still allows explicit event entries like `[CAPTURED] ...`.
+- `single_instance.py`
+  - Cross-platform guard that prevents duplicate `spark_app_v2.py` launches.
+- `snapshot_policy.py`
+  - Filters low-value snapshots and fingerprints repeated browser captures before `CONTEXT_NEW` / `CONTEXT_UPDATE` sends.
 
 ### Hardware / Device Communication
 
@@ -200,13 +219,16 @@ The main V2 app flow is now:
    - `SparkHIDClient`
    - `SerialSender`
    - `LiveCaptureFeed`
+   - `WebContentExtractor`
 3. Every 125 ms:
     - read active window info
+    - ignore the SPARK panel, watcher, and Jetson DB viewer windows
     - apply privacy guard
     - optionally enrich browser metadata
     - try browser extraction for supported tabs
-    - fallback to focused-element
-    - fallback to full-window text if needed
+    - on Windows, prefer live UIA page extraction and then HTTP fallback for fetchable external pages
+    - if browser extraction stays noisy, evaluate focused-element text through Windows browser heuristics
+    - fallback to full-window text if needed, again through the same Windows heuristics for browsers
     - note: this is the unchanged poll-loop fallback order in `spark_app_v2.py`
     - update in-memory host tracker/history
    - append deduped live-capture output
@@ -230,15 +252,26 @@ The main V2 app flow is now:
 
 - Main current app: `spark_app_v2.py`
 - Legacy app path: `spark_app.py`
+- Windows launch wrappers:
+  - `run_spark_setup_and_launch.ps1`
+  - `run_spark_setup_and_launch.bat`
 - Host context capture and in-memory state:
   - `host_pc/accessibility/`
   - `host_pc/context.py`
+  - `host_pc/snapshot_policy.py`
 - Legacy host DB path:
   - `host_pc/db.py`
 - Host hardware communication:
   - `host_pc/raw_hid.py`
   - `host_pc/serial_sender.py`
   - `host_pc/hid/keyboard_hid.py`
+- Host browser extraction helpers:
+  - `host_pc/browser.py`
+  - `host_pc/browser_windows.py`
+  - `host_pc/web_content.py`
+  - `host_pc/web_content_windows.py`
+- Jetson DB viewer support:
+  - `host_pc/jetson_db_snapshot.py`
 - Shared protocol contract: `core/protocol.py`
 - Jetson receiver/storage:
   - `jetson/pico_llm_bridge.py`
@@ -251,19 +284,20 @@ The main V2 app flow is now:
 
 The repo now has a focused unit test suite covering the active host/device contract:
 
-- `tests/test_host_raw_hid_client.py`
-- `tests/test_pico_upload_protocol.py`
-- `tests/test_pico_usb_config.py`
-- `tests/test_pico_deploy_to_pico.py`
 - `tests/test_pico_serial_bridge.py`
-- `tests/test_pico_typeback.py`
-- `tests/test_live_capture.py`
+- `tests/test_browser.py`
+- `tests/test_browser_windows.py`
+- `tests/test_web_content.py`
+- `tests/test_web_content_windows.py`
+- `tests/test_jetson_db_snapshot.py`
+- `tests/test_jetson_db_viewer_ui.py`
+- `tests/test_serial_sender.py`
 - `tests/test_windows_provider.py`
-- `tests/test_hotkeys.py`
-- `tests/test_release_output.py`
+- `tests/test_spark_panel_ui.py`
 - `tests/test_tracker_persistence.py`
-- `tests/test_protocol_packets.py`
 - `tests/test_jetson_db.py`
+- `tests/test_watch_full_stack.py`
+- `tests/conftest.py` forces Qt into `offscreen` mode during pytest collection so the UI suite can run headlessly on Windows.
 
 There is still no CI configuration checked in, but the repo is no longer in a "single test file" state.
 
