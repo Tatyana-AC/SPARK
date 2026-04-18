@@ -31,10 +31,10 @@ def get_hotkey_config(platform: str | None = None) -> dict[str, str]:
     return {
         "capture_combo": "<cmd>+<ctrl>+c",
         "release_combo": "<cmd>+<ctrl>+r",
-        "toggle_combo": "<cmd>+<ctrl>+<space>",
+        "toggle_combo": "<ctrl>+<f1>",
         "capture_label": "Cmd+Ctrl+C",
         "release_label": "Cmd+Ctrl+R",
-        "toggle_label": "Cmd+Ctrl+Space",
+        "toggle_label": "Ctrl+F1",
     }
 
 
@@ -51,7 +51,7 @@ class GlobalHotkeyManager:
     Manages global hotkeys via pynput and emits Qt signals.
 
     Default bindings vary by platform:
-        macOS: Cmd+Ctrl+C / Cmd+Ctrl+R / Cmd+Ctrl+Space
+        macOS: Cmd+Ctrl+C / Cmd+Ctrl+R / Ctrl+F1
         Windows: Win+Alt+C / Win+Alt+V / Win+Alt+Space
     """
 

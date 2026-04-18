@@ -120,6 +120,17 @@ Or run it without activating the shell first:
 - `Win+Alt+V`: release text
 - `Win+Alt+Space`: toggle the SPARK window
 
+macOS defaults on this branch:
+
+- `Cmd+Ctrl+C`: capture selected text
+- `Cmd+Ctrl+R`: release text
+- `Ctrl+F1`: toggle the SPARK window
+
+If `F1` changes screen brightness instead of behaving like a standard function key, enable Apple's standard function-key mode:
+
+- macOS Ventura / Sonoma / Sequoia: `System Settings` -> `Keyboard` -> turn on `Use F1, F2, etc. keys as standard function keys`
+- If you prefer the media keys by default, you can keep that setting off and press `Fn+Ctrl+F1` when using the SPARK toggle hotkey
+
 ### Browser extraction behavior
 
 - `spark_app_v2.py` polls every 125 ms and keeps the same fallback order:
