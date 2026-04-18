@@ -351,6 +351,29 @@ get_pico_mount() {
   printf '%s\n' "${matches[0]}"
 }
 
+assert_pico_writable_mount() {
+  local pico_mount="$1"
+
+  if (( DRY_RUN )); then
+    write_status "Pico mount mode" "DRY-RUN: would verify $pico_mount is mounted read-write"
+    return 0
+  fi
+
+  local disk_info
+  disk_info="$(diskutil info "$pico_mount" 2>/dev/null)" || die "Could not inspect Pico volume at $pico_mount."
+
+  local volume_read_only
+  local media_read_only
+  volume_read_only="$(printf '%s\n' "$disk_info" | awk -F: '/Volume Read-Only/ {sub(/^[[:space:]]+/, "", $2); print $2; exit}')"
+  media_read_only="$(printf '%s\n' "$disk_info" | awk -F: '/Media Read-Only/ {sub(/^[[:space:]]+/, "", $2); print $2; exit}')"
+
+  if [[ "$volume_read_only" == Yes* || "$media_read_only" == Yes* ]]; then
+    die "Pico volume $pico_mount is mounted read-only. Reconnect/reset the Pico so CIRCUITPY remounts read-write, then rerun setup_spark_macos.sh."
+  fi
+
+  write_status "Pico mount mode" "read-write"
+}
+
 test_jetson_remote_directory() {
   local remote_directory="$1"
   local target="$JETSON_USER@$JETSON_HOST"
@@ -864,6 +887,7 @@ invoke_setup_spark() {
     die "Could not find a mounted CIRCUITPY volume for the Pico."
   fi
   write_status "Pico volume" "$pico_mount"
+  assert_pico_writable_mount "$pico_mount"
   if (( DRY_RUN )); then
     write_status "Pico code.py" "DRY-RUN"
     write_status "Pico boot.py" "DRY-RUN"
@@ -915,5 +939,7 @@ invoke_setup_spark() {
   write_status "Result" "Setup complete"
 }
 
-parse_args "$@"
-invoke_setup_spark
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  parse_args "$@"
+  invoke_setup_spark
+fi

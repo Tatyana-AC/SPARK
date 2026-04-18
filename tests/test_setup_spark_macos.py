@@ -48,6 +48,56 @@ class SetupSparkMacOSTests(unittest.TestCase):
         self.assertNotIn("spark_app_v2.py launched", result.stdout)
         self.assertNotIn("watch_full_stack.py launched", result.stdout)
 
+    def test_assert_pico_writable_mount_rejects_readonly_volume(self):
+        result = subprocess.run(
+            [
+                "bash",
+                "-lc",
+                f"""
+source "{self.script_path}"
+write_status() {{ :; }}
+diskutil() {{
+cat <<'EOF'
+   Volume Read-Only:          Yes (read-only mount flag set)
+   Media Read-Only:           Yes
+EOF
+}}
+assert_pico_writable_mount /Volumes/CIRCUITPY
+""",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=self.repo_root,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mounted read-only", result.stderr)
+        self.assertIn("remounts read-write", result.stderr)
+
+    def test_assert_pico_writable_mount_accepts_writable_volume(self):
+        result = subprocess.run(
+            [
+                "bash",
+                "-lc",
+                f"""
+source "{self.script_path}"
+write_status() {{ :; }}
+diskutil() {{
+cat <<'EOF'
+   Volume Read-Only:          No
+   Media Read-Only:           No
+EOF
+}}
+assert_pico_writable_mount /Volumes/CIRCUITPY
+""",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=self.repo_root,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
