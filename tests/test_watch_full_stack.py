@@ -47,6 +47,28 @@ class ConfigureAppLoggingTests(unittest.TestCase):
 
 
 class WatchFullStackTests(unittest.TestCase):
+    def test_build_parser_uses_remote_jetson_log_defaults_on_macos(self):
+        from watch_full_stack import build_parser
+
+        args = build_parser(platform="darwin").parse_args([])
+
+        self.assertEqual(args.bridge_log, "/mnt/usb_drive/demo/pico_bridge/bridge.log")
+        self.assertEqual(args.llm_log, "/mnt/usb_drive/demo/llama_demo/server.log")
+
+    def test_build_default_sources_use_ssh_tail_for_remote_jetson_logs_on_macos(self):
+        from watch_full_stack import AppLogSource, build_default_sources, build_parser
+
+        with TemporaryDirectory() as tmpdir:
+            app_log = Path(tmpdir) / "spark_app_v2.log"
+            app_log.write_text("", encoding="utf-8")
+
+            args = build_parser(platform="darwin").parse_args(["--app-log", str(app_log)])
+            sources = build_default_sources(args, platform="darwin")
+
+        self.assertIsInstance(sources[0], AppLogSource)
+        self.assertEqual(type(sources[1]).__name__, "SshTailSource")
+        self.assertEqual(type(sources[2]).__name__, "SshTailSource")
+
     def test_check_local_spark_app_process_ignores_shell_wrappers(self):
         from watch_full_stack import check_local_spark_app_process
 
