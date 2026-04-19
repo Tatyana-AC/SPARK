@@ -180,7 +180,7 @@ instead of echoed back.
 
 ---
 
-### 7. Hardware wiring diagram added (`pin_layout.png`)
+### 7. Hardware wiring diagram added (`docs/pico/assets/pin_layout.png`)
 
 Physical wiring diagram for the Pico ↔ ILI9341 LCD and PB1–PB4 buttons.
 Reference for the smoke test pin constants in `pico/lcd_smoke_test.py`.
@@ -208,7 +208,7 @@ Reference for the smoke test pin constants in `pico/lcd_smoke_test.py`.
 | `lcd_screen_ui/` | New — React LCD UI kit |
 | `host_pc/web_content.py` | New — browser text extractor |
 | `pico/lcd_smoke_test.py` | New — CircuitPython ILI9341 smoke test |
-| `pin_layout.png` | New — hardware wiring diagram |
+| `docs/pico/assets/pin_layout.png` | New — hardware wiring diagram |
 | `docs/BRANCH_HANDOFF_2026-03-29.md` | New — this file |
 
 ## Files Modified This Branch

@@ -33,7 +33,7 @@ chmod +x setup_spark_macos.sh
 - sync the Jetson bridge bundle over SSH
 - start or restart the Jetson services
 - run the Raw HID summarize smoke test, with one automatic bridge-restart retry on transient summarize timeouts
-- launch both `spark_app_v2.py` and `watch_full_stack.py` in Terminal
+- launch both `spark_app_v2.py` and `tools/monitoring/watch_full_stack.py` in Terminal
 
 Important macOS setup notes:
 
@@ -82,7 +82,7 @@ Or run it without activating the shell first:
 To launch the debug watcher separately on macOS:
 
 ```bash
-.venv/bin/python watch_full_stack.py
+.venv/bin/python tools/monitoring/watch_full_stack.py
 ```
 
 ### Windows
@@ -179,7 +179,7 @@ That means a fresh Windows host no longer needs a pre-created `.venv` before usi
 That flow brings up the normal Windows debugging session by launching:
 
 - `spark_app_v2.py`
-- `watch_full_stack.py`
+- `tools/monitoring/watch_full_stack.py`
 
 The watcher is monitor-only. It does not start additional app instances.
 
@@ -199,7 +199,7 @@ Expected outcome:
 - the Pico runtime is redeployed when `CIRCUITPY` is writable
 - the Jetson bridge bundle is resynced
 - Jetson services are verified
-- `spark_app_v2.py` and `watch_full_stack.py` are relaunched
+- `spark_app_v2.py` and `tools/monitoring/watch_full_stack.py` are relaunched
 
 If recovery stops on a Pico message about a read-only `CIRCUITPY` mount, reconnect or reset the Pico first, confirm it remounts read-write in Finder or `diskutil info /Volumes/CIRCUITPY`, then rerun `./setup_spark_macos.sh`.
 
@@ -222,12 +222,11 @@ If recovery stops on a Pico message about a read-only `CIRCUITPY` mount, reconne
 ## Notes
 
 - `spark_app_v2.py` is the active app path.
-- `spark_app.py` is an older UI path and should be treated as secondary.
 - `spark_app_v2.py` now refuses duplicate launches through `host_pc/single_instance.py`; on Windows, the parent/child launcher pair from `.venv\Scripts\python.exe` still counts as one app start.
 - `lcd_screen_ui/` is a standalone React/Vite UI kit for the 320x240 LCD workflow screens.
-- `spark_scraper_integration/` is a reference scraper stack added for browser-context experimentation; it is not the main runtime path.
 - The current Pico firmware target is CircuitPython.
-- `pico_reference/main.py` is a readable behavioral reference for the Pico role, not the literal deployed `boot.py` / `code.py` pair.
+- `tools/monitoring/watch_full_stack.py` is the passive full-stack watcher for host, Pico, and Jetson logs.
+- `tools/monitoring/pico_monitor.py` is the direct Pico HID/runtime monitor.
 - Current auxiliary input wiring: EC11 encoder A/B/button/common -> GP10/GP11/GP9/GND, and three-position slide switch positions 1/2/3/common -> GP6/GP7/GP8/GND.
 - `python tools/pico/deploy_to_pico.py` is the cross-platform helper to push the Pico firmware and `adafruit_hid` onto a mounted `CIRCUITPY` board.
 - Deploy now exact-syncs the default Pico runtime and removes stale non-preserved files from `CIRCUITPY`; use `--dry-run` to inspect planned deletions first.

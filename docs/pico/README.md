@@ -2,7 +2,7 @@
 
 This document covers the SPARK Pico Hub runtime and bring-up flow for the current CircuitPython firmware design.
 
-Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` pair. [`pico_reference/main.py`](C:/SPARK/pico_reference/main.py) is a readable behavioral reference for the same relay-oriented role, not the literal runtime entrypoint.
+Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` pair.
 
 ## Current firmware files
 

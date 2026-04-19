@@ -9,7 +9,11 @@ import subprocess
 import sys
 import time
 
-from app_log_contract import APP_LOG_FILE_FORMAT
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from core.app_log_contract import APP_LOG_FILE_FORMAT
 
 
 PICO_DEBUG_LOGGER_NAME = "pico.debug"
@@ -981,7 +985,7 @@ def build_pico_poller(*, app_running=False):
     if app_running:
         return None
     try:
-        from pico_monitor import HIDPoller
+        from tools.monitoring.pico_monitor import HIDPoller
     except Exception:
         return None
 

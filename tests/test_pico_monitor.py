@@ -4,21 +4,21 @@ from unittest import mock
 
 class PicoMonitorCliTests(unittest.TestCase):
     def test_windows_defaults_to_no_clear(self):
-        import pico_monitor as monitor
+        from tools.monitoring import pico_monitor as monitor
 
         args = monitor.build_arg_parser().parse_args([])
 
         self.assertFalse(monitor.should_clear_screen(args.clear_screen, "nt"))
 
     def test_clear_flag_enables_dashboard_redraw_on_windows(self):
-        import pico_monitor as monitor
+        from tools.monitoring import pico_monitor as monitor
 
         args = monitor.build_arg_parser().parse_args(["--clear-screen"])
 
         self.assertTrue(monitor.should_clear_screen(args.clear_screen, "nt"))
 
     def test_hid_poller_keeps_runtime_status_text_verbatim(self):
-        import pico_monitor as monitor
+        from tools.monitoring import pico_monitor as monitor
 
         fake_hid = mock.Mock()
         fake_hid.enumerate.return_value = []

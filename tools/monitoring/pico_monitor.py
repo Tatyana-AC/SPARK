@@ -6,9 +6,9 @@ tails the Jetson bridge log over SSH in a background thread, printing a live
 dashboard that shows exactly where a summarize request is in the pipeline.
 
 Usage (from repo root):
-    python pico_monitor.py
-    python pico_monitor.py --poll-ms 100
-    python pico_monitor.py --no-jetson
+    python tools/monitoring/pico_monitor.py
+    python tools/monitoring/pico_monitor.py --poll-ms 100
+    python tools/monitoring/pico_monitor.py --no-jetson
 """
 
 import argparse
@@ -19,6 +19,12 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 # ---------------------------------------------------------------------------
 # HID constants (must match host_pc/raw_hid.py)

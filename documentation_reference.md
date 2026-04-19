@@ -2,8 +2,7 @@
 
 This file is a developer lookup for the active SPARK runtime on the current branch.
 It is centered on `spark_app_v2.py`, the CircuitPython Pico Hub flow, and the current
-Jetson-owned persistence model. Legacy files such as `spark_app.py` are called out
-explicitly when they matter.
+Jetson-owned persistence model.
 
 ## Core Data Flow
 
@@ -133,7 +132,6 @@ Windows hotkey note:
 | File | Purpose |
 |---|---|
 | `spark_app_v2.py` | Active PyQt host panel, poll loop, privacy guard, live capture, release flow, and summarize UI |
-| `spark_app.py` | Older UI path that still uses the legacy keyboard-HID manager |
 | `host_pc/accessibility/base.py` | Shared dataclasses and `context_key` logic |
 | `host_pc/accessibility/manager.py` | Cross-platform facade over macOS and Windows accessibility providers |
 | `host_pc/accessibility/macos_provider.py` | macOS AX-based extraction and selection capture |
@@ -143,7 +141,6 @@ Windows hotkey note:
 | `host_pc/browser_windows.py` | Windows browser tab metadata helper for title/URL extraction |
 | `host_pc/jetson_db_snapshot.py` | Read-only snapshot creation, validation, and paging helpers for the Jetson DB viewer |
 | `host_pc/context.py` | LLM-ready context object built from current snapshots |
-| `host_pc/db.py` | Legacy host SQLite schema and helpers; not used by the active V2 path |
 | `host_pc/live_capture.py` | Live-capture line retention and poll-line dedupe |
 | `host_pc/raw_hid.py` | Active host Raw HID upload client, response reader, and summarize stream poller |
 | `host_pc/release_output.py` | Formatting for the local RELEASE OUTPUT panel |
@@ -159,7 +156,8 @@ Windows hotkey note:
 | `jetson/db_manager.py` | Rich-session Jetson SQLite store |
 | `pico/boot.py` | Pico USB identity and interface configuration |
 | `pico/code.py` | Active Pico runtime loop for CDC relay, Jetson summarize transport, and HID handling |
-| `pico_reference/main.py` | Readable reference implementation, not the deployed entrypoint |
+| `tools/monitoring/watch_full_stack.py` | Passive watcher for host, Pico, and Jetson logs |
+| `tools/monitoring/pico_monitor.py` | Direct Pico HID/runtime monitor used by the watcher |
 | `tools/pico/deploy_to_pico.py` | Cross-platform deploy helper for a mounted `CIRCUITPY` board |
 | `run_spark_setup_and_launch.ps1` | Preferred Windows wrapper that delegates to `setup_spark.ps1` |
 | `run_spark_setup_and_launch.bat` | Double-clickable wrapper for the PowerShell launcher |
@@ -283,10 +281,7 @@ The tracker keeps:
 - no host-local persisted snapshot DB in the active `spark_app_v2.py` runtime
 - duplicate `spark_app_v2.py` launches are rejected by `SingleInstanceGuard`
 
-## Legacy Notes
-
-- `spark_app.py` and `host_pc/hid/keyboard_hid.py` are legacy paths kept for reference.
-- `host_pc/raw_hid_example.py` does not reflect the current `SparkHIDClient` API.
+## Notes
 - `pico/typeback.py` and its old typeback queue path were removed from the active CircuitPython runtime.
 - The currently verified summarize path is Raw HID host<->Pico plus UART Pico<->Jetson.
 - The current Jetson deployment target is the `demo/pico_bridge` folder. The repo `jetson/` directory is structured to be copied there directly.

@@ -1,5 +1,7 @@
 # Cross-Platform Browser Context Extraction Design
 
+> Historical note (repo cleanup 2026-04-18): references below to `spark_scraper_integration/*` describe a reference folder that existed when this design was written but was later removed from the repo.
+
 ## Summary
 
 Upgrade SPARK's browser-context capture so the active `spark_app_v2.py` runtime keeps the stronger macOS browser path, fixes the current Chrome URL truncation bug, and adds a Windows-specific browser path behind OS detection instead of replacing the macOS logic. The app should keep one poll-loop contract and choose the browser metadata/text strategy internally based on the detected platform.

@@ -46,7 +46,7 @@ class SetupSparkMacOSTests(unittest.TestCase):
         self.assertIn("sidac@10.0.0.2:/mnt/usb_drive/demo/pico_bridge/", result.stdout)
         self.assertIn("chmod\\ +x\\ \\'/mnt/usb_drive/demo/pico_bridge/run_bridge.sh\\'", result.stdout)
         self.assertNotIn("spark_app_v2.py launched", result.stdout)
-        self.assertNotIn("watch_full_stack.py launched", result.stdout)
+        self.assertNotIn("tools/monitoring/watch_full_stack.py launched", result.stdout)
 
     def test_assert_pico_writable_mount_rejects_readonly_volume(self):
         result = subprocess.run(

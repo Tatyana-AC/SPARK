@@ -22,7 +22,7 @@
   Keep this file or move its surviving assertions elsewhere, but the suite must still retain one successful return-path assertion and one error return-path assertion in a concrete surviving Python file.
 - Modify: `tests/setup_spark.Tests.ps1`
   Keep only setup-critical behaviors that determine whether the smoke loop can start from a fresh state.
-- Delete: `tests/test_watch_full_stack.py`
+- Delete: `tests/test_tools/monitoring/watch_full_stack.py`
 - Delete: `tests/test_spark_panel_ui.py`
 - Delete: low-value Python/unit files identified during execution if they do not protect the four required communication outcomes.
 - Verify: `setup_spark.ps1`
@@ -219,13 +219,13 @@ git commit -m "test: trim setup spark tests to startup-critical behavior"
 ## Task 6: Delete Low-Value Python Test Files in One Sweep
 
 **Files:**
-- Delete: `tests/test_watch_full_stack.py`
+- Delete: `tests/test_tools/monitoring/watch_full_stack.py`
 - Delete: `tests/test_spark_panel_ui.py`
 - Delete: every additional Python test file outside the named keep set unless it is the concrete surviving return-path file
 
 - [ ] **Step 1: Delete the watcher-specific test file**
 
-Delete: `tests/test_watch_full_stack.py`
+Delete: `tests/test_tools/monitoring/watch_full_stack.py`
 
 - [ ] **Step 2: Delete the Spark UI test file**
 
@@ -287,7 +287,7 @@ Expected:
 - [ ] **Step 4: Confirm the remaining suite is materially smaller**
 
 Checklist:
-- `tests/test_watch_full_stack.py` is gone
+- `tests/test_tools/monitoring/watch_full_stack.py` is gone
 - `tests/test_spark_panel_ui.py` is gone
 - no watcher-specific Python test files remain
 - only the named keep-set Python communication files plus the concrete return-path file remain for this area

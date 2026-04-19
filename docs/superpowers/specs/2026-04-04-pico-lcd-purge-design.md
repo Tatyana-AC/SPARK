@@ -1,5 +1,7 @@
 # Pico LCD Purge Design
 
+> Historical note (repo cleanup 2026-04-18): references below to `pico_reference/main.py` describe a reference sketch that existed when this design was written but was later removed from the repo.
+
 ## Summary
 
 Remove the Pico-side LCD implementation entirely and make the physical pushbuttons inert in the active runtime. The Pico firmware should continue to support USB CDC relay, Raw HID commands, and Jetson UART summarize forwarding, but it should no longer import, deploy, initialize, or test any LCD-specific code.

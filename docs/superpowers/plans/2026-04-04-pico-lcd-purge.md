@@ -1,5 +1,7 @@
 # Pico LCD Purge Implementation Plan
 
+> Historical note (repo cleanup 2026-04-18): references below to `pico_reference/main.py` describe a reference sketch that existed when this plan was written but was later removed from the repo.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Remove the Pico-side LCD implementation, make PB1-PB4 inert in the active runtime, and clean up deploy/tests/docs so the repo no longer treats LCD support as part of the shipped Pico firmware.

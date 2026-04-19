@@ -807,13 +807,13 @@ start_spark_app() {
 
 start_full_stack_watcher() {
   local python_exe="$1"
-  local watcher_path="$REPO_ROOT/watch_full_stack.py"
+  local watcher_path="$REPO_ROOT/tools/monitoring/watch_full_stack.py"
   local command_text
 
   stop_matching_processes "Watcher status" "watch_full_stack\\.py"
   command_text="cd $(quote_args "$REPO_ROOT"); $(quote_args "$python_exe" "$watcher_path")"
   launch_in_terminal "$command_text"
-  write_status "Watcher status" "watch_full_stack.py launched in Terminal"
+  write_status "Watcher status" "tools/monitoring/watch_full_stack.py launched in Terminal"
 }
 
 parse_args() {

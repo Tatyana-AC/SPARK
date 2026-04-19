@@ -15,16 +15,13 @@ The current codebase is best understood as a host application plus protocol and 
 ```text
 SPARK/
 |- spark_app_v2.py                 # Active host UI and hardware-integrated desktop panel
-|- spark_app.py                    # Older desktop UI path; still wired to keyboard HID manager
 |- run_spark_setup_and_launch.ps1  # Preferred Windows wrapper around setup_spark.ps1
 |- run_spark_setup_and_launch.bat  # Double-clickable wrapper for the PowerShell launcher
 |- host_pc/                        # Host-side runtime package
 |  |- accessibility/               # Cross-platform text capture
-|  |- hid/                         # Keyboard Raw HID manager abstraction
 |  |- browser.py                   # OS-dispatched browser metadata entrypoint
 |  |- browser_windows.py           # Windows browser tab metadata helper
 |  |- context.py                   # LLM-friendly host context object
-|  |- db.py                        # Legacy host-side local SQLite store; not used by spark_app_v2.py
 |  |- jetson_db_snapshot.py        # Read-only Jetson DB snapshot helpers for the viewer dialog
 |  |- hotkeys.py                   # Global hotkeys
 |  |- live_capture.py              # Live-capture feed dedupe helper
@@ -34,12 +31,14 @@ SPARK/
 |  |- snapshot_policy.py           # Snapshot relevance/fingerprinting helpers
 |  |- web_content.py               # OS-aware browser text extractor
 |  `- web_content_windows.py       # Windows browser live-tab heuristics and fallback filters
-|- core/                           # Shared wire protocol builder/parser
+|- core/                           # Shared wire protocol builder/parser and app log contract
 |- jetson/                         # Deployable Jetson bridge bundle and DB layer
 |- pico/                           # Pico-runnable CircuitPython runtime files and smoke helpers
-|- pico_reference/                 # Readable Pico reference code that is not part of the deployed runtime
-|- spark_scraper_integration/      # Reference scraper/browser prototype stack
-|- tools/pico/                     # Host-side Pico deploy tooling and vendor cache
+|- tools/
+|  |- diagnostics/                 # One-off Pico / Jetson investigation helpers
+|  |- macos/                       # macOS setup helpers
+|  |- monitoring/                  # Passive watcher and Pico runtime monitor scripts
+|  `- pico/                        # Host-side Pico deploy tooling and vendor cache
 |- lcd_screen_ui/                  # React/Vite LCD workflow UI kit for the ILI9341 target
 |- tests/                          # Focused unit tests
 |- ENGINEERING_SPEC.md             # Best architecture source of truth
@@ -47,7 +46,7 @@ SPARK/
 |- diagram.md                      # Current three-node architecture diagram
 |- requirements.txt                # Current Python dependencies
 |- spark.db                        # Older host runtime artifact; not used by the active V2 path
-`- setup_accessibility_macos.py    # macOS accessibility setup helper
+`- docs/pico/assets/pin_layout.png # Hardware wiring reference asset
 ```
 
 ## Architecture Summary
@@ -70,11 +69,6 @@ The host node is the user-facing desktop application.
   - Shows accepted release output locally in the UI after device acknowledgment.
   - Shows device connection state in the panel header.
   - Sends `Summarize Window` requests over Raw HID and streams Jetson responses into `RELEASE OUTPUT` through a second 125 ms response poll timer.
-- `spark_app.py`
-  - Legacy/alternate desktop UI.
-  - Still uses `KeyboardHIDManager` from `host_pc.hid`.
-  - Useful for reference, but `spark_app_v2.py` is the active app path and the only firmware-compatibility target.
-
 ### 2. Shared Protocol Layer
 
 - `core/protocol.py`
@@ -111,12 +105,6 @@ The host node is the user-facing desktop application.
   - Pure-Python implementation of the V2 upload protocol state machine and host-readable response buffer metadata.
 - `pico/serial_bridge.py`
   - CDC-to-UART relay helper.
-- `pico_reference/main.py`
-  - Reference implementation and readable spec for the Pico relay behavior.
-  - Treat this as documentation/reference code, not the literal deployed `boot.py` / `code.py` pair.
-  - Describes the Pico’s job:
-  - relay host CDC serial bytes to Jetson UART
-  - coexist with custom Raw HID control traffic on the same physical device
 - `ENGINEERING_SPEC.md`
   - The real source of truth for the distributed architecture and the CircuitPython-based single-Pico design.
 
@@ -175,9 +163,6 @@ Files under `host_pc/accessibility/` are still the base of the host app:
   - Rejects browser chrome noise before accepting focused-element or full-window fallback text.
 - `context.py`
   - LLM-ready host context object.
-- `db.py`
-  - Legacy host-side local SQLite store for snapshots and preferences.
-  - No longer used by the active `spark_app_v2.py` runtime.
 - `hotkeys.py`
   - Global hotkey listener.
   - Current Windows defaults: `Win+Alt+C` for capture, `Win+Alt+V` for release, and `Win+Alt+Space` for window toggle.
@@ -202,10 +187,6 @@ Files under `host_pc/accessibility/` are still the base of the host app:
 - `serial_sender.py`
   - Sends protocol packets to the Pico CDC serial interface.
   - Used by V2 to emit `CONTEXT_NEW` on context change and `CONTEXT_UPDATE` while the same context remains active.
-- `hid/keyboard_hid.py`
-  - Higher-level keyboard HID manager abstraction.
-  - Legacy path used by `spark_app.py`.
-  - Not part of the active `spark_app_v2.py` to CircuitPython firmware contract.
 
 ## Current Runtime Flow
 
@@ -251,7 +232,6 @@ The main V2 app flow is now:
 ## Important File Ownership
 
 - Main current app: `spark_app_v2.py`
-- Legacy app path: `spark_app.py`
 - Windows launch wrappers:
   - `run_spark_setup_and_launch.ps1`
   - `run_spark_setup_and_launch.bat`
@@ -259,17 +239,17 @@ The main V2 app flow is now:
   - `host_pc/accessibility/`
   - `host_pc/context.py`
   - `host_pc/snapshot_policy.py`
-- Legacy host DB path:
-  - `host_pc/db.py`
 - Host hardware communication:
   - `host_pc/raw_hid.py`
   - `host_pc/serial_sender.py`
-  - `host_pc/hid/keyboard_hid.py`
 - Host browser extraction helpers:
   - `host_pc/browser.py`
   - `host_pc/browser_windows.py`
   - `host_pc/web_content.py`
   - `host_pc/web_content_windows.py`
+- Monitoring tools:
+  - `tools/monitoring/watch_full_stack.py`
+  - `tools/monitoring/pico_monitor.py`
 - Jetson DB viewer support:
   - `host_pc/jetson_db_snapshot.py`
 - Shared protocol contract: `core/protocol.py`
@@ -277,7 +257,6 @@ The main V2 app flow is now:
   - `jetson/pico_llm_bridge.py`
   - `jetson/receiver.py`
   - `jetson/db_manager.py`
-- Pico relay reference: `pico_reference/main.py`
 - Architecture spec: `ENGINEERING_SPEC.md`
 
 ## Tests and Verification
@@ -318,18 +297,10 @@ There is still no CI configuration checked in, but the repo is no longer in a "s
 - `jetson/db_manager.py`
 - `host_pc/live_capture.py`
 
-### Older or only partially current
-
-- `spark_desktop.egg-info/PKG-INFO`
-  - Generated metadata and likely stale relative to the tracked source.
-- `host_pc/raw_hid_example.py`
-  - Appears out of sync with the current `host_pc/raw_hid.py` API surface because it references listener/event APIs that are not present in the current client implementation.
-
 ## Important Observations
 
 - This branch introduced a significant architecture expansion: the repo now spans desktop UI, shared protocol code, firmware-facing relay behavior, and a Jetson backend.
 - `spark_app_v2.py` talks to the Pico through `SparkHIDClient` and `SerialSender`; that is the current compatibility target for the firmware.
-- `spark_app.py` still uses `KeyboardHIDManager`, but that path is legacy and should not be treated as the current Pico contract.
 - The hard-coded macOS `sys.path.insert(...)` remains in both app entrypoints and is still a portability smell.
 - The current `requirements.txt` reflects the newer hardware path and now includes both `hidapi` and `pyserial`.
 - The currently verified summarize path is Raw HID host<->Pico plus UART Pico<->Jetson, and direct framed CDC summarize packets can also be used for hardware debugging.
