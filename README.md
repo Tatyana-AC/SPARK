@@ -39,6 +39,7 @@ Important macOS setup notes:
 
 - The repo default branch on GitHub is currently `main`, but the active branch used for the current macOS setup flow is `sida`, so clone that branch explicitly when you want this behavior.
 - The first run may trigger macOS permission prompts. If Terminal or the repo Python asks for Accessibility or Input Monitoring, grant access, then rerun `./setup_spark_macos.sh`.
+- If you launch `./setup_spark_macos.sh` from a third-party terminal app such as `Cmux`, grant Accessibility to that terminal app as well. Accessibility granted only to the default Terminal app does not carry over to a different terminal host process.
 - If `CIRCUITPY` is mounted read-only, the script now stops before deployment and tells you to reconnect or reset the Pico so the volume remounts read-write. Rerun the same command after the board remounts.
 - The script expects passwordless SSH to `sidac@192.168.55.1` by default. Override host, user, or remote path with flags when needed:
 
