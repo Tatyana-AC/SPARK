@@ -124,9 +124,7 @@ Operational note:
 | Change UI test backend behavior | `tests/conftest.py` | `QT_QPA_PLATFORM` setup |
 
 Windows hotkey note:
-- Current Windows defaults are `Win+Alt+C` for capture, `Win+Alt+V` for release, and `Win+Alt+Space` for toggle.
-- `Win+Alt+Space` can still surface the standard Windows system menu because of the underlying `Alt+Space` behavior.
-- If a local machine must suppress that behavior, the current documented AutoHotkey workaround is `#!Space::return`.
+- Current Windows defaults are `Win+Alt+C` for capture, `Win+Alt+V` for release, and `Ctrl+F1` for toggle.
 
 ## File-By-File Summary
 

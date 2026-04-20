@@ -23,10 +23,10 @@ class HotkeyConfigTests(unittest.TestCase):
 
         self.assertEqual(config["capture_combo"], "<cmd>+<alt>+c")
         self.assertEqual(config["release_combo"], "<cmd>+<alt>+v")
-        self.assertEqual(config["toggle_combo"], "<cmd>+<alt>+<space>")
+        self.assertEqual(config["toggle_combo"], "<ctrl>+<f1>")
         self.assertEqual(config["capture_label"], "Win+Alt+C")
         self.assertEqual(config["release_label"], "Win+Alt+V")
-        self.assertEqual(config["toggle_label"], "Win+Alt+Space")
+        self.assertEqual(config["toggle_label"], "Ctrl+F1")
 
 
 if __name__ == "__main__":

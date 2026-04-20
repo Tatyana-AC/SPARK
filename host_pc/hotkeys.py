@@ -22,10 +22,10 @@ def get_hotkey_config(platform: str | None = None) -> dict[str, str]:
         return {
             "capture_combo": "<cmd>+<alt>+c",
             "release_combo": "<cmd>+<alt>+v",
-            "toggle_combo": "<cmd>+<alt>+<space>",
+            "toggle_combo": "<ctrl>+<f1>",
             "capture_label": "Win+Alt+C",
             "release_label": "Win+Alt+V",
-            "toggle_label": "Win+Alt+Space",
+            "toggle_label": "Ctrl+F1",
         }
 
     return {
@@ -52,7 +52,7 @@ class GlobalHotkeyManager:
 
     Default bindings vary by platform:
         macOS: Cmd+Ctrl+C / Cmd+Ctrl+R / Cmd+Ctrl+Space
-        Windows: Win+Alt+C / Win+Alt+V / Win+Alt+Space
+        Windows: Win+Alt+C / Win+Alt+V / Ctrl+F1
     """
 
     def __init__(self):

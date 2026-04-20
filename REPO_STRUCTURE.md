@@ -180,9 +180,7 @@ Files under `host_pc/accessibility/` are still the base of the host app:
   - No longer used by the active `spark_app_v2.py` runtime.
 - `hotkeys.py`
   - Global hotkey listener.
-  - Current Windows defaults: `Win+Alt+C` for capture, `Win+Alt+V` for release, and `Win+Alt+Space` for window toggle.
-  - Avoid `Alt+Space`-based bindings on Windows because `Alt+Space` opens the active window system menu.
-  - If a local Windows setup must suppress that effect, the current documented workaround is an AutoHotkey rule: `#!Space::return`.
+  - Current Windows defaults: `Win+Alt+C` for capture, `Win+Alt+V` for release, and `Ctrl+F1` for window toggle.
 - `live_capture.py`
   - Small helper extracted from V2 to manage live-capture display lines.
   - Important behavior: dedupes repeated poll entries, but still allows explicit event entries like `[CAPTURED] ...`.
