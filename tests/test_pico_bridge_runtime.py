@@ -327,14 +327,96 @@ class BridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(
             call_log,
             [
-                ("serial", 64),
                 ("transport", 64),
                 ("sync", b"", False, False),
+                ("serial", 64),
                 ("hid", 9),
             ],
         )
         self.assertEqual(sleeps, [0.002])
         self.assertEqual(runtime.current_status().loop_checkpoint, "after_sleep")
+
+    def test_bridge_runtime_skips_serial_bridge_while_request_active(self):
+        from pico.bridge_runtime import BridgeRuntime
+
+        call_log = []
+        runtime = BridgeRuntime(
+            serial_bridge=types.SimpleNamespace(
+                relay_once=lambda *, max_chunk_size: call_log.append(("serial", max_chunk_size))
+            ),
+            jetson_transport=types.SimpleNamespace(
+                poll=lambda *, max_chunk_size: call_log.append(("transport", max_chunk_size)),
+                request_active=True,
+                response_len=0,
+                response_complete=False,
+                response_bytes=b"",
+            ),
+            protocol_handler=types.SimpleNamespace(
+                update_response_state=lambda response_bytes, *, complete, active: call_log.append(
+                    ("sync", active)
+                ),
+                handle_report=lambda report: None,
+            ),
+            custom_hid=types.SimpleNamespace(
+                get_last_received_report=lambda raw_report_id: call_log.append(("hid", raw_report_id)) or None,
+                send_report=lambda reply, raw_report_id: None,
+            ),
+            raw_report_id=9,
+            button_input=types.SimpleNamespace(drain_pressed_events=lambda: iter(())),
+            time_sleep=lambda _: None,
+            heartbeat_interval_s=99.0,
+        )
+
+        runtime.run_once(now=1.0)
+
+        self.assertEqual(
+            call_log,
+            [
+                ("transport", 64),
+                ("sync", True),
+                ("hid", 9),
+            ],
+        )
+
+    def test_bridge_runtime_limits_hid_reports_per_run(self):
+        from pico.bridge_runtime import BridgeRuntime
+
+        reports = [b"r1", b"r2", b"r3", b"r4", b"r5"]
+        handled = []
+
+        class _FakeCustomHid:
+            def get_last_received_report(self, raw_report_id):
+                if not reports:
+                    return None
+                return reports.pop(0)
+
+            def send_report(self, reply, raw_report_id):
+                return None
+
+        runtime = BridgeRuntime(
+            serial_bridge=types.SimpleNamespace(relay_once=lambda *, max_chunk_size: None),
+            jetson_transport=types.SimpleNamespace(
+                poll=lambda *, max_chunk_size: None,
+                request_active=False,
+                response_len=0,
+                response_complete=False,
+                response_bytes=b"",
+            ),
+            protocol_handler=types.SimpleNamespace(
+                update_response_state=lambda response_bytes, *, complete, active: None,
+                handle_report=lambda report: handled.append(report) or None,
+            ),
+            custom_hid=_FakeCustomHid(),
+            raw_report_id=9,
+            button_input=types.SimpleNamespace(drain_pressed_events=lambda: iter(())),
+            time_sleep=lambda _: None,
+            heartbeat_interval_s=99.0,
+        )
+
+        runtime.run_once(now=1.0)
+
+        self.assertEqual(handled, [b"r1", b"r2", b"r3", b"r4"])
+        self.assertEqual(reports, [b"r5"])
 
     def test_bridge_runtime_updates_loop_checkpoint_and_heartbeat(self):
         from pico.bridge_runtime import BridgeRuntime
@@ -544,9 +626,9 @@ class BridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(
             call_log,
             [
-                ("serial", 64),
                 ("transport", 64),
                 ("sync", None),
+                ("serial", 64),
                 ("hid", 9),
                 ("debug", "button:2"),
                 ("debug", "pre_press:2"),
@@ -563,8 +645,8 @@ class BridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(
             call_log,
             [
-                ("serial", 64),
                 ("transport", 64),
+                ("serial", 64),
                 ("hid", 9),
                 ("debug", "button:4"),
                 ("debug", "pre_press:4"),

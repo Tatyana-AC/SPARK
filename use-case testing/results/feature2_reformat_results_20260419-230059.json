@@ -1,0 +1,19 @@
+[
+  {
+    "sentence_index": 0,
+    "sentence": "The report need a quick review before noon.",
+    "request_text": "{\"command\": \"reformat_selection\", \"selected_text\": \"The report need a quick review before noon.\"}",
+    "response_text": "The report needs a quick review before noon.",
+    "ttft_s": 1.790274099970702,
+    "total_latency_s": 1.790274099970702,
+    "grammar": {
+      "text": "The report needs a quick review before noon.",
+      "engine": "heuristic",
+      "is_grammatical": true,
+      "issue_count": 0,
+      "issues": [],
+      "summary": "heuristic: no issues found."
+    },
+    "error": null
+  }
+]

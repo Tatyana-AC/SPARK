@@ -1,0 +1,1012 @@
+{
+  "source_results_file": "C:\\SPARK\\use-case testing\\results\\feature2_reformat_full_20260419.json",
+  "evaluation_method": "manual_llm_review_via_subagents",
+  "summary": {
+    "total_cases": 100,
+    "correct": 91,
+    "incorrect": 7,
+    "borderline": 2
+  },
+  "evaluations": [
+    {
+      "sentence_index": 0,
+      "sentence": "The repport needs a quick review before noon.",
+      "response_text": "The report needs a quick review before noon.",
+      "ttft_s": 1.8315912999678403,
+      "total_latency_s": 1.8315912999678403,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 1,
+      "sentence": "She go to the ofice every Monday.",
+      "response_text": "She goes to the office every Monday.",
+      "ttft_s": 0.8639983999892138,
+      "total_latency_s": 0.8639983999892138,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 2,
+      "sentence": "I was finishin the draft lsst night.",
+      "response_text": "I was finishing the draft last night.",
+      "ttft_s": 0.8720778999850154,
+      "total_latency_s": 0.8720778999850154,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 3,
+      "sentence": "We discused the schedule in the meeting and skipped the notes.",
+      "response_text": "We discussed the schedule in the meeting and skipped the notes.",
+      "ttft_s": 1.0390608999878168,
+      "total_latency_s": 1.0390608999878168,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 4,
+      "sentence": "Each of the files are mislabeled.",
+      "response_text": "Each of the files is mislabeled.",
+      "ttft_s": 0.9200759999803267,
+      "total_latency_s": 0.9200759999803267,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 5,
+      "sentence": "He did not knew the foldeer was locked.",
+      "response_text": "He did not know the folder was locked.",
+      "ttft_s": 0.9040424999548122,
+      "total_latency_s": 0.9040424999548122,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 6,
+      "sentence": "The package arived, and the lable was missing but we signed it.",
+      "response_text": "The package arrived, and the label was missing, but we signed it.",
+      "ttft_s": 1.1190071000019088,
+      "total_latency_s": 1.1190071000019088,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 7,
+      "sentence": "My manager said me to updat the notes.",
+      "response_text": "My manager told me to update the notes.",
+      "ttft_s": 0.8711268000188284,
+      "total_latency_s": 0.8711268000188284,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 8,
+      "sentence": "There is too many tickets in this queu.",
+      "response_text": "There are too many tickets in this queue.",
+      "ttft_s": 0.9360706000006758,
+      "total_latency_s": 0.9360706000006758,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 9,
+      "sentence": "They was waitng outside when the rain started.",
+      "response_text": "They were waiting outside when the rain started.",
+      "ttft_s": 0.928080299985595,
+      "total_latency_s": 0.928080299985595,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 10,
+      "sentence": "Please place the reciept on my desk by tomorrow.",
+      "response_text": "Please place the receipt on my desk by tomorrow.",
+      "ttft_s": 0.9601014000363648,
+      "total_latency_s": 0.9601014000363648,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 11,
+      "sentence": "I have seen the emial yesterday.",
+      "response_text": "I have seen the email yesterday.",
+      "ttft_s": 0.8401138000190258,
+      "total_latency_s": 0.8401138000190258,
+      "error": null,
+      "verdict": "incorrect",
+      "reason": "Still ungrammatical; the tense/time expression should have been fixed."
+    },
+    {
+      "sentence_index": 12,
+      "sentence": "The system were running slow after lunch.",
+      "response_text": "The system was running slow after lunch.",
+      "ttft_s": 0.8710653000161983,
+      "total_latency_s": 0.8710653000161983,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 13,
+      "sentence": "Our team need to send the summery today.",
+      "response_text": "Our team needs to send the summary today.",
+      "ttft_s": 0.8800985999987461,
+      "total_latency_s": 0.8800985999987461,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 14,
+      "sentence": "She explained the process clear and quik.",
+      "response_text": "She explained the process clearly and quickly.",
+      "ttft_s": 0.8560378000256605,
+      "total_latency_s": 0.8560378000256605,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 15,
+      "sentence": "Betwen you and I, the deadline is tight.",
+      "response_text": "Between you and me, the deadline is tight.",
+      "ttft_s": 0.9280257999780588,
+      "total_latency_s": 0.9280257999780588,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 16,
+      "sentence": "He wants that we rescedule the meeting.",
+      "response_text": "He wants to reschedule the meeting.",
+      "ttft_s": 0.8641183000290766,
+      "total_latency_s": 0.8641183000290766,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 17,
+      "sentence": "The printer in my hallway needs new papre.",
+      "response_text": "The printer in my hallway needs new paper.",
+      "ttft_s": 0.9260700999875553,
+      "total_latency_s": 0.9260700999875553,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 18,
+      "sentence": "We can not to ignore the warnning.",
+      "response_text": "We can not ignore the warning.",
+      "ttft_s": 0.8240490999887697,
+      "total_latency_s": 0.8240490999887697,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 19,
+      "sentence": "Her notes was helpfull, but incomplete.",
+      "response_text": "Her notes were helpful, but incomplete.",
+      "ttft_s": 0.8721166999894194,
+      "total_latency_s": 0.8721166999894194,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 20,
+      "sentence": "I am agree with the change.",
+      "response_text": "I agree with the change.",
+      "ttft_s": 0.7910288000130095,
+      "total_latency_s": 0.7910288000130095,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 21,
+      "sentence": "The client asked for a udapte on the project.",
+      "response_text": "The client requested a Udapt on the project.",
+      "ttft_s": 0.9360116999596357,
+      "total_latency_s": 0.9360116999596357,
+      "error": null,
+      "verdict": "incorrect",
+      "reason": "Introduces a new typo instead of fixing the original one."
+    },
+    {
+      "sentence_index": 22,
+      "sentence": "This are the documens you requested.",
+      "response_text": "These are the documents you requested.",
+      "ttft_s": 0.8480513999820687,
+      "total_latency_s": 0.8480513999820687,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 23,
+      "sentence": "I will calls you after the reveiw.",
+      "response_text": "I will call you after the review.",
+      "ttft_s": 0.8799556999583729,
+      "total_latency_s": 0.8799556999583729,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 24,
+      "sentence": "The chairs was moved into the hall before lunch.",
+      "response_text": "The chairs were moved into the hall before lunch.",
+      "ttft_s": 0.9350815999787301,
+      "total_latency_s": 0.9350815999787301,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 25,
+      "sentence": "She putted the forms in the wrong tray.",
+      "response_text": "She put the forms in the wrong tray.",
+      "ttft_s": 0.9201756999827921,
+      "total_latency_s": 0.9201756999827921,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 26,
+      "sentence": "We was told to wait outside.",
+      "response_text": "We were told to wait outside.",
+      "ttft_s": 0.8240642999880947,
+      "total_latency_s": 0.8240642999880947,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 27,
+      "sentence": "He forgot his badge at home, so he cannot entres the site.",
+      "response_text": "He forgot his badge at home, so he cannot enter the site.",
+      "ttft_s": 1.1120266999932937,
+      "total_latency_s": 1.1120266999932937,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 28,
+      "sentence": "The file is missing from my desktop, and I cannot find it nowhere.",
+      "response_text": "The file is missing from my desktop, and I cannot locate it.",
+      "ttft_s": 1.1280798999941908,
+      "total_latency_s": 1.1280798999941908,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 29,
+      "sentence": "Please exxplain me the steps again.",
+      "response_text": "Please explain the steps again.",
+      "ttft_s": 0.7900563000002876,
+      "total_latency_s": 0.7900563000002876,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 30,
+      "sentence": "The emial was sent by them by mistake.",
+      "response_text": "The email was sent to them by mistake.",
+      "ttft_s": 0.9361680999863893,
+      "total_latency_s": 0.9361680999863893,
+      "error": null,
+      "verdict": "incorrect",
+      "reason": "Changes the meaning by flipping sender and recipient."
+    },
+    {
+      "sentence_index": 31,
+      "sentence": "A lot of the data were lost in transfre.",
+      "response_text": "A lot of data were lost in transfer.",
+      "ttft_s": 0.9120662999921478,
+      "total_latency_s": 0.9120662999921478,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 32,
+      "sentence": "The notes needs to be shorther.",
+      "response_text": "The notes should be shorter.",
+      "ttft_s": 0.8320741000352427,
+      "total_latency_s": 0.8320741000352427,
+      "error": null,
+      "verdict": "borderline",
+      "reason": "Improves the sentence, but softens 'needs' into 'should'."
+    },
+    {
+      "sentence_index": 33,
+      "sentence": "I seen the update on the dashbord this morning.",
+      "response_text": "I saw the update on the dashboard this morning.",
+      "ttft_s": 0.9280848000198603,
+      "total_latency_s": 0.9280848000198603,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 34,
+      "sentence": "The server have restarted twice today.",
+      "response_text": "The server has restarted twice today.",
+      "ttft_s": 0.8240576999960467,
+      "total_latency_s": 0.8240576999960467,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 35,
+      "sentence": "The box of cables were under the table.",
+      "response_text": "The box of cables was under the table.",
+      "ttft_s": 0.9280839000130072,
+      "total_latency_s": 0.9280839000130072,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 36,
+      "sentence": "She arive late because traffic was heavy.",
+      "response_text": "She arrived late because traffic was heavy.",
+      "ttft_s": 0.8640826999908313,
+      "total_latency_s": 0.8640826999908313,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 37,
+      "sentence": "We discussed the plan, the budget, and which vendor to choose, but no decison.",
+      "response_text": "We discussed the plan, the budget, and which vendor to choose, but no decision was made.",
+      "ttft_s": 1.3280305999796838,
+      "total_latency_s": 1.3280305999796838,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 38,
+      "sentence": "My laptop does not wroks after the update.",
+      "response_text": "My laptop does not work after the update.",
+      "ttft_s": 0.8720485999947414,
+      "total_latency_s": 0.8720485999947414,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 39,
+      "sentence": "He told to me the passwrod yesterday.",
+      "response_text": "He told me the password yesterday.",
+      "ttft_s": 0.8320498999673873,
+      "total_latency_s": 0.8320498999673873,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 40,
+      "sentence": "The meeting strt at nine and ended late.",
+      "response_text": "The meeting started at nine and ended late.",
+      "ttft_s": 0.9360638000071049,
+      "total_latency_s": 0.9360638000071049,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 41,
+      "sentence": "Each wrker take a different route home.",
+      "response_text": "Each worker takes a different route home.",
+      "ttft_s": 0.8640528999967501,
+      "total_latency_s": 0.8640528999967501,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 42,
+      "sentence": "The train were delayed for thirty minutes.",
+      "response_text": "The train was delayed for thirty minutes.",
+      "ttft_s": 0.8541133999824524,
+      "total_latency_s": 0.8541133999824524,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 43,
+      "sentence": "I am looking forward to meet with you.",
+      "response_text": "I look forward to meeting with you.",
+      "ttft_s": 0.8559490999905393,
+      "total_latency_s": 0.8559490999905393,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 44,
+      "sentence": "The folder on the shelf need to be closed.",
+      "response_text": "The folder on the shelf needs to be closed.",
+      "ttft_s": 0.9350609999964945,
+      "total_latency_s": 0.9350609999964945,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 45,
+      "sentence": "Her answer were not what I expected.",
+      "response_text": "Her answer was not what I expected.",
+      "ttft_s": 0.8631170999724418,
+      "total_latency_s": 0.8631170999724418,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 46,
+      "sentence": "We has enough time to finish this task.",
+      "response_text": "We have enough time to finish this task.",
+      "ttft_s": 0.9281133000040427,
+      "total_latency_s": 0.9281133000040427,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 47,
+      "sentence": "He wrote the memo quik and without errors.",
+      "response_text": "He wrote the memo quickly and without errors.",
+      "ttft_s": 0.920132500003092,
+      "total_latency_s": 0.920132500003092,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 48,
+      "sentence": "The instructons was confusing for everyone.",
+      "response_text": "The instructions were confusing for everyone.",
+      "ttft_s": 0.8559615999693051,
+      "total_latency_s": 0.8559615999693051,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 49,
+      "sentence": "I will be there by the time you will arrive.",
+      "response_text": "I will be there by the time you arrive.",
+      "ttft_s": 0.9280497999861836,
+      "total_latency_s": 0.9280497999861836,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 50,
+      "sentence": "The lights in the room is too brigt.",
+      "response_text": "The lights in the room are too bright.",
+      "ttft_s": 0.8951087999739684,
+      "total_latency_s": 0.8951087999739684,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 51,
+      "sentence": "She gave the keys to John and I.",
+      "response_text": "She gave the keys to John and me.",
+      "ttft_s": 0.9280493999831378,
+      "total_latency_s": 0.9280493999831378,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 52,
+      "sentence": "My supervisor asked that I to call back later.",
+      "response_text": "My supervisor asked me to call back later.",
+      "ttft_s": 0.920074800029397,
+      "total_latency_s": 0.920074800029397,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 53,
+      "sentence": "The package was delieverd, and left at the door.",
+      "response_text": "The package was delivered and left at the door.",
+      "ttft_s": 0.9360597000340931,
+      "total_latency_s": 0.9360597000340931,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 54,
+      "sentence": "It are imporant to check the numbers twice.",
+      "response_text": "It is important to check the numbers twice.",
+      "ttft_s": 0.8731222000205889,
+      "total_latency_s": 0.8731222000205889,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 55,
+      "sentence": "They has already approved the request.",
+      "response_text": "They have already approved the request.",
+      "ttft_s": 0.8400352000026032,
+      "total_latency_s": 0.8400352000026032,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 56,
+      "sentence": "We was hoping for a shorter meeting.",
+      "response_text": "We hoped for a shorter meeting.",
+      "ttft_s": 0.824140900047496,
+      "total_latency_s": 0.824140900047496,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 57,
+      "sentence": "The cookies in the jar smels fresh.",
+      "response_text": "The cookies in the jar smell fresh.",
+      "ttft_s": 0.8640663999831304,
+      "total_latency_s": 0.8640663999831304,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 58,
+      "sentence": "I do not need no more copies.",
+      "response_text": "I do not need any more copies.",
+      "ttft_s": 0.8640647999709472,
+      "total_latency_s": 0.8640647999709472,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 59,
+      "sentence": "He are one of those people who always complain.",
+      "response_text": "He is one of those people who always complain.",
+      "ttft_s": 0.9040603000321425,
+      "total_latency_s": 0.9040603000321425,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 60,
+      "sentence": "The agenda were attched to the message.",
+      "response_text": "The agenda was attached to the message.",
+      "ttft_s": 0.8631292000063695,
+      "total_latency_s": 0.8631292000063695,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 61,
+      "sentence": "Please send the draft to myself.",
+      "response_text": "Please send me the draft.",
+      "ttft_s": 0.760189900000114,
+      "total_latency_s": 0.760189900000114,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 62,
+      "sentence": "She made a decison quick because the line was long.",
+      "response_text": "She made a quick decision because the line was long.",
+      "ttft_s": 0.9520521000376903,
+      "total_latency_s": 0.9520521000376903,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 63,
+      "sentence": "I was walking home when the rain beggins.",
+      "response_text": "I was walking home when the rain began.",
+      "ttft_s": 0.9340835000039078,
+      "total_latency_s": 0.9340835000039078,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 64,
+      "sentence": "The customer feadback were mixed after launch.",
+      "response_text": "The customer feedback was mixed after launch.",
+      "ttft_s": 0.8640627999557182,
+      "total_latency_s": 0.8640627999557182,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 65,
+      "sentence": "There is many reasns to delay the release.",
+      "response_text": "There are several reasons to delay the release.",
+      "ttft_s": 0.8711812000256032,
+      "total_latency_s": 0.8711812000256032,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 66,
+      "sentence": "He and me are responisble for setup.",
+      "response_text": "He and I am responsible for the setup.",
+      "ttft_s": 0.9200594000285491,
+      "total_latency_s": 0.9200594000285491,
+      "error": null,
+      "verdict": "incorrect",
+      "reason": "Subject-verb agreement remains wrong; it should be 'He and I are responsible...'."
+    },
+    {
+      "sentence_index": 67,
+      "sentence": "The form ask for your ID and sugnature.",
+      "response_text": "The form asks for your ID and signature.",
+      "ttft_s": 0.9020640000235289,
+      "total_latency_s": 0.9020640000235289,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 68,
+      "sentence": "She did not went to the brifing.",
+      "response_text": "She did not go to the briefing.",
+      "ttft_s": 0.8630067000049166,
+      "total_latency_s": 0.8630067000049166,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 69,
+      "sentence": "Our notes needs more detial.",
+      "response_text": "Our notes need more detail.",
+      "ttft_s": 0.8060792000032961,
+      "total_latency_s": 0.8060792000032961,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 70,
+      "sentence": "I left my glasses in kichen.",
+      "response_text": "I left my glasses in the kitchen.",
+      "ttft_s": 0.8640639000223018,
+      "total_latency_s": 0.8640639000223018,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 71,
+      "sentence": "The package was heavy, but I caried them anyway.",
+      "response_text": "The package was heavy, but I carried them anyway.",
+      "ttft_s": 0.9681179000181146,
+      "total_latency_s": 0.9681179000181146,
+      "error": null,
+      "verdict": "incorrect",
+      "reason": "Keeps a plural pronoun for a singular referent, so the rewrite is still wrong."
+    },
+    {
+      "sentence_index": 72,
+      "sentence": "Please do not forgot the chager.",
+      "response_text": "Please do not forget the charger.",
+      "ttft_s": 0.8480047000339255,
+      "total_latency_s": 0.8480047000339255,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 73,
+      "sentence": "They was discusssing about the issue all afternoon.",
+      "response_text": "They were discussing the issue all afternoon.",
+      "ttft_s": 0.8550668999669142,
+      "total_latency_s": 0.8550668999669142,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 74,
+      "sentence": "The schdule, it has changed again.",
+      "response_text": "The schedule has changed again.",
+      "ttft_s": 0.8321199000347406,
+      "total_latency_s": 0.8321199000347406,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 75,
+      "sentence": "Every one of the emploees have a badge.",
+      "response_text": "Every employee has a badge.",
+      "ttft_s": 0.8070548999821767,
+      "total_latency_s": 0.8070548999821767,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 76,
+      "sentence": "He prefers work from home on Fridays.",
+      "response_text": "He prefers working from home on Fridays.",
+      "ttft_s": 0.8630430999910459,
+      "total_latency_s": 0.8630430999910459,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 77,
+      "sentence": "The bottles was packed in a hurry.",
+      "response_text": "The bottles were packed in a hurry.",
+      "ttft_s": 0.8630692000151612,
+      "total_latency_s": 0.8630692000151612,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 78,
+      "sentence": "I can hardly barely see the text.",
+      "response_text": "I can barely see the text.",
+      "ttft_s": 0.8080651999916881,
+      "total_latency_s": 0.8080651999916881,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 79,
+      "sentence": "She asked whether can we start early.",
+      "response_text": "She asked if we could start early.",
+      "ttft_s": 0.8800662000430748,
+      "total_latency_s": 0.8800662000430748,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 80,
+      "sentence": "The bus departed before I was arriving.",
+      "response_text": "The bus had departed before I arrived.",
+      "ttft_s": 0.8570978000061586,
+      "total_latency_s": 0.8570978000061586,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 81,
+      "sentence": "We need less problems and more clearer instructions.",
+      "response_text": "We need fewer problems and clearer instructions.",
+      "ttft_s": 0.8631220000097528,
+      "total_latency_s": 0.8631220000097528,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 82,
+      "sentence": "The folder is in desk drwer.",
+      "response_text": "The folder is in the desktop.",
+      "ttft_s": 0.8241893000085838,
+      "total_latency_s": 0.8241893000085838,
+      "error": null,
+      "verdict": "incorrect",
+      "reason": "Changes the location from a desk drawer to a desktop."
+    },
+    {
+      "sentence_index": 83,
+      "sentence": "He answred me that the room was empty.",
+      "response_text": "He answered me that the room was empty.",
+      "ttft_s": 0.9280584999942221,
+      "total_latency_s": 0.9280584999942221,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 84,
+      "sentence": "The data is were bakced up last night.",
+      "response_text": "The data was backed up last night.",
+      "ttft_s": 0.904072700010147,
+      "total_latency_s": 0.904072700010147,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 85,
+      "sentence": "Please contatc with the help desk.",
+      "response_text": "Please contact the help desk.",
+      "ttft_s": 0.8241457000258379,
+      "total_latency_s": 0.8241457000258379,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 86,
+      "sentence": "I would of checked sooner if I knew.",
+      "response_text": "I would have checked sooner if I had known.",
+      "ttft_s": 0.9440844000200741,
+      "total_latency_s": 0.9440844000200741,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 87,
+      "sentence": "Her advice were useful during the call.",
+      "response_text": "Her advice was useful during the call.",
+      "ttft_s": 0.8630608000094071,
+      "total_latency_s": 0.8630608000094071,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 88,
+      "sentence": "The team decided postone the launch.",
+      "response_text": "The team decided to postpone the launch.",
+      "ttft_s": 0.863118699984625,
+      "total_latency_s": 0.863118699984625,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 89,
+      "sentence": "This documnts need signatures.",
+      "response_text": "This document needs signatures.",
+      "ttft_s": 0.7751130000106059,
+      "total_latency_s": 0.7751130000106059,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 90,
+      "sentence": "He and his brother was on time.",
+      "response_text": "He and his brother were on time.",
+      "ttft_s": 0.8640712999622338,
+      "total_latency_s": 0.8640712999622338,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 91,
+      "sentence": "The manager said the team to stay calm.",
+      "response_text": "The manager told the team to stay calm.",
+      "ttft_s": 0.8720694999792613,
+      "total_latency_s": 0.8720694999792613,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 92,
+      "sentence": "I found the keys, but I lost it agian.",
+      "response_text": "I found the keys, but I lost the last one.",
+      "ttft_s": 1.0080965999513865,
+      "total_latency_s": 1.0080965999513865,
+      "error": null,
+      "verdict": "incorrect",
+      "reason": "Rewrites to a different meaning instead of preserving the original idea."
+    },
+    {
+      "sentence_index": 93,
+      "sentence": "The report was complete, so we sene it anyway.",
+      "response_text": "The report was complete, so we sent it anyway.",
+      "ttft_s": 0.9980190999922343,
+      "total_latency_s": 0.9980190999922343,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 94,
+      "sentence": "She do not understand the new layout.",
+      "response_text": "She doesn't understand the new layout.",
+      "ttft_s": 0.8559806999983266,
+      "total_latency_s": 0.8559806999983266,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 95,
+      "sentence": "There are fewer people than last week, but the room feal crowded.",
+      "response_text": "There are fewer people than last week, but the room feels crowded.",
+      "ttft_s": 1.0551628000102937,
+      "total_latency_s": 1.0551628000102937,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 96,
+      "sentence": "My coworker asked if I was free, and I said maybe latr but not sure.",
+      "response_text": "My coworker asked if I was free, and I replied that I might be free, though I wasn't sure.",
+      "ttft_s": 1.448008299979847,
+      "total_latency_s": 1.448008299979847,
+      "error": null,
+      "verdict": "borderline",
+      "reason": "Mostly correct, but it drops the 'later' nuance and paraphrases more aggressively."
+    },
+    {
+      "sentence_index": 97,
+      "sentence": "The lights was off, so we could not read the labels.",
+      "response_text": "The lights were off, so we could not read the labels.",
+      "ttft_s": 1.048071900033392,
+      "total_latency_s": 1.048071900033392,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 98,
+      "sentence": "He is the most tallest person in the office.",
+      "response_text": "He is the tallest person in the office.",
+      "ttft_s": 0.9280275999917649,
+      "total_latency_s": 0.9280275999917649,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    },
+    {
+      "sentence_index": 99,
+      "sentence": "I will meet you on Monday at the cafeteria, if the schdule allows it.",
+      "response_text": "I will meet you on Monday at the cafeteria if the schedule allows it.",
+      "ttft_s": 1.1201143999933265,
+      "total_latency_s": 1.1201143999933265,
+      "error": null,
+      "verdict": "correct",
+      "reason": null
+    }
+  ]
+}

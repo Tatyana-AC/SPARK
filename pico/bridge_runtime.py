@@ -30,6 +30,7 @@ class BridgeRuntime:
         relay_chunk_size=64,
         button_poll_sleep_s=0.002,
         heartbeat_interval_s=5.0,
+        max_hid_reports_per_tick=4,
     ):
         self._serial_bridge = serial_bridge
         self._jetson_transport = jetson_transport
@@ -44,6 +45,7 @@ class BridgeRuntime:
         self._relay_chunk_size = relay_chunk_size
         self._button_poll_sleep_s = button_poll_sleep_s
         self._heartbeat_interval_s = heartbeat_interval_s
+        self._max_hid_reports_per_tick = int(max_hid_reports_per_tick)
         self._last_response_signature = None
         self._last_debug_heartbeat = 0.0
         self._last_cdc_debug_status = "never"
@@ -98,19 +100,20 @@ class BridgeRuntime:
 
     def run_once(self, *, now):
         self._last_runtime_now = now
-        if (now - self._last_debug_heartbeat) >= self._heartbeat_interval_s:
-            self._emit_debug("heartbeat")
-            self._last_debug_heartbeat = now
-            self._last_loop_checkpoint = "after_heartbeat"
-
-        self._serial_bridge.relay_once(max_chunk_size=self._relay_chunk_size)
-        self._last_loop_checkpoint = "after_serial_bridge"
-
         self._jetson_transport.poll(max_chunk_size=self._relay_chunk_size)
         self._last_loop_checkpoint = "after_transport_poll"
 
         self._sync_response_state()
         self._last_loop_checkpoint = "after_response_sync"
+
+        if (now - self._last_debug_heartbeat) >= self._heartbeat_interval_s:
+            self._emit_debug("heartbeat")
+            self._last_debug_heartbeat = now
+            self._last_loop_checkpoint = "after_heartbeat"
+
+        if not self._jetson_transport.request_active:
+            self._serial_bridge.relay_once(max_chunk_size=self._relay_chunk_size)
+        self._last_loop_checkpoint = "after_serial_bridge"
 
         self._drain_hid_reports()
         self._last_loop_checkpoint = "after_hid_drain"
@@ -176,7 +179,7 @@ class BridgeRuntime:
         self._last_response_signature = signature
 
     def _drain_hid_reports(self):
-        while True:
+        for _ in range(self._max_hid_reports_per_tick):
             report = self._custom_hid.get_last_received_report(self._raw_report_id)
             if report is None:
                 return

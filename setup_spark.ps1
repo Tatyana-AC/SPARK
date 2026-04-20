@@ -825,7 +825,7 @@ try:
     )
 except Exception as exc:
     print(json.dumps({"smoke_ok": False, "error": str(exc)}, indent=2))
-    raise
+    sys.exit(1)
 finally:
     client.close()
 '@

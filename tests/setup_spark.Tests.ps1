@@ -642,6 +642,16 @@ Describe 'Run-SmokeTestWithRecovery' {
     }
 }
 
+Describe 'Invoke-SmokeTest' {
+    It 'returns a non-zero exit without printing a Python traceback for handled smoke failures' {
+        $source = Get-Content (Join-Path $PSScriptRoot '..\setup_spark.ps1') -Raw
+
+        $source | Should Match 'print\(json\.dumps\(\{"smoke_ok": False, "error": str\(exc\)\}, indent=2\)\)'
+        $source | Should Match 'sys\.exit\(1\)'
+        $source | Should Not Match 'except Exception as exc:\s+print\(json\.dumps\(\{"smoke_ok": False, "error": str\(exc\)\}, indent=2\)\)\s+raise'
+    }
+}
+
 Describe 'Restart-JetsonBridge' {
     It 'requires exactly one bridge process after restart' {
         $source = Get-Content (Join-Path $PSScriptRoot '..\setup_spark.ps1') -Raw

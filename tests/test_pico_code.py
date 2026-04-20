@@ -200,10 +200,13 @@ class PicoCodeTests(unittest.TestCase):
         button_input = object()
         fake_ui = object()
         lcd_ui_calls = []
+        uart_calls = []
 
         fake_time = types.SimpleNamespace(monotonic=mock.Mock(return_value=1.0), sleep=lambda _: None)
         fake_board = types.SimpleNamespace(GP0=object(), GP1=object())
-        fake_busio = types.SimpleNamespace(UART=lambda *args, **kwargs: object())
+        fake_busio = types.SimpleNamespace(
+            UART=lambda *args, **kwargs: uart_calls.append({"args": args, "kwargs": kwargs}) or object()
+        )
         fake_supervisor = types.SimpleNamespace(runtime=types.SimpleNamespace(autoreload=True))
         fake_usb_cdc = types.SimpleNamespace(data=object())
         fake_hid_device = types.SimpleNamespace(usage_page=0xFF60, usage=0x61)
@@ -268,10 +271,13 @@ class PicoCodeTests(unittest.TestCase):
         self.assertEqual(lcd_ui_calls, ["bridge"])
         self.assertEqual(len(_FakeBridgeRuntime.instances), 1)
         runtime = _FakeBridgeRuntime.instances[0]
+        self.assertEqual(len(uart_calls), 1)
+        self.assertEqual(uart_calls[0]["kwargs"]["receiver_buffer_size"], 1024)
         self.assertIs(runtime.button_input, button_input)
         self.assertIs(runtime.ui, fake_ui)
         self.assertEqual(runtime.raw_report_id, 9)
         self.assertIs(runtime.time_sleep, fake_time.sleep)
+        self.assertEqual(runtime.jetson_transport.max_request_retries, 1)
         self.assertEqual(runtime.run_forever_calls, [fake_time])
         self.assertEqual(runtime.heartbeat_interval_s, 5.0)
 

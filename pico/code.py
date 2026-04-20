@@ -89,13 +89,13 @@ def _main(record_step):
     custom_hid = _find_custom_hid_device(usb_hid, RAW_USAGE_PAGE, RAW_USAGE_ID)
     record_step("custom hid ready")
 
-    uart = busio.UART(board.GP0, board.GP1, baudrate=UART_BAUDRATE, timeout=0, receiver_buffer_size=256)
+    uart = busio.UART(board.GP0, board.GP1, baudrate=UART_BAUDRATE, timeout=0, receiver_buffer_size=1024)
     record_step("uart ready")
 
     serial_bridge = SerialBridge(usb_cdc.data, uart)
     jetson_transport = JetsonTransport(
         uart,
-        max_request_retries=0,
+        max_request_retries=1,
         debug_hook=_make_transport_debug_hook(status_sender=_send_button_debug),
         status_sender=_send_button_debug,
     )
