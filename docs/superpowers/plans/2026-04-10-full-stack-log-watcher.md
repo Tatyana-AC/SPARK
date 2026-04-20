@@ -1,10 +1,12 @@
 # Full-Stack Log Watcher Implementation Plan
 
+> Historical note (repo cleanup 2026-04-18): the live watcher now lives at `tools/monitoring/watch_full_stack.py`. References below to `watch_pico_cdc_debug.py` describe an older helper that was later removed from the repo.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a single local watcher that merges SPARK app, Pico-derived app logs, Jetson bridge logs, and Jetson LLM logs into one prefixed stream while reporting missing, quiet, and recovered component states.
 
-**Architecture:** Add a stable rotating app log in `spark_app_v2.py`, then implement a passive watcher in `watch_full_stack.py` that tails local and mounted log files, runs SSH-backed Jetson process checks, and emits normalized `[APP]`, `[PICO]`, `[JETSON-BRIDGE]`, `[JETSON-LLM]`, and `[CHECK]` lines. Keep the watcher arrival-ordered, state-driven, and tolerant of disappearing sources.
+**Architecture:** Add a stable rotating app log in `spark_app_v2.py`, then implement a passive watcher in `tools/monitoring/watch_full_stack.py` that tails local and mounted log files, runs SSH-backed Jetson process checks, and emits normalized `[APP]`, `[PICO]`, `[JETSON-BRIDGE]`, `[JETSON-LLM]`, and `[CHECK]` lines. Keep the watcher arrival-ordered, state-driven, and tolerant of disappearing sources.
 
 **Tech Stack:** Python 3, standard library (`logging`, `logging.handlers`, `subprocess`, `threading`, `queue`, `pathlib`), existing repo logging conventions, pytest/unittest.
 
@@ -14,9 +16,9 @@
 
 - Modify: `spark_app_v2.py`
   Add a rotating file handler using the required formatter `%(asctime)s %(name)s %(levelname)s %(message)s` without removing terminal logging.
-- Create: `watch_full_stack.py`
+- Create: `tools/monitoring/watch_full_stack.py`
   Main watcher CLI, merged event sink, app-log tailing, Jetson log tailing, SSH health checks, state tracking, and quiet detection.
-- Create: `tests/test_watch_full_stack.py`
+- Create: `tests/test_tools/monitoring/watch_full_stack.py`
   Unit tests for source mapping, state transitions, quiet gating, expectation allowlist behavior, and startup/file-tail semantics.
 - Possibly reuse as reference only: `watch_pico_cdc_debug.py`
   Do not re-open Pico CDC in default mode; only borrow naming/style ideas if useful.
@@ -26,7 +28,7 @@
 
 **Files:**
 - Modify: `spark_app_v2.py`
-- Test: `tests/test_watch_full_stack.py`
+- Test: `tests/test_tools/monitoring/watch_full_stack.py`
 
 - [ ] **Step 1: Write the failing test for app log setup**
 
@@ -61,7 +63,7 @@ def test_configure_app_file_logging_keeps_existing_stream_handler(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_watch_full_stack.py::test_configure_app_file_logging_adds_rotating_handler -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_configure_app_file_logging_adds_rotating_handler -v`
 Expected: FAIL because `configure_app_logging` does not exist yet.
 
 - [ ] **Step 3: Write minimal implementation in `spark_app_v2.py`**
@@ -88,21 +90,21 @@ Add a single startup call immediately after the existing `logging.basicConfig(..
 
 - [ ] **Step 5: Run focused test to verify it passes**
 
-Run: `pytest tests/test_watch_full_stack.py::test_configure_app_file_logging_adds_rotating_handler -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_configure_app_file_logging_adds_rotating_handler -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add spark_app_v2.py tests/test_watch_full_stack.py
+git add spark_app_v2.py tests/test_tools/monitoring/watch_full_stack.py
 git commit -m "feat: add spark app file logging"
 ```
 
 ## Task 2: Build App Log Parsing and Source Mapping
 
 **Files:**
-- Create: `watch_full_stack.py`
-- Test: `tests/test_watch_full_stack.py`
+- Create: `tools/monitoring/watch_full_stack.py`
+- Test: `tests/test_tools/monitoring/watch_full_stack.py`
 
 - [ ] **Step 1: Write failing tests for source mapping**
 
@@ -136,8 +138,8 @@ def test_map_app_log_line_uses_required_file_format_contract():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_watch_full_stack.py::test_map_app_log_line_routes_pico_debug_to_pico tests/test_watch_full_stack.py::test_map_app_log_line_defaults_to_app -v`
-Expected: FAIL because `watch_full_stack.py` does not exist yet.
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_map_app_log_line_routes_pico_debug_to_pico tests/test_tools/monitoring/watch_full_stack.py::test_map_app_log_line_defaults_to_app -v`
+Expected: FAIL because `tools/monitoring/watch_full_stack.py` does not exist yet.
 
 - [ ] **Step 3: Write minimal parser implementation**
 
@@ -156,21 +158,21 @@ Keep this parser tied to the exact file log formatter from Task 1: `%(asctime)s 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/test_watch_full_stack.py::test_map_app_log_line_routes_pico_debug_to_pico tests/test_watch_full_stack.py::test_map_app_log_line_defaults_to_app -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_map_app_log_line_routes_pico_debug_to_pico tests/test_tools/monitoring/watch_full_stack.py::test_map_app_log_line_defaults_to_app -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add watch_full_stack.py tests/test_watch_full_stack.py
+git add tools/monitoring/watch_full_stack.py tests/test_tools/monitoring/watch_full_stack.py
 git commit -m "feat: add app log source mapping for watcher"
 ```
 
 ## Task 3: Implement File Tail Sources
 
 **Files:**
-- Create: `watch_full_stack.py`
-- Test: `tests/test_watch_full_stack.py`
+- Create: `tools/monitoring/watch_full_stack.py`
+- Test: `tests/test_tools/monitoring/watch_full_stack.py`
 
 - [ ] **Step 1: Write failing tests for EOF startup and file recreation**
 
@@ -238,7 +240,7 @@ def test_file_tail_source_recovers_after_rotate_replace(tmp_path):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_watch_full_stack.py::test_file_tail_source_starts_at_eof tests/test_watch_full_stack.py::test_file_tail_source_recovers_after_truncate tests/test_watch_full_stack.py::test_file_tail_source_recovers_after_recreate tests/test_watch_full_stack.py::test_file_tail_source_recovers_after_rotate_replace -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_file_tail_source_starts_at_eof tests/test_tools/monitoring/watch_full_stack.py::test_file_tail_source_recovers_after_truncate tests/test_tools/monitoring/watch_full_stack.py::test_file_tail_source_recovers_after_recreate tests/test_tools/monitoring/watch_full_stack.py::test_file_tail_source_recovers_after_rotate_replace -v`
 Expected: FAIL
 
 - [ ] **Step 3: Implement `FileTailSource`**
@@ -280,21 +282,21 @@ Implementation note: do not rely only on file size shrinkage. Track file identit
 
 - [ ] **Step 4: Run focused tests to verify they pass**
 
-Run: `pytest tests/test_watch_full_stack.py::test_file_tail_source_starts_at_eof tests/test_watch_full_stack.py::test_file_tail_source_recovers_after_truncate tests/test_watch_full_stack.py::test_file_tail_source_recovers_after_recreate tests/test_watch_full_stack.py::test_file_tail_source_recovers_after_rotate_replace -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_file_tail_source_starts_at_eof tests/test_tools/monitoring/watch_full_stack.py::test_file_tail_source_recovers_after_truncate tests/test_tools/monitoring/watch_full_stack.py::test_file_tail_source_recovers_after_recreate tests/test_tools/monitoring/watch_full_stack.py::test_file_tail_source_recovers_after_rotate_replace -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add watch_full_stack.py tests/test_watch_full_stack.py
+git add tools/monitoring/watch_full_stack.py tests/test_tools/monitoring/watch_full_stack.py
 git commit -m "feat: add watcher file tail sources"
 ```
 
 ## Task 4: Implement Health State Tracking
 
 **Files:**
-- Create: `watch_full_stack.py`
-- Test: `tests/test_watch_full_stack.py`
+- Create: `tools/monitoring/watch_full_stack.py`
+- Test: `tests/test_tools/monitoring/watch_full_stack.py`
 
 - [ ] **Step 1: Write failing tests for missing, recovered, quiet, and active-again transitions**
 
@@ -350,7 +352,7 @@ def test_quiet_starts_only_after_source_reports_startup_catchup_complete():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_watch_full_stack.py::test_state_tracker_emits_missing_once_then_recovered tests/test_watch_full_stack.py::test_quiet_only_applies_after_first_event -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_state_tracker_emits_missing_once_then_recovered tests/test_tools/monitoring/watch_full_stack.py::test_quiet_only_applies_after_first_event -v`
 Expected: FAIL
 
 - [ ] **Step 3: Implement `StateTracker`**
@@ -382,21 +384,21 @@ Keep expectation suppression out of `StateTracker`. `StateTracker` should only m
 
 - [ ] **Step 4: Run focused tests to verify they pass**
 
-Run: `pytest tests/test_watch_full_stack.py::test_state_tracker_emits_missing_once_then_recovered tests/test_watch_full_stack.py::test_quiet_only_applies_after_first_event -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_state_tracker_emits_missing_once_then_recovered tests/test_tools/monitoring/watch_full_stack.py::test_quiet_only_applies_after_first_event -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add watch_full_stack.py tests/test_watch_full_stack.py
+git add tools/monitoring/watch_full_stack.py tests/test_tools/monitoring/watch_full_stack.py
 git commit -m "feat: add watcher state tracking"
 ```
 
 ## Task 5: Implement Process and Path Health Checks
 
 **Files:**
-- Create: `watch_full_stack.py`
-- Test: `tests/test_watch_full_stack.py`
+- Create: `tools/monitoring/watch_full_stack.py`
+- Test: `tests/test_tools/monitoring/watch_full_stack.py`
 
 - [ ] **Step 1: Write failing tests for check semantics**
 
@@ -445,7 +447,7 @@ def test_ssh_failure_sets_jetson_process_state_unknown_and_suppresses_missing_tr
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/test_watch_full_stack.py::test_component_allowlist_suppresses_missing_warning_for_non_required_component tests/test_watch_full_stack.py::test_parse_pgrep_output_counts_multiple_matches -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_component_allowlist_suppresses_missing_warning_for_non_required_component tests/test_tools/monitoring/watch_full_stack.py::test_parse_pgrep_output_counts_multiple_matches -v`
 Expected: FAIL
 
 - [ ] **Step 3: Implement health check helpers**
@@ -461,21 +463,21 @@ Include helpers for:
 
 - [ ] **Step 4: Run focused tests to verify they pass**
 
-Run: `pytest tests/test_watch_full_stack.py::test_component_allowlist_suppresses_missing_warning_for_non_required_component tests/test_watch_full_stack.py::test_parse_pgrep_output_counts_multiple_matches -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_component_allowlist_suppresses_missing_warning_for_non_required_component tests/test_tools/monitoring/watch_full_stack.py::test_parse_pgrep_output_counts_multiple_matches -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add watch_full_stack.py tests/test_watch_full_stack.py
+git add tools/monitoring/watch_full_stack.py tests/test_tools/monitoring/watch_full_stack.py
 git commit -m "feat: add watcher health checks"
 ```
 
 ## Task 6: Wire the Main Watch Loop, Startup Summary, and CLI
 
 **Files:**
-- Create: `watch_full_stack.py`
-- Test: `tests/test_watch_full_stack.py`
+- Create: `tools/monitoring/watch_full_stack.py`
+- Test: `tests/test_tools/monitoring/watch_full_stack.py`
 
 - [ ] **Step 1: Write failing integration-style tests for merged output and startup summary**
 
@@ -513,7 +515,7 @@ def test_build_startup_summary_reports_duplicate_process_counts():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/test_watch_full_stack.py::test_watch_loop_merges_log_and_check_events_in_arrival_order tests/test_watch_full_stack.py::test_build_startup_summary_reports_duplicate_process_counts -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_watch_loop_merges_log_and_check_events_in_arrival_order tests/test_tools/monitoring/watch_full_stack.py::test_build_startup_summary_reports_duplicate_process_counts -v`
 Expected: FAIL
 
 - [ ] **Step 3: Implement the CLI and watch loop**
@@ -547,18 +549,18 @@ Main loop responsibilities:
 
 - [ ] **Step 4: Run focused test to verify it passes**
 
-Run: `pytest tests/test_watch_full_stack.py::test_watch_loop_merges_log_and_check_events_in_arrival_order tests/test_watch_full_stack.py::test_build_startup_summary_reports_duplicate_process_counts -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py::test_watch_loop_merges_log_and_check_events_in_arrival_order tests/test_tools/monitoring/watch_full_stack.py::test_build_startup_summary_reports_duplicate_process_counts -v`
 Expected: PASS
 
 - [ ] **Step 5: Run the full watcher test file**
 
-Run: `pytest tests/test_watch_full_stack.py -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add watch_full_stack.py tests/test_watch_full_stack.py
+git add tools/monitoring/watch_full_stack.py tests/test_tools/monitoring/watch_full_stack.py
 git commit -m "feat: add full-stack log watcher"
 ```
 
@@ -566,13 +568,13 @@ git commit -m "feat: add full-stack log watcher"
 
 **Files:**
 - Verify: `spark_app_v2.py`
-- Verify: `watch_full_stack.py`
+- Verify: `tools/monitoring/watch_full_stack.py`
 - Verify: `Z:\demo\pico_bridge\bridge.log`
 - Verify: `Z:\demo\llama_demo\server.log`
 
 - [ ] **Step 1: Run the focused automated test set**
 
-Run: `pytest tests/test_watch_full_stack.py tests/test_watch_pico_cdc_debug.py -v`
+Run: `pytest tests/test_tools/monitoring/watch_full_stack.py tests/test_watch_pico_cdc_debug.py -v`
 Expected: PASS
 
 - [ ] **Step 2: Start the app and watcher manually**
@@ -581,7 +583,7 @@ Run in separate terminals:
 
 ```powershell
 python .\spark_app_v2.py
-python .\watch_full_stack.py
+python .\tools/monitoring/watch_full_stack.py
 ```
 
 Expected startup summary should show:
@@ -608,7 +610,7 @@ Examples:
 - [ ] **Step 5: Commit**
 
 ```bash
-git add spark_app_v2.py watch_full_stack.py tests/test_watch_full_stack.py
+git add spark_app_v2.py tools/monitoring/watch_full_stack.py tests/test_tools/monitoring/watch_full_stack.py
 git commit -m "test: verify full-stack log watcher"
 ```
 
@@ -643,7 +645,7 @@ git commit -m "docs: add full-stack watcher usage"
 
 ## Final Verification
 
-- [ ] Run: `pytest tests/test_watch_full_stack.py tests/test_watch_pico_cdc_debug.py tests/test_pico_llm_bridge.py tests/test_jetson_protocol.py -v`
+- [ ] Run: `pytest tests/test_tools/monitoring/watch_full_stack.py tests/test_watch_pico_cdc_debug.py tests/test_pico_llm_bridge.py tests/test_jetson_protocol.py -v`
 - [ ] Run the watcher manually against the real stack once more
 - [ ] Confirm `spark_app_v2.py` still logs to terminal and to `logs\spark_app_v2.log`
 - [ ] Confirm no Pico deploy is needed for this feature because no `pico/` files change

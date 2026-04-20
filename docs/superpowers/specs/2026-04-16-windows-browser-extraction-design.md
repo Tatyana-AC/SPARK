@@ -1,5 +1,7 @@
 # Windows Browser Extraction Design
 
+> Historical note (repo cleanup 2026-04-18): references below to `spark_scraper_integration/*` describe a reference folder that existed when this design was written but was later removed from the repo.
+
 ## Summary
 
 Improve Windows browser context capture in the active `spark_app_v2.py` path by combining three layers:

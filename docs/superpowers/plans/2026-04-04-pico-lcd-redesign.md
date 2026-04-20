@@ -1,5 +1,7 @@
 # Pico LCD Redesign Implementation Plan
 
+> Historical note (repo cleanup 2026-04-18): references below to `watch_pico_cdc_debug.py` and `tests/test_watch_pico_cdc_debug.py` describe helper files that existed when this plan was written but were later removed from the repo.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the crash-prone Pico LCD highlight path with a startup-only display tree that keeps brief press feedback and preserves the current runtime API.

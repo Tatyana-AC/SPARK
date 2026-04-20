@@ -2,13 +2,15 @@
 Diagnostic: send a single CONTEXT_NEW packet to the Pico CDC serial port
 and check if the Jetson bridge picks it up.
 
-Usage: python diag_serial_test.py
+Usage: python tools/diagnostics/diag_serial_test.py
 """
+import os
 import sys
 import time
-import os
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 from core.protocol import build_context_new, _crc8, MAGIC, HEADER_SIZE, FOOTER_SIZE
 import serial
@@ -52,6 +54,7 @@ def main():
     print(f"  Magic: {packet[:2]}")
     print(f"  Type: 0x{packet[2]:02x}")
     import struct
+
     pkt_len = struct.unpack_from('<H', packet, 3)[0]
     print(f"  Payload length: {pkt_len}")
     print(f"  CRC: 0x{packet[-1]:02x}")

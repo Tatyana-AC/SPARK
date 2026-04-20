@@ -9,7 +9,11 @@ import subprocess
 import sys
 import time
 
-from app_log_contract import APP_LOG_FILE_FORMAT
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from core.app_log_contract import APP_LOG_FILE_FORMAT
 
 
 PICO_DEBUG_LOGGER_NAME = "pico.debug"
@@ -17,6 +21,8 @@ PICO_DEBUG_LOGGER_NAME = "pico.debug"
 DEFAULT_APP_LOG = r"logs\spark_app_v2.log"
 DEFAULT_BRIDGE_LOG = r"Z:\demo\pico_bridge\bridge.log"
 DEFAULT_LLM_LOG = r"Z:\demo\llama_demo\server.log"
+DEFAULT_REMOTE_BRIDGE_LOG = "/mnt/usb_drive/demo/pico_bridge/bridge.log"
+DEFAULT_REMOTE_LLM_LOG = "/mnt/usb_drive/demo/llama_demo/server.log"
 DEFAULT_SSH_TARGET = "192.168.55.1"
 WINDOWS_ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
 
@@ -193,6 +199,28 @@ def _file_identity(stat_result):
     return stat_result.st_dev, stat_result.st_ino
 
 
+def _watcher_platform(platform=None):
+    return platform or sys.platform
+
+
+def default_bridge_log_path(*, platform=None):
+    if _watcher_platform(platform).startswith("win"):
+        return DEFAULT_BRIDGE_LOG
+    return DEFAULT_REMOTE_BRIDGE_LOG
+
+
+def default_llm_log_path(*, platform=None):
+    if _watcher_platform(platform).startswith("win"):
+        return DEFAULT_LLM_LOG
+    return DEFAULT_REMOTE_LLM_LOG
+
+
+def should_use_ssh_log_source(path, *, platform=None):
+    if _watcher_platform(platform).startswith("win"):
+        return False
+    return str(path).startswith("/mnt/")
+
+
 class FileTailSource:
     _FINGERPRINT_BYTES = 64
 
@@ -290,6 +318,83 @@ class FileTailSource:
             return []
 
         return self._map_chunk(chunk)
+
+
+class SshTailSource:
+    def __init__(self, path, *, target, source_label, mapper=None, runner=None, tail_lines=200):
+        self._path = path
+        self._target = target
+        self._source_label = source_label
+        self._mapper = mapper or self._default_mapper
+        self._runner = runner or _default_subprocess_runner
+        self._tail_lines = tail_lines
+        self._previous_lines = None
+
+    @property
+    def source_label(self):
+        return self._source_label
+
+    def _default_mapper(self, line):
+        return LogEvent(source=self._source_label, message=line)
+
+    def _normalize_event(self, mapped_value):
+        if mapped_value is None:
+            return None
+        if isinstance(mapped_value, LogEvent):
+            return mapped_value
+        source, message = mapped_value
+        return LogEvent(source=source, message=message)
+
+    def _map_lines(self, lines):
+        events = []
+        for line in lines:
+            event = self._normalize_event(self._mapper(line))
+            if event is not None:
+                events.append(event)
+        return events
+
+    def _fetch_lines(self):
+        command = [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-o",
+            "ServerAliveInterval=10",
+            self._target,
+            "tail",
+            "-n",
+            str(self._tail_lines),
+            self._path,
+        ]
+        completed = self._runner(command)
+        if completed.returncode != 0:
+            return None
+        return (completed.stdout or "").splitlines()
+
+    @staticmethod
+    def _overlap_size(previous_lines, current_lines):
+        max_overlap = min(len(previous_lines), len(current_lines))
+        for overlap in range(max_overlap, 0, -1):
+            if previous_lines[-overlap:] == current_lines[:overlap]:
+                return overlap
+        return 0
+
+    def poll(self):
+        lines = self._fetch_lines()
+        if lines is None:
+            return []
+
+        if self._previous_lines is None:
+            self._previous_lines = tuple(lines)
+            return []
+
+        overlap = self._overlap_size(self._previous_lines, lines)
+        self._previous_lines = tuple(lines)
+        if overlap == 0:
+            return []
+        return self._map_lines(lines[overlap:])
 
 
 def _looks_like_app_log_asctime(asctime):
@@ -551,6 +656,52 @@ def check_ssh_process(*, target, pattern, component_name, label, description, ru
     )
 
 
+def check_ssh_readable_path(*, target, path, component_name, label, description, runner=None):
+    if runner is None:
+        runner = _default_subprocess_runner
+
+    command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target, "test", "-r", path]
+    try:
+        completed = runner(command)
+    except OSError as exc:
+        return HealthCheckResult(
+            component_name=component_name,
+            label=label,
+            availability=AVAILABILITY_UNKNOWN,
+            status=f"{description} SSH check failed for {target}: {exc}",
+            ssh_target=target,
+            ssh_error_detail=str(exc),
+        )
+
+    if completed.returncode == 0:
+        return HealthCheckResult(
+            component_name=component_name,
+            label=label,
+            availability=AVAILABILITY_PRESENT,
+            status=f"{description} readable via SSH: {path}",
+            ssh_target=target,
+        )
+
+    if completed.returncode == 1:
+        return HealthCheckResult(
+            component_name=component_name,
+            label=label,
+            availability=AVAILABILITY_MISSING,
+            status=f"{description} missing via SSH: {path}",
+            ssh_target=target,
+        )
+
+    detail = (completed.stderr or completed.stdout or f"exit {completed.returncode}").strip()
+    return HealthCheckResult(
+        component_name=component_name,
+        label=label,
+        availability=AVAILABILITY_UNKNOWN,
+        status=f"{description} SSH check failed for {target}: {detail}",
+        ssh_target=target,
+        ssh_error_detail=detail,
+    )
+
+
 def check_readable_path(path, *, component_name, label, description):
     target_path = Path(path)
     try:
@@ -587,7 +738,41 @@ def evaluate_component_requirement(component_name, args):
     return getattr(args, _EXPECTATION_FLAG_BY_MAJOR_COMPONENT[major_component], False)
 
 
-def collect_health_check_results(args, *, local_runner=None, ssh_runner=None):
+def collect_health_check_results(args, *, local_runner=None, ssh_runner=None, platform=None):
+    if should_use_ssh_log_source(args.bridge_log, platform=platform):
+        bridge_log_result = check_ssh_readable_path(
+            target=args.ssh_target,
+            path=args.bridge_log,
+            component_name=COMPONENT_JETSON_BRIDGE_LOG,
+            label="JETSON-BRIDGE",
+            description="Jetson bridge log",
+            runner=ssh_runner,
+        )
+    else:
+        bridge_log_result = check_readable_path(
+            args.bridge_log,
+            component_name=COMPONENT_JETSON_BRIDGE_LOG,
+            label="JETSON-BRIDGE",
+            description="Jetson bridge log",
+        )
+
+    if should_use_ssh_log_source(args.llm_log, platform=platform):
+        llm_log_result = check_ssh_readable_path(
+            target=args.ssh_target,
+            path=args.llm_log,
+            component_name=COMPONENT_JETSON_LLM_LOG,
+            label="JETSON-LLM",
+            description="Jetson llm log",
+            runner=ssh_runner,
+        )
+    else:
+        llm_log_result = check_readable_path(
+            args.llm_log,
+            component_name=COMPONENT_JETSON_LLM_LOG,
+            label="JETSON-LLM",
+            description="Jetson llm log",
+        )
+
     return [
         _check_local_app_process_result(runner=local_runner),
         check_readable_path(
@@ -604,12 +789,7 @@ def collect_health_check_results(args, *, local_runner=None, ssh_runner=None):
             description="Jetson bridge process",
             runner=ssh_runner,
         ),
-        check_readable_path(
-            args.bridge_log,
-            component_name=COMPONENT_JETSON_BRIDGE_LOG,
-            label="JETSON-BRIDGE",
-            description="Jetson bridge log",
-        ),
+        bridge_log_result,
         check_ssh_process(
             target=args.ssh_target,
             pattern="llama-server",
@@ -618,12 +798,7 @@ def collect_health_check_results(args, *, local_runner=None, ssh_runner=None):
             description="Jetson llm process",
             runner=ssh_runner,
         ),
-        check_readable_path(
-            args.llm_log,
-            component_name=COMPONENT_JETSON_LLM_LOG,
-            label="JETSON-LLM",
-            description="Jetson llm log",
-        ),
+        llm_log_result,
     ]
 
 
@@ -810,7 +985,7 @@ def build_pico_poller(*, app_running=False):
     if app_running:
         return None
     try:
-        from pico_monitor import HIDPoller
+        from tools.monitoring.pico_monitor import HIDPoller
     except Exception:
         return None
 
@@ -992,12 +1167,32 @@ def should_use_interactive_dashboard(out, *, os_name=None, enable_vt=None):
     return False
 
 
-def build_default_sources(args):
+def build_default_sources(args, *, platform=None):
     app_source = AppLogSource(args.app_log)
+    if should_use_ssh_log_source(args.bridge_log, platform=platform):
+        bridge_source = SshTailSource(
+            args.bridge_log,
+            target=args.ssh_target,
+            source_label="JETSON-BRIDGE",
+            mapper=map_bridge_log_line,
+        )
+    else:
+        bridge_source = FileTailSource(args.bridge_log, source_label="JETSON-BRIDGE", mapper=map_bridge_log_line)
+
+    if should_use_ssh_log_source(args.llm_log, platform=platform):
+        llm_source = SshTailSource(
+            args.llm_log,
+            target=args.ssh_target,
+            source_label="JETSON-LLM",
+            mapper=map_llm_log_line,
+        )
+    else:
+        llm_source = FileTailSource(args.llm_log, source_label="JETSON-LLM", mapper=map_llm_log_line)
+
     return [
         app_source,
-        FileTailSource(args.bridge_log, source_label="JETSON-BRIDGE", mapper=map_bridge_log_line),
-        FileTailSource(args.llm_log, source_label="JETSON-LLM", mapper=map_llm_log_line),
+        bridge_source,
+        llm_source,
     ]
 
 
@@ -1038,13 +1233,15 @@ def _poll_source_events(source, *, tracker, now):
     return rendered
 
 
-def build_parser():
+def build_parser(*, platform=None):
+    default_bridge_log = default_bridge_log_path(platform=platform)
+    default_llm_log = default_llm_log_path(platform=platform)
     parser = argparse.ArgumentParser(description="Watch SPARK host, Pico, and Jetson logs in one stream")
     parser.add_argument("--quiet-seconds", type=float, default=30.0, help="Warn after this many quiet seconds")
     parser.add_argument("--check-interval", type=float, default=1.0, help="Run health checks this often in seconds")
     parser.add_argument("--app-log", default=DEFAULT_APP_LOG, help=f"Host app log path (default: {DEFAULT_APP_LOG})")
-    parser.add_argument("--bridge-log", default=DEFAULT_BRIDGE_LOG, help=f"Jetson bridge log path (default: {DEFAULT_BRIDGE_LOG})")
-    parser.add_argument("--llm-log", default=DEFAULT_LLM_LOG, help=f"Jetson llama log path (default: {DEFAULT_LLM_LOG})")
+    parser.add_argument("--bridge-log", default=default_bridge_log, help=f"Jetson bridge log path (default: {default_bridge_log})")
+    parser.add_argument("--llm-log", default=default_llm_log, help=f"Jetson llama log path (default: {default_llm_log})")
     parser.add_argument("--ssh-target", default=DEFAULT_SSH_TARGET, help=f"Jetson SSH target (default: {DEFAULT_SSH_TARGET})")
     parser.add_argument("--expect-app", action="store_true", help="When any expect flag is used, require app checks")
     parser.add_argument("--expect-jetson-bridge", action="store_true", help="When any expect flag is used, require Jetson bridge checks")

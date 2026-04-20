@@ -12,6 +12,43 @@ The main app entrypoint is `spark_app_v2.py`, which remains the active runtime p
 
 ### macOS
 
+#### One-click setup from a fresh clone
+
+If you are starting from a blank folder on macOS, use the branch and launcher below:
+
+```bash
+git clone --branch sida https://github.com/Tatyana-AC/SPARK.git /Users/sidac/SPARK
+cd /Users/sidac/SPARK
+chmod +x setup_spark_macos.sh
+./setup_spark_macos.sh
+```
+
+`setup_spark_macos.sh` is the preferred macOS bring-up path. On a fresh checkout it will:
+
+- create the repo-local `.venv` automatically when missing
+- install or repair `requirements.txt` inside that virtualenv
+- verify macOS Accessibility permissions for the repo Python
+- verify batch-mode SSH access to the Jetson
+- deploy the Pico runtime to the mounted `CIRCUITPY` volume
+- sync the Jetson bridge bundle over SSH
+- start or restart the Jetson services
+- run the Raw HID summarize smoke test, with one automatic bridge-restart retry on transient summarize timeouts
+- launch both `spark_app_v2.py` and `tools/monitoring/watch_full_stack.py` in Terminal
+
+Important macOS setup notes:
+
+- The repo default branch on GitHub is currently `main`, but the active branch used for the current macOS setup flow is `sida`, so clone that branch explicitly when you want this behavior.
+- The first run may trigger macOS permission prompts. If Terminal or the repo Python asks for Accessibility or Input Monitoring, grant access, then rerun `./setup_spark_macos.sh`.
+- If you launch `./setup_spark_macos.sh` from a third-party terminal app such as `Cmux`, grant Accessibility to that terminal app as well. Accessibility granted only to the default Terminal app does not carry over to a different terminal host process.
+- If `CIRCUITPY` is mounted read-only, the script now stops before deployment and tells you to reconnect or reset the Pico so the volume remounts read-write. Rerun the same command after the board remounts.
+- The script expects passwordless SSH to `sidac@192.168.55.1` by default. Override host, user, or remote path with flags when needed:
+
+```bash
+./setup_spark_macos.sh --jetson-host 192.168.55.1 --jetson-user sidac --jetson-remote-path /mnt/usb_drive
+```
+
+#### Manual setup
+
 1. Create and activate a virtual environment:
 
 ```bash
@@ -41,6 +78,12 @@ Or run it without activating the shell first:
 
 ```bash
 .venv/bin/python spark_app_v2.py
+```
+
+To launch the debug watcher separately on macOS:
+
+```bash
+.venv/bin/python tools/monitoring/watch_full_stack.py
 ```
 
 ### Windows
@@ -77,6 +120,17 @@ Or run it without activating the shell first:
 - `Win+Alt+C`: capture selected text
 - `Win+Alt+V`: release text
 - `Ctrl+F1`: toggle the SPARK window
+
+macOS defaults on this branch:
+
+- `Cmd+Ctrl+C`: capture selected text
+- `Cmd+Ctrl+R`: release text
+- `Ctrl+F1`: toggle the SPARK window
+
+If `F1` changes screen brightness instead of behaving like a standard function key, enable Apple's standard function-key mode:
+
+- macOS Ventura / Sonoma / Sequoia: `System Settings` -> `Keyboard` -> turn on `Use F1, F2, etc. keys as standard function keys`
+- If you prefer the media keys by default, you can keep that setting off and press `Fn+Ctrl+F1` when using the SPARK toggle hotkey
 
 ### Browser extraction behavior
 
@@ -120,9 +174,29 @@ That means a fresh Windows host no longer needs a pre-created `.venv` before usi
 That flow brings up the normal Windows debugging session by launching:
 
 - `spark_app_v2.py`
-- `watch_full_stack.py`
+- `tools/monitoring/watch_full_stack.py`
 
 The watcher is monitor-only. It does not start additional app instances.
+
+## Blank-folder recovery
+
+If `/Users/sidac/SPARK` was deleted or emptied, the fastest way back to a working macOS setup is:
+
+```bash
+git clone --branch sida https://github.com/Tatyana-AC/SPARK.git /Users/sidac/SPARK
+cd /Users/sidac/SPARK
+./setup_spark_macos.sh
+```
+
+Expected outcome:
+
+- the repo-local virtualenv is recreated
+- the Pico runtime is redeployed when `CIRCUITPY` is writable
+- the Jetson bridge bundle is resynced
+- Jetson services are verified
+- `spark_app_v2.py` and `tools/monitoring/watch_full_stack.py` are relaunched
+
+If recovery stops on a Pico message about a read-only `CIRCUITPY` mount, reconnect or reset the Pico first, confirm it remounts read-write in Finder or `diskutil info /Volumes/CIRCUITPY`, then rerun `./setup_spark_macos.sh`.
 
 ## Key docs
 
@@ -143,12 +217,11 @@ The watcher is monitor-only. It does not start additional app instances.
 ## Notes
 
 - `spark_app_v2.py` is the active app path.
-- `spark_app.py` is an older UI path and should be treated as secondary.
 - `spark_app_v2.py` now refuses duplicate launches through `host_pc/single_instance.py`; on Windows, the parent/child launcher pair from `.venv\Scripts\python.exe` still counts as one app start.
 - `lcd_screen_ui/` is a standalone React/Vite UI kit for the 320x240 LCD workflow screens.
-- `spark_scraper_integration/` is a reference scraper stack added for browser-context experimentation; it is not the main runtime path.
 - The current Pico firmware target is CircuitPython.
-- `pico_reference/main.py` is a readable behavioral reference for the Pico role, not the literal deployed `boot.py` / `code.py` pair.
+- `tools/monitoring/watch_full_stack.py` is the passive full-stack watcher for host, Pico, and Jetson logs.
+- `tools/monitoring/pico_monitor.py` is the direct Pico HID/runtime monitor.
 - Current auxiliary input wiring: EC11 encoder A/B/button/common -> GP10/GP11/GP9/GND, and three-position slide switch positions 1/2/3/common -> GP6/GP7/GP8/GND.
 - `python tools/pico/deploy_to_pico.py` is the cross-platform helper to push the Pico firmware and `adafruit_hid` onto a mounted `CIRCUITPY` board.
 - Deploy now exact-syncs the default Pico runtime and removes stale non-preserved files from `CIRCUITPY`; use `--dry-run` to inspect planned deletions first.

@@ -47,8 +47,8 @@
 - `tests/test_pico_bridge_runtime.py`
 - `tests/test_pico_upload_protocol.py`
 - `tests/test_spark_panel_ui.py`
-- `tests/test_watch_full_stack.py`
-- `tests/test_pico_monitor.py`
+- `tests/test_tools/monitoring/watch_full_stack.py`
+- `tests/test_tools/monitoring/pico_monitor.py`
 - `tests/test_host_raw_hid_client.py`
 - `tests/test_serial_sender.py`
 
@@ -58,7 +58,7 @@
   - no behavior change expected; use this file to confirm `event.key_number` remains the zero-based input contract
 - `pico/bridge_app.py`
   - no behavior change expected beyond continuing to treat internal index `0` as the summarize button path
-- `watch_full_stack.py`
+- `tools/monitoring/watch_full_stack.py`
   - behavior should remain passthrough; only exact-string expectations in tests should change
 
 ## Guardrails
@@ -434,8 +434,8 @@ git commit -m "refactor: use one-based pico runtime debug labels"
 **Files:**
 - Modify: `pico/upload_protocol.py`
 - Modify: `tests/test_pico_upload_protocol.py`
-- Verify: `pico_monitor.py`
-- Modify: `tests/test_pico_monitor.py`
+- Verify: `tools/monitoring/pico_monitor.py`
+- Modify: `tests/test_tools/monitoring/pico_monitor.py`
 
 - [ ] **Step 1: Write the failing runtime-status alias tests**
 
@@ -553,7 +553,7 @@ def test_pico_monitor_keeps_runtime_status_text_verbatim():
 Run:
 
 ```bash
-python -m pytest tests/test_pico_upload_protocol.py tests/test_pico_monitor.py -q
+python -m pytest tests/test_pico_upload_protocol.py tests/test_tools/monitoring/pico_monitor.py -q
 ```
 
 Expected: FAIL on the compact alias and checkpoint-normalization assertions.
@@ -581,7 +581,7 @@ Implementation notes:
 - make runtime-status aliases deterministic; do not switch between long and short forms based on current length
 - normalize any button-specific checkpoint fragments before building runtime-status text
 - prove the serialized button-path strings fit inside the 30-byte field without relying on truncation
-- keep `pico_monitor.py` behavior passthrough; update tests only unless alias text reveals a real parsing bug
+- keep `tools/monitoring/pico_monitor.py` behavior passthrough; update tests only unless alias text reveals a real parsing bug
 ```
 
 - [ ] **Step 4: Run the runtime-status tests to verify GREEN**
@@ -589,7 +589,7 @@ Implementation notes:
 Run:
 
 ```bash
-python -m pytest tests/test_pico_upload_protocol.py tests/test_pico_monitor.py -q
+python -m pytest tests/test_pico_upload_protocol.py tests/test_tools/monitoring/pico_monitor.py -q
 ```
 
 Expected: PASS.
@@ -597,7 +597,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit Task 4**
 
 ```bash
-git add pico/upload_protocol.py tests/test_pico_upload_protocol.py tests/test_pico_monitor.py
+git add pico/upload_protocol.py tests/test_pico_upload_protocol.py tests/test_tools/monitoring/pico_monitor.py
 git commit -m "refactor: compact pico runtime status button labels"
 ```
 
@@ -606,7 +606,7 @@ git commit -m "refactor: compact pico runtime status button labels"
 **Files:**
 - Modify: `spark_app_v2.py`
 - Modify: `tests/test_spark_panel_ui.py`
-- Modify: `tests/test_watch_full_stack.py`
+- Modify: `tests/test_tools/monitoring/watch_full_stack.py`
 - Modify: `tests/test_host_raw_hid_client.py`
 - Modify: `tests/test_serial_sender.py`
 
@@ -665,7 +665,7 @@ def test_host_runtime_status_parser_accepts_new_text_unchanged():
 Run:
 
 ```bash
-python -m pytest tests/test_spark_panel_ui.py tests/test_watch_full_stack.py tests/test_host_raw_hid_client.py tests/test_serial_sender.py -q
+python -m pytest tests/test_spark_panel_ui.py tests/test_tools/monitoring/watch_full_stack.py tests/test_host_raw_hid_client.py tests/test_serial_sender.py -q
 ```
 
 Expected: FAIL on the `button:1` trigger path and updated displayed status/debug text.
@@ -686,7 +686,7 @@ Implementation notes:
 - keep the host trigger exact-match and narrow; do not broaden it to all `button:*` values
 - keep `SparkHIDClient` and serial packet parsing transport-agnostic; only the expected test strings change
 - let watcher output show compact runtime-status aliases exactly as received
-- keep `watch_full_stack.py` logic unchanged unless a test proves a real behavioral gap; prefer expectation-only updates there
+- keep `tools/monitoring/watch_full_stack.py` logic unchanged unless a test proves a real behavioral gap; prefer expectation-only updates there
 - keep runtime-status flag-driven polling behavior untouched
 ```
 
@@ -695,7 +695,7 @@ Implementation notes:
 Run:
 
 ```bash
-python -m pytest tests/test_spark_panel_ui.py tests/test_watch_full_stack.py tests/test_host_raw_hid_client.py tests/test_serial_sender.py -q
+python -m pytest tests/test_spark_panel_ui.py tests/test_tools/monitoring/watch_full_stack.py tests/test_host_raw_hid_client.py tests/test_serial_sender.py -q
 ```
 
 Expected: PASS.
@@ -703,7 +703,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit Task 4**
 
 ```bash
-git add spark_app_v2.py tests/test_spark_panel_ui.py tests/test_watch_full_stack.py tests/test_host_raw_hid_client.py tests/test_serial_sender.py
+git add spark_app_v2.py tests/test_spark_panel_ui.py tests/test_tools/monitoring/watch_full_stack.py tests/test_host_raw_hid_client.py tests/test_serial_sender.py
 git commit -m "fix: align host button polling with physical button numbering"
 ```
 
@@ -716,19 +716,19 @@ git commit -m "fix: align host button polling with physical button numbering"
 - Verify: `tests/test_pico_bridge_runtime.py`
 - Verify: `tests/test_pico_upload_protocol.py`
 - Verify: `tests/test_spark_panel_ui.py`
-- Verify: `tests/test_watch_full_stack.py`
-- Verify: `tests/test_pico_monitor.py`
+- Verify: `tests/test_tools/monitoring/watch_full_stack.py`
+- Verify: `tests/test_tools/monitoring/pico_monitor.py`
 - Verify: `tests/test_host_raw_hid_client.py`
 - Verify: `tests/test_serial_sender.py`
 - Verify: `tests/test_pico_bridge_app.py`
-- Verify: `watch_full_stack.py`
+- Verify: `tools/monitoring/watch_full_stack.py`
 
 - [ ] **Step 1: Run the focused regression suite**
 
 Run:
 
 ```bash
-python -m pytest tests/test_pico_button_layout.py tests/test_pico_button_input.py tests/test_pico_bridge_app.py tests/test_pico_lcd_ui.py tests/test_pico_lcd_renderer_spi.py tests/test_pico_bridge_runtime.py tests/test_pico_upload_protocol.py tests/test_spark_panel_ui.py tests/test_watch_full_stack.py tests/test_pico_monitor.py tests/test_host_raw_hid_client.py tests/test_serial_sender.py -q
+python -m pytest tests/test_pico_button_layout.py tests/test_pico_button_input.py tests/test_pico_bridge_app.py tests/test_pico_lcd_ui.py tests/test_pico_lcd_renderer_spi.py tests/test_pico_bridge_runtime.py tests/test_pico_upload_protocol.py tests/test_spark_panel_ui.py tests/test_tools/monitoring/watch_full_stack.py tests/test_tools/monitoring/pico_monitor.py tests/test_host_raw_hid_client.py tests/test_serial_sender.py -q
 ```
 
 Expected: PASS.

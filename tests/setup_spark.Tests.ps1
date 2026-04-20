@@ -763,7 +763,7 @@ Describe 'Start-SparkApp' {
 }
 
 Describe 'Start-FullStackWatcher' {
-    It 'launches watch_full_stack.py in a visible cmd window' {
+    It 'launches tools/monitoring/watch_full_stack.py in a visible cmd window' {
         $script:RepoRoot = 'C:\SPARK'
         $script:startCall = $null
         $script:statusMessages = @()
@@ -794,7 +794,7 @@ Describe 'Start-FullStackWatcher' {
         $script:startCall.ArgumentList[1] | Should Match 'watch_full_stack\.py'
         $script:startCall.ArgumentList[1] | Should Match 'python\.exe'
         $script:startCall.WorkingDirectory | Should Be 'C:\SPARK'
-        $script:statusMessages[-1].Value | Should Be 'watch_full_stack.py launched in a visible console'
+        $script:statusMessages[-1].Value | Should Be 'tools/monitoring/watch_full_stack.py launched in a visible console'
     }
 
     It 'stops an existing watcher before relaunching' {
@@ -830,6 +830,6 @@ Describe 'Start-FullStackWatcher' {
 
         $script:stopCalls | Should Be 1
         $script:startCall.FilePath | Should Be 'cmd.exe'
-        $script:statusMessages[-1].Value | Should Be 'watch_full_stack.py launched in a visible console'
+        $script:statusMessages[-1].Value | Should Be 'tools/monitoring/watch_full_stack.py launched in a visible console'
     }
 }

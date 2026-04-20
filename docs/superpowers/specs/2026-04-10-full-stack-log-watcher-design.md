@@ -37,7 +37,7 @@ The watcher also performs health checks for:
 
 ## User Experience
 
-The entrypoint is a new script named `watch_full_stack.py`.
+The entrypoint is a new script named `tools/monitoring/watch_full_stack.py`.
 
 Default behavior:
 
@@ -276,7 +276,7 @@ If a component is omitted from the expected allowlist, the watcher still prints 
 Defaults should match the current environment so the common case is just:
 
 ```powershell
-python .\watch_full_stack.py
+python .\tools/monitoring/watch_full_stack.py
 ```
 
 Default discovery values for the no-flag path:
@@ -311,7 +311,7 @@ Add a small integration-style test with fake sources to confirm merged output or
 Manual verification flow:
 
 1. Start `spark_app_v2.py`
-2. Start `watch_full_stack.py`
+2. Start `tools/monitoring/watch_full_stack.py`
 3. Confirm startup summary shows all expected sources
 4. Press `PB1`
 5. Observe one combined timeline across app, Pico, Jetson bridge, and Jetson LLM

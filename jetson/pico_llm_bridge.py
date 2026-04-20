@@ -56,6 +56,7 @@ DEFAULT_SERIAL_PORT = "/dev/ttyTHS0"
 DEFAULT_BAUD_RATE = 115200
 DEFAULT_LLM_URL = "http://127.0.0.1:8080"
 DEFAULT_RECONNECT_DELAY = 2.0
+DEFAULT_RECONNECT_WATCHDOG_GRACE = 10.0
 DEFAULT_DB_PATH = "jetson_spark.db"
 DEFAULT_AUDIT_LOG_PATH = "llm_request_response_audit.log"
 MAX_SUMMARIZE_CHARS_PER_PACKET = 64
@@ -638,6 +639,15 @@ def open_serial_with_retry(port: str, baud: int, reconnect_delay: float):
             time.sleep(reconnect_delay)
 
 
+def _close_serial_port(ser) -> None:
+    if ser is None:
+        return
+    try:
+        ser.close()
+    except Exception:
+        pass
+
+
 def run_bridge(args) -> int:
     try:
         import serial  # noqa: F401
@@ -647,14 +657,15 @@ def run_bridge(args) -> int:
 
     db = JetsonDB(args.db)
     ser = None
+    saw_inbound_packet = False
+    reconnect_watchdog_deadline = None
+    reconnect_watchdog_grace = float(
+        getattr(args, "reconnect_watchdog_grace", DEFAULT_RECONNECT_WATCHDOG_GRACE)
+    )
 
     def shutdown(sig=None, frame=None):
         logger.info("Shutting down bridge")
-        if ser is not None:
-            try:
-                ser.close()
-            except Exception:
-                pass
+        _close_serial_port(ser)
         db.close()
         raise SystemExit(0)
 
@@ -701,12 +712,32 @@ def run_bridge(args) -> int:
                     # the optional diagnostic_hook parameter.
                     parser = PacketParser(on_packet=handle_packet)
                 logger.info("Packet parser reset after serial reconnect")
+                if saw_inbound_packet:
+                    reconnect_watchdog_deadline = time.monotonic() + reconnect_watchdog_grace
+                else:
+                    reconnect_watchdog_deadline = None
 
             try:
                 chunk = ser.read(256)
                 if chunk:
+                    saw_inbound_packet = True
+                    reconnect_watchdog_deadline = None
                     logger.debug("Read %d byte(s) from serial", len(chunk))
                     parser.feed(chunk)
+                elif (
+                    reconnect_watchdog_deadline is not None
+                    and time.monotonic() >= reconnect_watchdog_deadline
+                ):
+                    logger.warning(
+                        "Serial reconnect on %s stayed idle for %.1fs after prior traffic; forcing reopen",
+                        args.port,
+                        reconnect_watchdog_grace,
+                    )
+                    _close_serial_port(ser)
+                    ser = None
+                    parser = None
+                    reconnect_watchdog_deadline = None
+                    time.sleep(args.reconnect_delay)
             except Exception as exc:
                 logger.warning(
                     "Serial link lost on %s: %s; waiting %.1fs before reopen",
@@ -714,19 +745,13 @@ def run_bridge(args) -> int:
                     exc,
                     args.reconnect_delay,
                 )
-                try:
-                    ser.close()
-                except Exception:
-                    pass
+                _close_serial_port(ser)
                 ser = None
                 parser = None
+                reconnect_watchdog_deadline = None
                 time.sleep(args.reconnect_delay)
     finally:
-        if ser is not None:
-            try:
-                ser.close()
-            except Exception:
-                pass
+        _close_serial_port(ser)
         db.close()
 
 
@@ -784,6 +809,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_RECONNECT_DELAY,
         help="Seconds to wait before retrying serial reconnect (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--reconnect-watchdog-grace",
+        type=float,
+        default=DEFAULT_RECONNECT_WATCHDOG_GRACE,
+        help=(
+            "Force another serial reopen if a post-disconnect reconnect stays idle after prior "
+            "traffic for this many seconds (default: %(default)s)"
+        ),
     )
     parser.add_argument(
         "--audit-log",

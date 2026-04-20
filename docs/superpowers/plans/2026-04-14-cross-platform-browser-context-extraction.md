@@ -1,5 +1,7 @@
 # Cross-Platform Browser Context Extraction Implementation Plan
 
+> Historical note (repo cleanup 2026-04-18): references below to `spark_scraper_integration/*` describe a reference folder that existed when this plan was written but was later removed from the repo.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add one OS-aware browser context extraction path to `spark_app_v2.py` that preserves the stronger macOS browser behavior, fixes the current Chrome URL truncation bug, and adds a Windows browser path without changing the downstream context schema.

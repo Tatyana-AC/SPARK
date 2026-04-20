@@ -69,7 +69,7 @@ Decision rule for borderline tests:
 
 Expected deletions include:
 
-- `tests/test_watch_full_stack.py`
+- `tests/test_tools/monitoring/watch_full_stack.py`
 - `tests/test_spark_panel_ui.py`
 - most import/bootstrap/order tests
 - setup-script tests that inspect source text instead of behavior

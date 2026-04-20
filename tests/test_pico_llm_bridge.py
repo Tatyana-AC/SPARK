@@ -14,6 +14,7 @@ from jetson.pico_llm_bridge import (
     _build_summarize_prompt,
     _log_inbound_packet,
     handle_summarize_request,
+    run_bridge,
     _write_bridge_packet,
 )
 
@@ -271,6 +272,86 @@ class BridgeLoggingTests(unittest.TestCase):
         serial.write.assert_called_once_with(b"abc")
         serial.flush.assert_called_once_with()
         info_log.assert_called_once_with("[UART OUT] %s bytes=%d", "summarize_done", 3)
+
+
+class _ScriptedSerial:
+    def __init__(self, script):
+        self._script = list(script)
+        self.close = mock.Mock()
+
+    def read(self, _size):
+        if not self._script:
+            raise KeyboardInterrupt()
+        value = self._script.pop(0)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+
+class RunBridgeReconnectWatchdogTests(unittest.TestCase):
+    def _make_args(self):
+        return mock.Mock(
+            port="/dev/ttyTHS0",
+            baud=115200,
+            reconnect_delay=0.0,
+            reconnect_watchdog_grace=1.0,
+            db=":memory:",
+            llm_url="http://127.0.0.1:8080",
+            system_prompt=SYSTEM_PROMPT,
+            structured=False,
+            stream=True,
+            timeout=120,
+            audit_log=None,
+        )
+
+    def test_reconnect_watchdog_forces_second_reopen_when_no_packets_arrive(self):
+        args = self._make_args()
+        serial1 = _ScriptedSerial([b"x", RuntimeError("device reports readiness to read but returned no data")])
+        serial2 = _ScriptedSerial([b"", b"", KeyboardInterrupt()])
+        serial3 = _ScriptedSerial([KeyboardInterrupt()])
+        parser = mock.Mock()
+        db = mock.Mock()
+
+        with mock.patch("jetson.pico_llm_bridge.JetsonDB", return_value=db):
+            with mock.patch(
+                "jetson.pico_llm_bridge.open_serial_with_retry",
+                side_effect=[serial1, serial2, serial3],
+            ) as open_serial:
+                with mock.patch("jetson.pico_llm_bridge.PacketParser", return_value=parser):
+                    with mock.patch("jetson.pico_llm_bridge.time.sleep"):
+                        with mock.patch(
+                            "jetson.pico_llm_bridge.time.monotonic",
+                            side_effect=[10.0, 10.4, 11.2, 20.0],
+                        ):
+                            with self.assertRaises(KeyboardInterrupt):
+                                run_bridge(args)
+
+        self.assertEqual(open_serial.call_count, 3)
+        parser.feed.assert_called_once_with(b"x")
+        serial2.close.assert_called_once()
+        db.close.assert_called_once()
+
+    def test_reconnect_watchdog_stays_disabled_until_bridge_has_seen_real_traffic(self):
+        args = self._make_args()
+        serial1 = _ScriptedSerial([b"", b"", KeyboardInterrupt()])
+        parser = mock.Mock()
+        db = mock.Mock()
+
+        with mock.patch("jetson.pico_llm_bridge.JetsonDB", return_value=db):
+            with mock.patch(
+                "jetson.pico_llm_bridge.open_serial_with_retry",
+                return_value=serial1,
+            ) as open_serial:
+                with mock.patch("jetson.pico_llm_bridge.PacketParser", return_value=parser):
+                    with mock.patch("jetson.pico_llm_bridge.time.sleep"):
+                        with mock.patch("jetson.pico_llm_bridge.time.monotonic", side_effect=[10.0, 11.5]):
+                            with self.assertRaises(KeyboardInterrupt):
+                                run_bridge(args)
+
+        self.assertEqual(open_serial.call_count, 1)
+        parser.feed.assert_not_called()
+        serial1.close.assert_called_once()
+        db.close.assert_called_once()
 
 
 class AuditLoggingTests(unittest.TestCase):

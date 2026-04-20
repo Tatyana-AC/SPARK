@@ -1,5 +1,7 @@
 # Pico LCD Runtime Investigation 2026-04-03
 
+> Historical note (repo cleanup 2026-04-18): references below to `watch_pico_cdc_debug.py`, `watch_pico_cdc_debug.cmd`, and `tests/test_watch_pico_cdc_debug.py` describe helper files that existed during this investigation but were later removed from the repo.
+
 ## Scope
 
 This note documents the real-hardware investigation into why the shared LCD UI worked in the standalone smoke test but broke the integrated Pico runtime when button handling was enabled.

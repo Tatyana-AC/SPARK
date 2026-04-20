@@ -1,11 +1,13 @@
 """
 Diagnose and fix Jetson bridge: check process, deploy protocol.py, restart if needed.
 """
-import sys
 import os
+import sys
 import time
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(__file__))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 
 import paramiko
 
@@ -86,15 +88,15 @@ def main():
 
     # 5. Deploy the correct protocol.py from our host
     print("\n--- Deploying protocol.py ---")
-    local_protocol = os.path.join(os.path.dirname(__file__), "core", "protocol.py")
-    if not os.path.exists(local_protocol):
+    local_protocol = REPO_ROOT / "core" / "protocol.py"
+    if not local_protocol.exists():
         print(f"ERROR: Cannot find local protocol.py at {local_protocol}")
         ssh.close()
         return 1
 
     sftp = ssh.open_sftp()
     remote_protocol = f"{BRIDGE_DIR}/protocol.py"
-    sftp.put(local_protocol, remote_protocol)
+    sftp.put(str(local_protocol), remote_protocol)
     print(f"Deployed {local_protocol} -> {remote_protocol}")
 
     # Verify

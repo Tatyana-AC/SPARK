@@ -35,7 +35,7 @@ The active host-facing contract is:
 - `host_pc/serial_sender.py` is the active CDC sender.
 - `pico/boot.py` and `pico/code.py` are the active Pico firmware files.
 
-Legacy `spark_app.py` and `host_pc/hid/keyboard_hid.py` remain in the repo for reference, but they are not part of the current CircuitPython firmware contract.
+The older keyboard-HID host path is not part of the current CircuitPython firmware contract.
 
 ### 1.1 Data Paths
 
@@ -309,7 +309,7 @@ Supporting modules:
 - `pico/serial_bridge.py`
 - `pico/usb_config.py`
 
-`pico_reference/main.py` remains a behavioral reference, not the deployed runtime entrypoint.
+The deployed Pico runtime entrypoints are `pico/boot.py` and `pico/code.py`.
 
 ### 4.2 Hardware Routing
 

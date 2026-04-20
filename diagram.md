@@ -63,4 +63,4 @@ flowchart LR
 - `View Jetson DB` uses a temporary validated snapshot copy so the UI can inspect Jetson tables without holding the live database open.
 - The Pico acknowledges text uploads but does not type text back into the focused external app in the active runtime.
 - The active `spark_app_v2.py` runtime does not use a host-local SQLite database. Jetson is the durable state owner for captured context.
-- `pico_reference/main.py` remains a readable reference, but the deployed firmware entrypoints are `pico/boot.py` and `pico/code.py`.
+- The deployed firmware entrypoints are `pico/boot.py` and `pico/code.py`.

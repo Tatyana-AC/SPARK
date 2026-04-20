@@ -18,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 
-from app_log_contract import APP_LOG_FILE_FORMAT
+from core.app_log_contract import APP_LOG_FILE_FORMAT
 
 from PyQt6.QtWidgets import (
      QApplication, QWidget, QFrame,
@@ -99,7 +99,7 @@ def configure_app_logging(log_path=DEFAULT_LOG_PATH):
             handler.close()
 
         file_handler = logging.handlers.RotatingFileHandler(
-            resolved_log_path,
+            log_path,
             maxBytes=APP_LOG_MAX_BYTES,
             backupCount=APP_LOG_BACKUP_COUNT,
             encoding="utf-8",

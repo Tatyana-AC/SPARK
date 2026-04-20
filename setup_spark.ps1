@@ -941,7 +941,7 @@ function Stop-WatchFullStackProcesses {
     }
 
     $ids = $processes | ForEach-Object { $_.ProcessId }
-    Write-Status "Watcher status" ("Stopping existing watch_full_stack.py instance(s): " + ($ids -join ", "))
+    Write-Status "Watcher status" ("Stopping tools/monitoring/watch_full_stack.py instance(s): " + ($ids -join ", "))
 
     foreach ($process in $processes) {
         Stop-Process -Id $process.ProcessId -ErrorAction SilentlyContinue
@@ -995,10 +995,11 @@ function Start-FullStackWatcher {
         Stop-WatchFullStackProcesses
     }
 
-    $command = 'cd /d "{0}" && "{1}" watch_full_stack.py' -f $RepoRoot, $PythonExe
+    $watcherPath = Join-Path $RepoRoot "tools\\monitoring\\watch_full_stack.py"
+    $command = 'cd /d "{0}" && "{1}" "{2}"' -f $RepoRoot, $PythonExe, $watcherPath
 
     Start-Process -FilePath "cmd.exe" -ArgumentList @('/k', $command) -WorkingDirectory $RepoRoot | Out-Null
-    Write-Status "Watcher status" "watch_full_stack.py launched in a visible console"
+    Write-Status "Watcher status" "tools/monitoring/watch_full_stack.py launched in a visible console"
 }
 
 function Invoke-SetupSpark {

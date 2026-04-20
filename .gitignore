@@ -5,6 +5,7 @@ env/
 
 # Python bytecode
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *.pyo
 *.pyd
@@ -33,6 +34,7 @@ AGENTS.md
 # Logs
 *.log
 logs/
+*.backup-*
 .tmp/
 .worktrees/
 
@@ -40,5 +42,3 @@ logs/
 dist/
 build/
 *.egg-info/
-
-nul
