@@ -22,11 +22,36 @@ ACTIVE = 0x3D4263
 
 W = 320
 H = 240
-BAR_H = 24
 PAD = 8
 GAP = 8
-CELL_W = (W - 2 * PAD - GAP) // 2
-CELL_H = (H - BAR_H - 2 * PAD - GAP) // 2
+LAYOUT_H = 96
+LAYOUT_TOP = H - LAYOUT_H
+TOP_SPACER_W = 58
+BOTTOM_SPACER_W = 58
+SYNTHESIS_W = 121
+SEARCH_W = 109
+TOP_CELL_W = (W - 2 * PAD - TOP_SPACER_W - 2 * GAP) // 2
+CELL_H = (LAYOUT_H - GAP) // 2
+TOP_ROW_Y = LAYOUT_TOP
+BOTTOM_ROW_Y = LAYOUT_TOP + CELL_H + GAP
+TOP_SPACER_ORIGIN = (PAD, TOP_ROW_Y)
+BOTTOM_SPACER_ORIGIN = (W - PAD - BOTTOM_SPACER_W, BOTTOM_ROW_Y)
+_CELL_ORIGINS = (
+    (PAD, BOTTOM_ROW_Y),
+    (PAD + TOP_SPACER_W + GAP, TOP_ROW_Y),
+    (PAD + SYNTHESIS_W + GAP, BOTTOM_ROW_Y),
+    (PAD + TOP_SPACER_W + GAP + TOP_CELL_W + GAP, TOP_ROW_Y),
+)
+_CELL_WIDTHS = (
+    SYNTHESIS_W,
+    TOP_CELL_W,
+    SEARCH_W,
+    TOP_CELL_W,
+)
+_SPACER_WIDTHS = (
+    TOP_SPACER_W,
+    BOTTOM_SPACER_W,
+)
 
 DISPLAY_BAUDRATE = 24_000_000
 DISPLAY_ROTATION = 180
@@ -57,11 +82,15 @@ def solid_rect(displayio_module, x, y, width, height, color, *, hidden=False):
 
 
 def cell_origin(index):
-    column = index % 2
-    row = index // 2
-    x = PAD + column * (CELL_W + GAP)
-    y = BAR_H + PAD + row * (CELL_H + GAP)
-    return x, y
+    return _CELL_ORIGINS[index]
+
+
+def cell_width(index):
+    return _CELL_WIDTHS[index]
+
+
+def spacer_width(index):
+    return _SPACER_WIDTHS[index]
 
 
 def build_display_bus(spi, dc, cs, rst, *, fourwire_class):
@@ -176,39 +205,38 @@ class SparkLcdUi:
 
     def _build_root_group(self):
         self.root_group.append(solid_rect(self._displayio, 0, 0, W, H, BG))
-        self.root_group.append(solid_rect(self._displayio, 0, 0, W, BAR_H, SURFACE))
-        self.root_group.append(solid_rect(self._displayio, 0, BAR_H - 2, W, 2, ACCENT))
-        self.root_group.append(
-            self._label.Label(
-                self._font,
-                text="SPARK READY",
-                color=ACCENT,
-                x=8,
-                y=BAR_H // 2,
-                anchor_point=(0, 0.5),
-                anchored_position=(8, BAR_H // 2),
-            )
-        )
+        for index, (x, y) in enumerate((TOP_SPACER_ORIGIN, BOTTOM_SPACER_ORIGIN)):
+            width = spacer_width(index)
+            spacer_group = self._displayio.Group()
+            spacer_group.x = x
+            spacer_group.y = y
+            spacer_group.append(solid_rect(self._displayio, 0, 0, width, CELL_H, SURFACE))
+            spacer_group.append(solid_rect(self._displayio, 0, 0, width, 2, ACCENT))
+            spacer_group.append(solid_rect(self._displayio, 0, CELL_H - 2, width, 2, ACCENT))
+            spacer_group.append(solid_rect(self._displayio, 0, 0, 2, CELL_H, ACCENT))
+            spacer_group.append(solid_rect(self._displayio, width - 2, 0, 2, CELL_H, ACCENT))
+            self.root_group.append(spacer_group)
 
         for button in BUTTON_DEFINITIONS:
             x, y = cell_origin(button.index)
+            width = cell_width(button.index)
 
             cell_group = self._displayio.Group()
             cell_group.x = x
             cell_group.y = y
 
-            base_fill = solid_rect(self._displayio, 0, 0, CELL_W, CELL_H, SURFACE)
-            pressed_overlay = solid_rect(self._displayio, 0, 0, CELL_W, CELL_H, ACTIVE, hidden=True)
-            top_border = solid_rect(self._displayio, 0, 0, CELL_W, 2, ACCENT)
-            bottom_border = solid_rect(self._displayio, 0, CELL_H - 2, CELL_W, 2, ACCENT)
+            base_fill = solid_rect(self._displayio, 0, 0, width, CELL_H, SURFACE)
+            pressed_overlay = solid_rect(self._displayio, 0, 0, width, CELL_H, ACTIVE, hidden=True)
+            top_border = solid_rect(self._displayio, 0, 0, width, 2, ACCENT)
+            bottom_border = solid_rect(self._displayio, 0, CELL_H - 2, width, 2, ACCENT)
             left_border = solid_rect(self._displayio, 0, 0, 2, CELL_H, ACCENT)
-            right_border = solid_rect(self._displayio, CELL_W - 2, 0, 2, CELL_H, ACCENT)
+            right_border = solid_rect(self._displayio, width - 2, 0, 2, CELL_H, ACCENT)
             label = self._label.Label(
                 self._font,
                 text=button.action_label,
                 color=WHITE,
                 anchor_point=(0.5, 0.5),
-                anchored_position=(CELL_W // 2, CELL_H // 2),
+                anchored_position=(width // 2, CELL_H // 2),
             )
 
             cell_group.append(base_fill)

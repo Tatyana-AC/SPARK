@@ -156,17 +156,25 @@ class PicoLcdUiTests(unittest.TestCase):
             {"bus": "bus", "width": 320, "height": 240, "rotation": 180},
         )
 
-    def test_ui_builds_existing_four_button_layout(self):
+    def test_ui_builds_staggered_bottom_button_layout_without_header(self):
         lcd_ui = _load_module("pico.lcd_ui")
         ui = _make_ui(lcd_ui)
 
         self.assertEqual(lcd_ui.ACTIONS, ("SYNTHESIS", "REFORMAT", "SEARCH", "RESPOND"))
-        self.assertEqual(lcd_ui.cell_origin(0), (8, 32))
-        self.assertEqual(lcd_ui.cell_origin(1), (164, 32))
-        self.assertEqual(lcd_ui.cell_origin(2), (8, 136))
-        self.assertEqual(lcd_ui.cell_origin(3), (164, 136))
+        self.assertEqual(lcd_ui.cell_origin(0), (8, 196))
+        self.assertEqual(lcd_ui.cell_origin(1), (74, 144))
+        self.assertEqual(lcd_ui.cell_origin(2), (137, 196))
+        self.assertEqual(lcd_ui.cell_origin(3), (197, 144))
+        self.assertEqual(lcd_ui.cell_width(0), 121)
+        self.assertEqual(lcd_ui.cell_width(1), 115)
+        self.assertEqual(lcd_ui.cell_width(2), 109)
+        self.assertEqual(lcd_ui.cell_width(3), 115)
+        self.assertEqual(lcd_ui.CELL_H, 44)
+        self.assertEqual(lcd_ui.spacer_width(0), 58)
+        self.assertEqual(lcd_ui.spacer_width(1), 58)
+        self.assertEqual(lcd_ui.LAYOUT_TOP, 144)
         self.assertEqual(len(ui.cell_views), 4)
-        self.assertEqual(len(ui.root_group), 8)
+        self.assertEqual(len(ui.root_group), 7)
         self.assertEqual([cell.name for cell in ui.cell_views], ["PB1", "PB2", "PB3", "PB4"])
         self.assertEqual([cell.label.text for cell in ui.cell_views], list(lcd_ui.ACTIONS))
         self.assertEqual([(cell.group.x, cell.group.y) for cell in ui.cell_views], [lcd_ui.cell_origin(i) for i in range(4)])

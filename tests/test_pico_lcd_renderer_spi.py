@@ -40,33 +40,76 @@ class _FakeBlitTarget(_FakeDrawTarget):
         self.blit_calls.append((x, y, width, height, len(pixel_bytes)))
 
 
+def _bordered_region_calls(renderer_spi, x, y, width, height, fill_color):
+    return [
+        ("fill_rect", x, y, width, height, fill_color),
+        ("fill_rect", x, y, width, 2, renderer_spi.ACCENT),
+        ("fill_rect", x, y + height - 2, width, 2, renderer_spi.ACCENT),
+        ("fill_rect", x, y, 2, height, renderer_spi.ACCENT),
+        ("fill_rect", x + width - 2, y, 2, height, renderer_spi.ACCENT),
+    ]
+
+
+def _spacer_calls(renderer_spi, index):
+    x, y = renderer_spi.spacer_origin(index)
+    return _bordered_region_calls(renderer_spi, x, y, renderer_spi.spacer_width(index), renderer_spi.CELL_H, renderer_spi.SURFACE)
+
+
 def _cell_calls(renderer_spi, index, fill_color):
     x, y = renderer_spi.cell_origin(index)
     text_x, text_y = renderer_spi.cell_label_position(index, renderer_spi.ACTIONS[index])
-    return [
-        ("fill_rect", x, y, renderer_spi.CELL_W, renderer_spi.CELL_H, fill_color),
-        ("fill_rect", x, y, renderer_spi.CELL_W, 2, renderer_spi.ACCENT),
-        ("fill_rect", x, y + renderer_spi.CELL_H - 2, renderer_spi.CELL_W, 2, renderer_spi.ACCENT),
-        ("fill_rect", x, y, 2, renderer_spi.CELL_H, renderer_spi.ACCENT),
-        ("fill_rect", x + renderer_spi.CELL_W - 2, y, 2, renderer_spi.CELL_H, renderer_spi.ACCENT),
+    return _bordered_region_calls(renderer_spi, x, y, renderer_spi.cell_width(index), renderer_spi.CELL_H, fill_color) + [
         (
             "draw_text",
             text_x,
             text_y,
             renderer_spi.ACTIONS[index],
             renderer_spi.WHITE,
-            renderer_spi.FONT_SCALE,
+            renderer_spi.CELL_LABEL_FONT_SCALE,
             fill_color,
         ),
     ]
 
 
 class PicoLcdRendererSpiTests(unittest.TestCase):
+    def test_renderer_uses_staggered_bottom_cell_geometry_with_fit_cell_labels(self):
+        renderer_spi = _load_module("pico.lcd_renderer_spi")
+
+        self.assertEqual(renderer_spi.cell_origin(0), (8, 196))
+        self.assertEqual(renderer_spi.cell_origin(1), (74, 144))
+        self.assertEqual(renderer_spi.cell_origin(2), (137, 196))
+        self.assertEqual(renderer_spi.cell_origin(3), (197, 144))
+        self.assertEqual(renderer_spi.spacer_origin(0), (8, 144))
+        self.assertEqual(renderer_spi.spacer_origin(1), (254, 196))
+        self.assertEqual(renderer_spi.cell_width(0), 121)
+        self.assertEqual(renderer_spi.cell_width(1), 115)
+        self.assertEqual(renderer_spi.cell_width(2), 109)
+        self.assertEqual(renderer_spi.cell_width(3), 115)
+        self.assertEqual(renderer_spi.CELL_H, 44)
+        self.assertEqual(renderer_spi.spacer_width(0), 58)
+        self.assertEqual(renderer_spi.spacer_width(1), 58)
+        self.assertEqual(renderer_spi.LAYOUT_TOP, 144)
+        self.assertEqual(renderer_spi.CELL_LABEL_FONT_SCALE, 2)
+
+        for index, action in enumerate(renderer_spi.ACTIONS):
+            text_x, text_y = renderer_spi.cell_label_position(index, action)
+            cell_x, cell_y = renderer_spi.cell_origin(index)
+            self.assertGreaterEqual(text_x, cell_x)
+            self.assertGreaterEqual(text_y, cell_y)
+            self.assertLessEqual(
+                text_x + renderer_spi.text_width(action, scale=renderer_spi.CELL_LABEL_FONT_SCALE),
+                cell_x + renderer_spi.cell_width(index),
+            )
+            self.assertLessEqual(
+                text_y + (renderer_spi.FONT_HEIGHT * renderer_spi.CELL_LABEL_FONT_SCALE),
+                cell_y + renderer_spi.CELL_H,
+            )
+
     def test_renderer_with_blit_target_defers_pixel_buffer_builds_until_draw(self):
         renderer_spi = _load_module("pico.lcd_renderer_spi")
         target = _FakeBlitTarget()
 
-        with mock.patch.object(renderer_spi, "_build_header_pixels", side_effect=AssertionError("should not prebuild header")):
+        with mock.patch.object(renderer_spi, "_build_spacer_pixels", side_effect=AssertionError("should not prebuild spacers")):
             with mock.patch.object(renderer_spi, "_build_cell_pixels", side_effect=AssertionError("should not prebuild cells")):
                 renderer_spi.SpiLcdRenderer(target=target)
 
@@ -78,7 +121,7 @@ class PicoLcdRendererSpiTests(unittest.TestCase):
         renderer.draw_idle_layout()
 
         self.assertEqual(target.calls, [("fill", renderer_spi.BG)])
-        self.assertEqual(len(target.blit_calls), 5)
+        self.assertEqual(len(target.blit_calls), 6)
 
         target.calls.clear()
         target.blit_calls.clear()
@@ -114,18 +157,9 @@ class PicoLcdRendererSpiTests(unittest.TestCase):
 
         expected_calls = [
             ("fill", renderer_spi.BG),
-            ("fill_rect", 0, 0, renderer_spi.W, renderer_spi.BAR_H, renderer_spi.SURFACE),
-            ("fill_rect", 0, renderer_spi.BAR_H - 2, renderer_spi.W, 2, renderer_spi.ACCENT),
-            (
-                "draw_text",
-                renderer_spi.header_text_position(renderer_spi.TITLE_TEXT)[0],
-                renderer_spi.header_text_position(renderer_spi.TITLE_TEXT)[1],
-                renderer_spi.TITLE_TEXT,
-                renderer_spi.ACCENT,
-                renderer_spi.FONT_SCALE,
-                renderer_spi.SURFACE,
-            ),
         ]
+        for index in range(2):
+            expected_calls.extend(_spacer_calls(renderer_spi, index))
         for index in range(4):
             expected_calls.extend(_cell_calls(renderer_spi, index, renderer_spi.SURFACE))
 

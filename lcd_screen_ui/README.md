@@ -33,7 +33,7 @@ src/
   app/
     App.tsx                     # State machine: idle → confirmation → processing → success
     components/
-      IdleScreen.tsx            # 2×2 action grid (SYNTHESIS, REFORMAT, SEARCH, RESPOND)
+      IdleScreen.tsx            # staggered bottom action layout (SYNTHESIS, REFORMAT, SEARCH, RESPOND)
       ConfirmationScreen.tsx    # Confirm / cancel split
       ProcessingScreen.tsx      # Spinner state
       SuccessScreen.tsx         # Success state with auto-return

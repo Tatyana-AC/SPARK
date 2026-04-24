@@ -22,19 +22,46 @@ ACTIVE = 0x3D4263
 
 W = 320
 H = 240
-BAR_H = 24
 PAD = 8
 GAP = 8
-CELL_W = (W - 2 * PAD - GAP) // 2
-CELL_H = (H - BAR_H - 2 * PAD - GAP) // 2
+LAYOUT_H = 96
+LAYOUT_TOP = H - LAYOUT_H
+TOP_SPACER_W = 58
+BOTTOM_SPACER_W = 58
+SYNTHESIS_W = 121
+SEARCH_W = 109
+TOP_CELL_W = (W - 2 * PAD - TOP_SPACER_W - 2 * GAP) // 2
+CELL_H = (LAYOUT_H - GAP) // 2
+TOP_ROW_Y = LAYOUT_TOP
+BOTTOM_ROW_Y = LAYOUT_TOP + CELL_H + GAP
+_SPACER_ORIGINS = (
+    (PAD, TOP_ROW_Y),
+    (W - PAD - BOTTOM_SPACER_W, BOTTOM_ROW_Y),
+)
+_CELL_ORIGINS = (
+    (PAD, BOTTOM_ROW_Y),
+    (PAD + TOP_SPACER_W + GAP, TOP_ROW_Y),
+    (PAD + SYNTHESIS_W + GAP, BOTTOM_ROW_Y),
+    (PAD + TOP_SPACER_W + GAP + TOP_CELL_W + GAP, TOP_ROW_Y),
+)
+_CELL_WIDTHS = (
+    SYNTHESIS_W,
+    TOP_CELL_W,
+    SEARCH_W,
+    TOP_CELL_W,
+)
+_SPACER_WIDTHS = (
+    TOP_SPACER_W,
+    BOTTOM_SPACER_W,
+)
 
 DISPLAY_BAUDRATE = 24_000_000
 DISPLAY_ROTATION = 180
 FONT_SCALE = 2
+CELL_LABEL_FONT_SCALE = 2
 FONT_WIDTH = 5
 FONT_HEIGHT = 7
 FONT_SPACING = 1
-TITLE_TEXT = "SPARK READY"
 ACTIONS = UI_ACTIONS
 
 _ILI9341_COLUMN_SET = 0x2A
@@ -110,11 +137,19 @@ def _debug_stage(message):
 
 
 def cell_origin(index):
-    column = index % 2
-    row = index // 2
-    x = PAD + column * (CELL_W + GAP)
-    y = BAR_H + PAD + row * (CELL_H + GAP)
-    return x, y
+    return _CELL_ORIGINS[index]
+
+
+def spacer_origin(index):
+    return _SPACER_ORIGINS[index]
+
+
+def cell_width(index):
+    return _CELL_WIDTHS[index]
+
+
+def spacer_width(index):
+    return _SPACER_WIDTHS[index]
 
 
 def text_width(text, *, scale=FONT_SCALE):
@@ -124,18 +159,13 @@ def text_width(text, *, scale=FONT_SCALE):
     return (len(text) * char_step) - (FONT_SPACING * scale)
 
 
-def header_text_position(text, *, scale=FONT_SCALE):
-    x = PAD
-    y = max(0, (BAR_H - (FONT_HEIGHT * scale)) // 2)
-    return x, y
-
-
-def cell_label_position(index, text, *, scale=FONT_SCALE):
+def cell_label_position(index, text, *, scale=CELL_LABEL_FONT_SCALE):
     x, y = cell_origin(index)
+    width = cell_width(index)
     label_width = text_width(text, scale=scale)
     label_height = FONT_HEIGHT * scale
     return (
-        x + max(0, (CELL_W - label_width) // 2),
+        x + max(0, (width - label_width) // 2),
         y + max(0, (CELL_H - label_height) // 2),
     )
 
@@ -185,18 +215,17 @@ class SpiLcdRenderer:
         self._target.fill(BG)
         _record_stage("renderer:draw_idle:after-fill")
         if self._has_blit:
-            self._target.blit_pixels(0, 0, W, BAR_H, _build_header_pixels())
-            _record_stage("renderer:draw_idle:after-header")
+            for index in range(2):
+                x, y = spacer_origin(index)
+                self._target.blit_pixels(x, y, spacer_width(index), CELL_H, _build_spacer_pixels(index))
+                _record_stage(f"renderer:draw_idle:after-spacer:{index}")
             for index in range(4):
                 x, y = cell_origin(index)
-                self._target.blit_pixels(x, y, CELL_W, CELL_H, _build_cell_pixels(index, SURFACE))
+                self._target.blit_pixels(x, y, cell_width(index), CELL_H, _build_cell_pixels(index, SURFACE))
                 _record_stage(f"renderer:draw_idle:after-cell:{index}")
         else:
-            self._target.fill_rect(0, 0, W, BAR_H, SURFACE)
-            self._target.fill_rect(0, BAR_H - 2, W, 2, ACCENT)
-            header_x, header_y = header_text_position(TITLE_TEXT)
-            self._target.draw_text(header_x, header_y, TITLE_TEXT, ACCENT, scale=FONT_SCALE, background_color=SURFACE)
-
+            for index in range(2):
+                self._draw_spacer(index)
             for index in range(4):
                 self.draw_idle_cell(index)
 
@@ -211,18 +240,32 @@ class SpiLcdRenderer:
     def draw_idle_cell(self, index):
         self._draw_cell(index, SURFACE)
 
+    def _draw_spacer(self, index):
+        x, y = spacer_origin(index)
+        self._draw_bordered_region(x, y, spacer_width(index), CELL_H, SURFACE)
+
     def _draw_cell(self, index, fill_color):
         if index < 0 or index > 3:
             raise IndexError(f"invalid cell index: {index}")
 
         x, y = cell_origin(index)
-        self._target.fill_rect(x, y, CELL_W, CELL_H, fill_color)
-        self._target.fill_rect(x, y, CELL_W, 2, ACCENT)
-        self._target.fill_rect(x, y + CELL_H - 2, CELL_W, 2, ACCENT)
-        self._target.fill_rect(x, y, 2, CELL_H, ACCENT)
-        self._target.fill_rect(x + CELL_W - 2, y, 2, CELL_H, ACCENT)
+        self._draw_bordered_region(x, y, cell_width(index), CELL_H, fill_color)
         text_x, text_y = cell_label_position(index, ACTIONS[index])
-        self._target.draw_text(text_x, text_y, ACTIONS[index], WHITE, scale=FONT_SCALE, background_color=fill_color)
+        self._target.draw_text(
+            text_x,
+            text_y,
+            ACTIONS[index],
+            WHITE,
+            scale=CELL_LABEL_FONT_SCALE,
+            background_color=fill_color,
+        )
+
+    def _draw_bordered_region(self, x, y, width, height, fill_color):
+        self._target.fill_rect(x, y, width, height, fill_color)
+        self._target.fill_rect(x, y, width, 2, ACCENT)
+        self._target.fill_rect(x, y + height - 2, width, 2, ACCENT)
+        self._target.fill_rect(x, y, 2, height, ACCENT)
+        self._target.fill_rect(x + width - 2, y, 2, height, ACCENT)
 
 
 class Ili9341SpiTarget:
@@ -382,22 +425,26 @@ def initialize_bridge_renderer():
     return renderer
 
 
-def _build_header_pixels():
+def _build_spacer_pixels(index):
     return _build_region_pixels(
-        width=W,
-        height=BAR_H,
+        width=spacer_width(index),
+        height=CELL_H,
         background_color=SURFACE,
         border_color=ACCENT,
+        border_top=True,
         border_bottom=True,
-        text=TITLE_TEXT,
-        text_color=ACCENT,
-        text_position=header_text_position(TITLE_TEXT),
+        border_left=True,
+        border_right=True,
+        text="",
+        text_color=WHITE,
+        text_position=(0, 0),
     )
 
 
 def _build_cell_pixels(index, fill_color):
+    width = cell_width(index)
     return _build_region_pixels(
-        width=CELL_W,
+        width=width,
         height=CELL_H,
         background_color=fill_color,
         border_color=ACCENT,
@@ -407,6 +454,7 @@ def _build_cell_pixels(index, fill_color):
         border_right=True,
         text=ACTIONS[index],
         text_color=WHITE,
+        text_scale=CELL_LABEL_FONT_SCALE,
         text_position=(
             cell_label_position(index, ACTIONS[index])[0] - cell_origin(index)[0],
             cell_label_position(index, ACTIONS[index])[1] - cell_origin(index)[1],
@@ -422,6 +470,7 @@ def _build_region_pixels(
     border_color,
     text,
     text_color,
+    text_scale=FONT_SCALE,
     text_position,
     border_top=False,
     border_bottom=False,
@@ -449,13 +498,13 @@ def _build_region_pixels(
             pixels[pixel_index] = (color_565 >> 8) & 0xFF
             pixels[pixel_index + 1] = color_565 & 0xFF
 
-    _overlay_text(pixels, width, height, text, foreground, text_position)
+    _overlay_text(pixels, width, height, text, foreground, text_position, scale=text_scale)
     return bytes(pixels)
 
 
-def _overlay_text(pixel_bytes, width, height, text, foreground, text_position):
+def _overlay_text(pixel_bytes, width, height, text, foreground, text_position, *, scale=FONT_SCALE):
     text_x, text_y = text_position
-    advance = (FONT_WIDTH + FONT_SPACING) * FONT_SCALE
+    advance = (FONT_WIDTH + FONT_SPACING) * scale
     for char_index, char in enumerate(text):
         glyph = _FONT_GLYPHS.get(char, _FONT_GLYPHS[" "])
         base_x = text_x + (char_index * advance)
@@ -463,10 +512,10 @@ def _overlay_text(pixel_bytes, width, height, text, foreground, text_position):
             for column_index, bit in enumerate(row_bits):
                 if bit != "1":
                     continue
-                for dy in range(FONT_SCALE):
-                    for dx in range(FONT_SCALE):
-                        px = base_x + (column_index * FONT_SCALE) + dx
-                        py = text_y + (row_index * FONT_SCALE) + dy
+                for dy in range(scale):
+                    for dx in range(scale):
+                        px = base_x + (column_index * scale) + dx
+                        py = text_y + (row_index * scale) + dy
                         if px < 0 or py < 0 or px >= width or py >= height:
                             continue
                         pixel_index = ((py * width) + px) * 2
