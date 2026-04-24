@@ -52,6 +52,7 @@ class WatchFullStackTests(unittest.TestCase):
 
         args = build_parser(platform="darwin").parse_args([])
 
+        self.assertEqual(args.app_log, "logs/spark_app_v2.log")
         self.assertEqual(args.bridge_log, "/mnt/usb_drive/demo/pico_bridge/bridge.log")
         self.assertEqual(args.llm_log, "/mnt/usb_drive/demo/llama_demo/server.log")
 

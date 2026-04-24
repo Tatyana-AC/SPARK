@@ -19,6 +19,7 @@ from core.app_log_contract import APP_LOG_FILE_FORMAT
 PICO_DEBUG_LOGGER_NAME = "pico.debug"
 
 DEFAULT_APP_LOG = r"logs\spark_app_v2.log"
+DEFAULT_POSIX_APP_LOG = "logs/spark_app_v2.log"
 DEFAULT_BRIDGE_LOG = r"Z:\demo\pico_bridge\bridge.log"
 DEFAULT_LLM_LOG = r"Z:\demo\llama_demo\server.log"
 DEFAULT_REMOTE_BRIDGE_LOG = "/mnt/usb_drive/demo/pico_bridge/bridge.log"
@@ -213,6 +214,12 @@ def default_llm_log_path(*, platform=None):
     if _watcher_platform(platform).startswith("win"):
         return DEFAULT_LLM_LOG
     return DEFAULT_REMOTE_LLM_LOG
+
+
+def default_app_log_path(*, platform=None):
+    if _watcher_platform(platform).startswith("win"):
+        return DEFAULT_APP_LOG
+    return DEFAULT_POSIX_APP_LOG
 
 
 def should_use_ssh_log_source(path, *, platform=None):
@@ -1234,12 +1241,13 @@ def _poll_source_events(source, *, tracker, now):
 
 
 def build_parser(*, platform=None):
+    default_app_log = default_app_log_path(platform=platform)
     default_bridge_log = default_bridge_log_path(platform=platform)
     default_llm_log = default_llm_log_path(platform=platform)
     parser = argparse.ArgumentParser(description="Watch SPARK host, Pico, and Jetson logs in one stream")
     parser.add_argument("--quiet-seconds", type=float, default=30.0, help="Warn after this many quiet seconds")
     parser.add_argument("--check-interval", type=float, default=1.0, help="Run health checks this often in seconds")
-    parser.add_argument("--app-log", default=DEFAULT_APP_LOG, help=f"Host app log path (default: {DEFAULT_APP_LOG})")
+    parser.add_argument("--app-log", default=default_app_log, help=f"Host app log path (default: {default_app_log})")
     parser.add_argument("--bridge-log", default=default_bridge_log, help=f"Jetson bridge log path (default: {default_bridge_log})")
     parser.add_argument("--llm-log", default=default_llm_log, help=f"Jetson llama log path (default: {default_llm_log})")
     parser.add_argument("--ssh-target", default=DEFAULT_SSH_TARGET, help=f"Jetson SSH target (default: {DEFAULT_SSH_TARGET})")
