@@ -9,6 +9,19 @@ def build_summarize_command() -> str:
     return json.dumps({"command": "summarize"})
 
 
+def build_synthesize_session_request(window_minutes: int = 30) -> str:
+    """Build an anchored session synthesis request."""
+    window_minutes = int(window_minutes)
+    if window_minutes <= 0:
+        raise ValueError("window_minutes must be positive")
+    return json.dumps(
+        {
+            "command": "synthesize_session",
+            "window_minutes": window_minutes,
+        }
+    )
+
+
 def build_test_summary_request() -> str:
     """Fixed debug payload for smoke-testing the summarize round-trip."""
     return build_summarize_command()

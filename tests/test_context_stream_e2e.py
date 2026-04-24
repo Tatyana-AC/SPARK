@@ -5,14 +5,15 @@ Exercises the full composed chain that the unit tests cover in isolation:
   -> framed bytes on wire
   -> PacketParser feeds bytes
   -> handle_packet dispatches to JetsonDB
-  -> button press fires lightweight "summarize" command
-  -> build_llm_request pulls context from DB (not from payload)
+  -> button press fires lightweight session synthesis command
+  -> build_llm_request pulls active and recent related context from DB
 """
 
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from core.protocol import (
     PacketParser,
@@ -26,7 +27,7 @@ from core.protocol import (
 from host_pc.accessibility.base import TextSource, WindowContextSnapshot, WindowInfo
 from host_pc.serial_sender import SerialSender
 from jetson.db_manager import JetsonDB, build_content_fingerprint, build_context_key
-from jetson.pico_llm_bridge import build_llm_request
+from jetson.pico_llm_bridge import _button_press_request_text, build_llm_request
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +314,41 @@ class ContextStreamEndToEnd(unittest.TestCase):
         self.assertIn("VSCode", prompt)
         self.assertIn("def main(): pass", prompt)
         self.assertNotIn("browsing", prompt)
+
+    def test_button_request_synthesizes_active_anchor_with_related_recent_context(self):
+        self.sender.send_context_new(
+            _make_snapshot(
+                app_name="Notes",
+                title="History notes",
+                text="Class notes about the Tea Act and East India Company.",
+                url=None,
+                tab_title=None,
+                pid=2001,
+                timestamp=1_950.0,
+            )
+        )
+        self._relay()
+        self.sender.send_context_new(
+            _make_snapshot(
+                app_name="Chrome",
+                title="Boston Tea Party - Wikipedia",
+                text="Boston Tea Party protest involving the Tea Act.",
+                url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                tab_title="Boston Tea Party",
+                pid=2002,
+                timestamp=2_000.0,
+            )
+        )
+        self._relay()
+
+        with mock.patch("jetson.pico_llm_bridge.time.time", return_value=2_000.0):
+            _, prompt = build_llm_request(_button_press_request_text(1), "sys", db=self.db)
+
+        self.assertIn("ANCHOR SOURCE", prompt)
+        self.assertIn("Boston Tea Party - Wikipedia", prompt)
+        self.assertIn("RELATED RECENT SOURCES", prompt)
+        self.assertIn("History notes", prompt)
+        self.assertIn("last 30 minutes", prompt)
 
     # -- reformat selection path ---
 

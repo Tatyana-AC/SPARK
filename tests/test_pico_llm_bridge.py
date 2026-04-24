@@ -9,6 +9,7 @@ from unittest import mock
 from jetson.db_manager import JetsonDB
 from jetson.pico_llm_bridge import (
     _append_llm_audit_record,
+    _button_press_request_text,
     build_llm_request,
     _build_respond_prompt,
     _build_summarize_prompt,
@@ -78,6 +79,103 @@ class BuildLlmRequestTests(unittest.TestCase):
         _, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=None)
 
         self.assertIn("no database available", prompt)
+
+    def test_synthesize_session_prompt_includes_active_anchor_and_related_notes(self):
+        self.db.on_context_new(_make_context_payload(
+            app_name="Notes",
+            window_title="History notes",
+            pid=2001,
+            url=None,
+            text="Notes mention the Tea Act and East India Company.",
+            timestamp=1000.0,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="System Settings",
+            window_title="Displays",
+            pid=2002,
+            url=None,
+            text="Brightness and display arrangement.",
+            timestamp=1100.0,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Chrome",
+            window_title="Boston Tea Party - Wikipedia",
+            pid=2003,
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="The Boston Tea Party was a protest involving the Tea Act and East India Company.",
+            timestamp=1200.0,
+        ))
+
+        raw = json.dumps({"command": "synthesize_session", "window_minutes": 30})
+        with mock.patch("jetson.pico_llm_bridge.time.time", return_value=1200.0):
+            system, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
+
+        self.assertIn("session synthesis", system.lower())
+        self.assertIn("ANCHOR SOURCE", prompt)
+        self.assertIn("Boston Tea Party - Wikipedia", prompt)
+        self.assertIn("RELATED RECENT SOURCES", prompt)
+        self.assertIn("History notes", prompt)
+        self.assertIn("Related context", prompt)
+        self.assertNotIn("Brightness and display arrangement", prompt)
+
+    def test_synthesize_session_does_not_match_unrelated_recent_apps_on_generic_terms(self):
+        self.db.on_context_new(_make_context_payload(
+            app_name="Chrome",
+            window_title="Project docs",
+            pid=2001,
+            url="https://github.com/example/project",
+            tab_title="Project docs",
+            text="Company access support and productivity setup notes.",
+            timestamp=1000.0,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Notes",
+            window_title="History notes",
+            pid=2002,
+            url=None,
+            text="The Tea Act and East India Company are relevant to the Boston Tea Party.",
+            timestamp=1100.0,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Chrome",
+            window_title="Boston Tea Party - Wikipedia",
+            pid=2003,
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="The Boston Tea Party was a protest involving the Tea Act and East India Company.",
+            timestamp=1200.0,
+        ))
+
+        with mock.patch("jetson.pico_llm_bridge.time.time", return_value=1200.0):
+            _, prompt = build_llm_request(
+                json.dumps({"command": "synthesize_session", "window_minutes": 30}),
+                SYSTEM_PROMPT,
+                db=self.db,
+            )
+
+        self.assertIn("History notes", prompt)
+        self.assertNotIn("Project docs", prompt)
+
+    def test_synthesize_session_without_related_context_is_anchor_only(self):
+        self.db.on_context_new(_make_context_payload(
+            app_name="Chrome",
+            window_title="Boston Tea Party - Wikipedia",
+            text="Boston Tea Party article text",
+            timestamp=1200.0,
+        ))
+
+        with mock.patch("jetson.pico_llm_bridge.time.time", return_value=1200.0):
+            _, prompt = build_llm_request(
+                json.dumps({"command": "synthesize_session", "window_minutes": 30}),
+                SYSTEM_PROMPT,
+                db=self.db,
+            )
+
+        self.assertIn("No related recent context cleared the relevance threshold", prompt)
+
+    def test_button_press_request_text_uses_session_synthesis(self):
+        payload = json.loads(_button_press_request_text(0))
+
+        self.assertEqual(payload, {"command": "synthesize_session", "window_minutes": 30})
 
     def test_legacy_summarize_window_still_works(self):
         raw = json.dumps({
@@ -262,6 +360,23 @@ class BridgeLoggingTests(unittest.TestCase):
             _log_inbound_packet({"type": 0x05, "button_id": 0})
 
         info_log.assert_called_once_with("[UART IN] button_press button_id=%s", 0)
+
+    def test_log_inbound_packet_logs_request_command(self):
+        with mock.patch("jetson.pico_llm_bridge.logger.info") as info_log:
+            _log_inbound_packet(
+                {
+                    "type": 0x03,
+                    "request": json.dumps(
+                        {"command": "synthesize_session", "window_minutes": 30}
+                    ),
+                }
+            )
+
+        info_log.assert_called_once_with(
+            "[UART IN] summarize_request chars=%d command=%s",
+            55,
+            "synthesize_session",
+        )
 
     def test_write_bridge_packet_logs_and_flushes(self):
         serial = mock.Mock()

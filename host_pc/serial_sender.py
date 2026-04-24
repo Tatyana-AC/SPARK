@@ -10,6 +10,7 @@ from __future__ import annotations
 import glob
 import logging
 import re
+import struct
 import sys
 import threading
 import time
@@ -389,11 +390,24 @@ class SerialSender:
 
     @staticmethod
     def _context_packet(payload: dict, build_packet) -> bytes:
-        packet = build_packet(payload)
+        def packet_for_text(text_value: str):
+            candidate_payload = dict(payload)
+            candidate_payload["text"] = text_value
+            try:
+                return build_packet(candidate_payload)
+            except struct.error:
+                return None
+
+        text = payload.get("text") or ""
+        packet = packet_for_text(text)
+        if packet is None:
+            packet = packet_for_text("")
+        if packet is None:
+            raise ValueError("context packet metadata exceeds protocol payload limit")
+
         if len(packet) <= _MAX_CONTEXT_PACKET_BYTES:
             return packet
 
-        text = payload.get("text") or ""
         if not text:
             return packet
 
@@ -402,10 +416,8 @@ class SerialSender:
         best_packet = packet
         while low <= high:
             mid = (low + high) // 2
-            candidate_payload = dict(payload)
-            candidate_payload["text"] = text[:mid]
-            candidate_packet = build_packet(candidate_payload)
-            if len(candidate_packet) <= _MAX_CONTEXT_PACKET_BYTES:
+            candidate_packet = packet_for_text(text[:mid])
+            if candidate_packet is not None and len(candidate_packet) <= _MAX_CONTEXT_PACKET_BYTES:
                 best_packet = candidate_packet
                 low = mid + 1
             else:

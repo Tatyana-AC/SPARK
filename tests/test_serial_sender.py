@@ -177,6 +177,28 @@ class SerialSenderTests(unittest.TestCase):
             huge_text[: len(parser_packets[0]["text"])],
         )
 
+    def test_send_context_update_truncates_text_too_large_for_protocol_header(self):
+        sender = serial_sender.SerialSender(port="COM7")
+        sender._serial = FakeSerialPort()
+        parser_packets = []
+        parser = PacketParser(on_packet=parser_packets.append)
+        huge_text = "x" * 100000
+
+        ok = sender.send_context_update(make_snapshot(text=huge_text))
+
+        self.assertTrue(ok)
+        self.assertLessEqual(
+            len(sender._serial.writes[0]),
+            serial_sender._MAX_CONTEXT_PACKET_BYTES,
+        )
+        parser.feed(sender._serial.writes[0])
+        self.assertEqual(parser_packets[0]["type"], PKT_CONTEXT_UPDATE)
+        self.assertLess(len(parser_packets[0]["text"]), len(huge_text))
+        self.assertEqual(
+            parser_packets[0]["text"],
+            huge_text[: len(parser_packets[0]["text"])],
+        )
+
     def test_send_raw_appends_eot_when_requested(self):
         sender = serial_sender.SerialSender(port="COM7")
         sender._serial = FakeSerialPort()

@@ -9,8 +9,8 @@ Important: the deployed Pico firmware is a CircuitPython `boot.py` + `code.py` p
 The current Pico Hub firmware in `pico/` is split into:
 
 - `boot.py`: configure USB identity (`VID 0xC4C4` / `PID 0x5350`), enable USB CDC data, and expose the custom HID interface used by the host.
-- `code.py`: relay Host CDC bytes to Jetson UART, forward `FEATURE_1` summarize requests to Jetson, buffer streamed Jetson responses, and handle custom Raw HID traffic.
-- `jetson_transport.py`: transport-only UART helper for framed summarize requests and streamed Jetson responses.
+- `code.py`: relay Host CDC bytes to Jetson UART, forward `FEATURE_1` session synthesis requests to Jetson, buffer streamed Jetson responses, and handle custom Raw HID traffic.
+- `jetson_transport.py`: transport-only UART helper for framed Jetson requests and streamed Jetson responses.
 - `upload_protocol.py`: V2 upload state machine shared between tests and the device runtime.
 - `serial_bridge.py`: CDC relay helper for the Host-to-Jetson runtime path.
 - `usb_config.py`: shared USB constants and the custom HID descriptor.
@@ -101,9 +101,10 @@ The active firmware contract is V2 upload-only:
 - `SUBMIT_TEXT` validates and acknowledges UTF-8 text uploads; it does not inject keyboard events
 - successful uploads can leave a device-side response buffer that the host reads back over Raw HID
 - the host app shows released text locally after the Pico acknowledges the upload
-- `FEATURE_1` forwards a structured summarize request to Jetson over UART and buffers the streamed Jetson response for host polling
-- `Summarize Window` is now verified as a Jetson-backed streamed path
-- large Jetson summarize responses must be split across multiple framed UART packets; the Jetson bridge in `jetson/pico_llm_bridge.py` now does that explicitly for the real board
+- `FEATURE_1` forwards a session synthesis request to Jetson over UART and buffers the streamed Jetson response for host polling
+- `Synthesis` and physical `PB1` send `{"command":"synthesize_session","window_minutes":30}` by default
+- session synthesis anchors on the active app and may include related context from the fixed last 30 minutes
+- large Jetson responses must be split across multiple framed UART packets; the Jetson bridge in `jetson/pico_llm_bridge.py` now does that explicitly for the real board
 - the current hardware-verified deployment flow is: copy the repo `jetson/` folder into the Jetson `demo/pico_bridge` directory, then run `python tools/pico/deploy_to_pico.py` to exact-sync the default `pico/` runtime onto `CIRCUITPY`
 
 Legacy `0xA0` / `0xA1` / `0xB0` keyboard-trigger/status reports are not part of the current CircuitPython firmware.

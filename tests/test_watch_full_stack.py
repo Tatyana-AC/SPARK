@@ -127,6 +127,16 @@ class WatchFullStackTests(unittest.TestCase):
         self.assertEqual(event.source, "JETSON-BRIDGE")
         self.assertEqual(event.message, "summarize request started")
 
+    def test_map_bridge_log_line_shows_request_command_and_size(self):
+        from tools.monitoring.watch_full_stack import map_bridge_log_line
+
+        event = map_bridge_log_line(
+            "2000-01-15 19:24:18,974 [INFO] [UART IN] summarize_request chars=55 command=synthesize_session"
+        )
+
+        self.assertEqual(event.source, "JETSON-BRIDGE")
+        self.assertEqual(event.message, "request received (command=synthesize_session, chars=55)")
+
     def test_map_bridge_log_line_keeps_request_end(self):
         from tools.monitoring.watch_full_stack import map_bridge_log_line
 
@@ -218,6 +228,36 @@ class WatchFullStackTests(unittest.TestCase):
             events = source.poll()
 
             self.assertEqual([event.message for event in events], ["keep me"])
+
+    def test_ssh_tail_source_emits_new_line_when_tail_window_slides(self):
+        from tools.monitoring.watch_full_stack import SshTailSource
+
+        outputs = [
+            "\n".join(f"line {index}" for index in range(200)),
+            "\n".join(f"line {index}" for index in range(1, 201)),
+        ]
+
+        def _runner(command):
+            return type(
+                "Completed",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": outputs.pop(0),
+                },
+            )()
+
+        source = SshTailSource(
+            "/mnt/usb_drive/demo/pico_bridge/bridge.log",
+            target="192.168.55.1",
+            source_label="JETSON-BRIDGE",
+            runner=_runner,
+        )
+
+        self.assertEqual(source.poll(), [])
+        events = source.poll()
+
+        self.assertEqual([event.message for event in events], ["line 200"])
 
     def test_render_watch_event_includes_local_timestamp(self):
         from tools.monitoring.watch_full_stack import RenderEvent, render_watch_event

@@ -258,6 +258,85 @@ class JetsonDBTests(unittest.TestCase):
         finally:
             reopened.close()
 
+    def test_recent_sessions_since_uses_host_observed_cutoff(self):
+        self.db.on_context_new(make_payload(window_title="old", timestamp=100.0, text="old"))
+        self.db.on_context_new(make_payload(window_title="new", pid=43, timestamp=500.0, text="new"))
+
+        rows = self.db.get_recent_sessions_since(200.0)
+
+        self.assertEqual([row["window_title"] for row in rows], ["new"])
+
+    def test_recent_sessions_since_orders_by_host_observed_at(self):
+        with mock.patch("jetson.db_manager.time.time", side_effect=[900.0, 800.0]):
+            self.db.on_context_new(make_payload(window_title="older host", timestamp=100.0))
+            self.db.on_context_new(make_payload(window_title="newer host", pid=43, timestamp=500.0))
+
+        rows = self.db.get_recent_sessions_since(0.0, dedupe=False)
+
+        self.assertEqual([row["window_title"] for row in rows], ["newer host", "older host"])
+
+    def test_recent_sessions_since_dedupes_context_key_to_newest(self):
+        def insert_session(payload):
+            self.db._conn.execute(
+                """
+                INSERT INTO sessions (
+                    context_key,
+                    content_fingerprint,
+                    app_name,
+                    window_title,
+                    process_name,
+                    pid,
+                    source,
+                    tab_title,
+                    url,
+                    text,
+                    host_observed_at,
+                    started_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    build_context_key(payload),
+                    build_content_fingerprint(payload),
+                    payload["app_name"],
+                    payload["window_title"],
+                    payload["process_name"],
+                    payload["pid"],
+                    payload["source"],
+                    payload["tab_title"],
+                    payload["url"],
+                    payload["text"],
+                    payload["timestamp"],
+                    payload["timestamp"],
+                    payload["timestamp"],
+                ),
+            )
+
+        for index, timestamp in enumerate((700.0, 600.0, 500.0, 400.0, 300.0, 200.0, 100.0)):
+            insert_session(make_payload(
+                app_name="Chrome",
+                process_name="chrome.exe",
+                pid=100 + index,
+                window_title="Boston Tea Party",
+                url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                text="newest duplicate text" if index == 0 else f"older duplicate text {index}",
+                timestamp=timestamp,
+            ))
+        insert_session(make_payload(
+            app_name="Notes",
+            process_name="notes.exe",
+            pid=2,
+            window_title="Essay",
+            text="Tea Act notes",
+            timestamp=50.0,
+        ))
+        self.db._conn.commit()
+
+        rows = self.db.get_recent_sessions_since(0.0, limit=2, dedupe=True)
+
+        self.assertEqual([row["text"] for row in rows], ["newest duplicate text", "Tea Act notes"])
+
     def test_keyword_search_matches_multiword_query_across_newlines(self):
         self.db.on_context_new(
             make_payload(

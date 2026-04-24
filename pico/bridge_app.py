@@ -4,7 +4,7 @@ except ImportError:
     from upload_protocol import AppCommand, StatusCode
 
 
-SUMMARIZE_COMMAND_TEXT = '{"command": "summarize"}'
+SYNTHESIZE_SESSION_COMMAND_TEXT = '{"command": "synthesize_session", "window_minutes": 30}'
 
 
 class RuntimeStatus:
@@ -139,7 +139,7 @@ class BridgeApp:
             return None
 
         return self._forward_request_text(
-            SUMMARIZE_COMMAND_TEXT,
+            SYNTHESIZE_SESSION_COMMAND_TEXT,
             self._runtime_status(),
             AppCommand.FEATURE_1,
         )

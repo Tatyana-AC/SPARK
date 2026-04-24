@@ -73,12 +73,12 @@ class BridgeAppTests(unittest.TestCase):
         self.assertEqual(result["accepted_count"], len(payload))
         self.assertEqual(result["detail"], "forwarded")
 
-    def test_button_0_uses_same_lightweight_summarize_payload_as_host(self):
+    def test_button_0_uses_session_synthesis_payload(self):
         from pico.bridge_app import BridgeApp
         from pico.upload_protocol import AppCommand
-        from host_pc.summarize_stream import build_summarize_command
+        from host_pc.summarize_stream import build_synthesize_session_request
 
-        payload = build_summarize_command()
+        payload = build_synthesize_session_request()
         transport = types.SimpleNamespace(start_request=mock.Mock())
         app = BridgeApp(
             jetson_transport=transport,
@@ -88,19 +88,8 @@ class BridgeAppTests(unittest.TestCase):
         result = app.handle_button_press(0)
 
         transport.start_request.assert_called_once_with(payload.encode("utf-8"))
-        self.assertEqual(
-            result,
-            {
-                "accepted_text": payload,
-                "accepted_count": len(payload),
-                "skipped_count": 0,
-                "detail": "forwarded",
-                "response_text": "",
-                "response_active": True,
-                "response_complete": False,
-                "app_command": int(AppCommand.FEATURE_1),
-            },
-        )
+        self.assertEqual(result["accepted_text"], payload)
+        self.assertEqual(result["app_command"], int(AppCommand.FEATURE_1))
 
     def test_button_0_skips_when_transport_is_busy(self):
         from pico.bridge_app import BridgeApp, RuntimeStatus

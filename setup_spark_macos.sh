@@ -508,7 +508,7 @@ if pgrep -af '[l]lama-server' >/dev/null 2>&1; then
     echo "llama-server status: already running"
 else
     echo "llama-server status: starting"
-    nohup bash -lc "cd '\$LLAMA_DIR' && exec '\$BIN_PATH' -m '\$MODEL_PATH' -c 8192 -ngl 40 --reasoning-budget 0 --port 8080 --host 0.0.0.0" >"\$SERVER_LOG" 2>&1 < /dev/null &
+    nohup bash -lc "cd '\$LLAMA_DIR' && exec '\$BIN_PATH' -m '\$MODEL_PATH' -c 262144 -np 1 -ngl 40 -fit off --reasoning-budget 0 --port 8080 --host 0.0.0.0" >"\$SERVER_LOG" 2>&1 < /dev/null &
 fi
 
 server_ready=0

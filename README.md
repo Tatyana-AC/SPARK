@@ -4,7 +4,7 @@ SPARK is a desktop context-capture app with hardware integration. On the current
 
 - Host app: PyQt desktop UI on macOS/Windows
 - Pico Hub: CircuitPython device exposing custom Raw HID and USB CDC serial relay
-- Jetson bridge: durable context storage plus summarize broker for the Pico UART path
+- Jetson bridge: durable context storage plus session synthesis broker for the Pico UART path
 
 The main app entrypoint is `spark_app_v2.py`, which remains the active runtime path.
 
@@ -32,7 +32,7 @@ chmod +x setup_spark_macos.sh
 - deploy the Pico runtime to the mounted `CIRCUITPY` volume
 - sync the Jetson bridge bundle over SSH
 - start or restart the Jetson services
-- run the Raw HID summarize smoke test, with one automatic bridge-restart retry on transient summarize timeouts
+- run the Raw HID synthesis smoke test, with one automatic bridge-restart retry on transient response timeouts
 - launch both `spark_app_v2.py` and `tools/monitoring/watch_full_stack.py` in Terminal
 
 Important macOS setup notes:
@@ -209,9 +209,9 @@ If recovery stops on a Pico message about a read-only `CIRCUITPY` mount, reconne
 - `docs/pico/HARDWARE_SMOKE_TEST.md`: post-deploy Pico verification checklist
 - `ACCESSIBILITY_PERMISSIONS.md`: macOS accessibility setup
 - `documentation_reference.md`: current developer lookup for host behavior and extension points
-- `docs/superpowers/specs/2026-04-15-jetson-db-viewer-design.md`: design notes for the Jetson DB snapshot viewer
-- `docs/superpowers/specs/2026-04-16-windows-browser-extraction-design.md`: design notes for Windows browser extraction and heuristics
-- `docs/superpowers/specs/2026-04-16-pytest-cleanup-and-background-design.md`: design notes for the current UI test harness cleanup
+- `docs/specs/2026-04-15-jetson-db-viewer-design.md`: design notes for the Jetson DB snapshot viewer
+- `docs/specs/2026-04-16-windows-browser-extraction-design.md`: design notes for Windows browser extraction and heuristics
+- `docs/specs/2026-04-16-pytest-cleanup-and-background-design.md`: design notes for the current UI test harness cleanup
 - `jetson/`: deployable Jetson bridge bundle intended to be copied into the Jetson-side `demo/pico_bridge` folder
 
 ## Notes
@@ -226,16 +226,16 @@ If recovery stops on a Pico message about a read-only `CIRCUITPY` mount, reconne
 - `python tools/pico/deploy_to_pico.py` is the cross-platform helper to push the Pico firmware and `adafruit_hid` onto a mounted `CIRCUITPY` board.
 - Deploy now exact-syncs the default Pico runtime and removes stale non-preserved files from `CIRCUITPY`; use `--dry-run` to inspect planned deletions first.
 - `Release Text` uploads text to the Pico, waits for an acknowledgment, and updates the local `RELEASE OUTPUT` panel. It does not type text back into the currently focused external app.
-- `Summarize Window` now sends a structured active-window request to the Pico over Raw HID. The Pico forwards that request to Jetson over UART, and the host streams the Jetson response into `RELEASE OUTPUT`.
+- `Synthesis` sends `{"command":"synthesize_session","window_minutes":30}` to the Pico over Raw HID. The Pico forwards that request to Jetson over UART, and the host streams the Jetson response into `RELEASE OUTPUT`.
 - `View Jetson DB` opens a read-only snapshot viewer for `Z:\demo\pico_bridge\jetson_spark.db`, including table paging and retry-safe refresh behavior.
 - Browser polling now uses `host_pc/web_content.py` plus `host_pc/web_content_windows.py` to reject noisy browser chrome, prefer real live-tab text, and fall back to HTTP article extraction when appropriate.
-- Jetson now owns the summarize prompt wrapping and system-prompt behavior for `Summarize Window`.
+- Jetson now owns session synthesis prompt wrapping. The active app is the anchor, and related context from the fixed last 30 minutes can be included when it matches the active topic.
 - `spark_app_v2.py` no longer uses a host-local SQLite database in the active runtime. Context persistence now lives on Jetson, while host UI position is stored through `QSettings`.
 - The `jetson/` folder in this repo is meant to be copy-pasted into the Jetson bridge directory. The active Jetson-side deployment target is `Z:\demo\pico_bridge`.
-- `Test Context` and `Custom Context` are visible in the SPARK panel for summarize-loop debugging without depending on live accessibility extraction.
+- `Custom Context` remains available in the SPARK panel for transport debugging without depending on live accessibility extraction. The legacy `summarize` command remains available in code and tests, but it is no longer exposed as a user-facing action.
 - `tests/conftest.py` forces Qt into `offscreen` mode during pytest collection so the UI test suite can run headlessly on Windows.
 - The panel header `✕` now fully quits the app. Use the tray menu or `Ctrl+F1` when you want to hide/show the panel without exiting.
 - During manual debugging, make sure older `spark_app_v2.py` processes are closed before launching another copy. Duplicate host app processes can contend for the Pico HID session and surface as `BUSY`, `read error`, or device-response timeouts.
-- If the Pico still enumerates on USB but `Test Context` or other summarize requests hit a Raw HID timeout, do a physical Pico reset before trying software recovery steps. A soft reload may help, but it should not be the first-line recovery path.
-- On March 28, 2026, the real physical Host HID/CDC -> Pico -> Jetson `/dev/ttyTHS0` path was verified end-to-end with live summarize responses from the Jetson llama.cpp server.
+- If the Pico still enumerates on USB but synthesis or other Jetson-backed requests hit a Raw HID timeout, do a physical Pico reset before trying software recovery steps. A soft reload may help, but it should not be the first-line recovery path.
+- On March 28, 2026, the real physical Host HID/CDC -> Pico -> Jetson `/dev/ttyTHS0` path was verified end-to-end with live streamed responses from the Jetson llama.cpp server.
 - The top-level `spark.db` file can still exist from older runs, but it is not part of the active `spark_app_v2.py` runtime anymore.

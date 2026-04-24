@@ -14,7 +14,7 @@
 
 ## Reference Spec
 
-- `docs/superpowers/specs/2026-04-14-cross-platform-browser-context-extraction-design.md`
+- `docs/specs/2026-04-14-cross-platform-browser-context-extraction-design.md`
 
 ## File Structure
 

@@ -380,7 +380,7 @@ Do not commit a knowingly unstable runtime rung except as a local throwaway chec
 
 - [ ] **Step 1: If runtime visual feedback still causes the first failure, switch to the static-tree redesign**
 
-Reference: `docs/superpowers/specs/2026-04-04-pico-lcd-redesign-design.md`
+Reference: `docs/specs/2026-04-04-pico-lcd-redesign-design.md`
 
 - [ ] **Step 2: Write failing tests that lock down static-tree invariants**
 

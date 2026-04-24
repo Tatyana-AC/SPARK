@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import signal
 import sys
 import threading
@@ -82,7 +83,16 @@ def _log_inbound_packet(pkt: dict) -> None:
         return
     if pkt_type == PKT_SUMMARIZE_REQUEST:
         request = pkt.get("request") or ""
-        logger.info("[UART IN] summarize_request chars=%d", len(request))
+        command = "unknown"
+        try:
+            payload = json.loads(request)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            raw_command = payload.get("command")
+            if isinstance(raw_command, str) and raw_command.strip():
+                command = raw_command.strip()
+        logger.info("[UART IN] summarize_request chars=%d command=%s", len(request), command)
         return
     if pkt_type == PKT_CONTEXT_NEW:
         logger.debug("[UART IN] context_new text_chars=%d", len(pkt.get("text") or ""))
@@ -148,6 +158,20 @@ KEYWORD_SEARCH_SYSTEM_PROMPT = (
 )
 _NO_KEYWORD_MATCHES_PREFIX = "(no keyword matches)"
 _KEYWORD_SNIPPET_CHARS = 120
+
+SYNTHESIS_SYSTEM_PROMPT = (
+    "You perform anchored session synthesis for SPARK. "
+    "The active app is the anchor. Use only related recent context that helps explain or extend the active work."
+)
+
+_SYNTHESIS_MAX_RELATED = 5
+_SYNTHESIS_SOURCE_CHARS = 1200
+_SYNTHESIS_ANCHOR_TEXT_RELEVANCE_CHARS = 600
+_SYNTHESIS_MIN_RELEVANCE_SCORE = 2
+
+
+def _button_press_request_text(button_id: int) -> str:
+    return json.dumps({"command": "synthesize_session", "window_minutes": 30})
 
 
 def _build_summarize_prompt(app_name: str, window_title: str, window_text: str) -> str:
@@ -268,6 +292,78 @@ def _extract_keyword_snippet(text: str, selected_text: str, max_chars: int = _KE
     return snippet
 
 
+def _extract_relevance_terms(*parts: str) -> set[str]:
+    text = " ".join(part or "" for part in parts).lower()
+    raw_terms = re.findall(r"[a-z0-9][a-z0-9-]{2,}", text)
+    stop = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "this",
+        "that",
+        "window",
+        "https",
+        "www",
+        "spark",
+        "repo",
+    }
+    return {term for term in raw_terms if term not in stop}
+
+
+def _score_related_session(anchor_terms: set[str], row) -> int:
+    haystack_terms = _extract_relevance_terms(
+        row["window_title"],
+        row["tab_title"],
+        row["url"],
+        row["text"],
+    )
+    return len(anchor_terms & haystack_terms)
+
+
+def _trim_synthesis_text(text: str) -> str:
+    text = (text or "").strip()
+    if len(text) <= _SYNTHESIS_SOURCE_CHARS:
+        return text
+    return f"{text[:_SYNTHESIS_SOURCE_CHARS].strip()}…"
+
+
+def _append_synthesis_source(lines: list[str], row) -> None:
+    lines.extend(
+        [
+            f"App: {(row['app_name'] or '').strip() or '(unknown app)'}",
+            f"Window title: {(row['window_title'] or '').strip() or '(untitled window)'}",
+            f"Tab title: {(row['tab_title'] or '').strip() or '(untitled tab)'}",
+            f"URL: {(row['url'] or '').strip() or '(no url)'}",
+            "Visible text:",
+            _trim_synthesis_text(row["text"] or ""),
+        ]
+    )
+
+
+def _build_synthesize_session_prompt(anchor, related_rows, *, window_minutes: int) -> str:
+    lines = [
+        "The active app is the anchor. Summarize it first, then use related recent context "
+        f"from the last {window_minutes} minutes only when it helps explain or extend the active work.",
+        "Do not include unrelated recent windows.",
+        "If related sources are listed, include a 'Related context' section in your answer "
+        "and mention what each related source contributes.",
+        "If no related context is found, say that the synthesis is based only on the active app.",
+        "",
+        "ANCHOR SOURCE",
+    ]
+    _append_synthesis_source(lines, anchor)
+    lines.extend(["", "RELATED RECENT SOURCES"])
+    if related_rows:
+        for idx, row in enumerate(related_rows, start=1):
+            lines.extend(["", f"Related source {idx}:"])
+            _append_synthesis_source(lines, row)
+    else:
+        lines.append("No related recent context cleared the relevance threshold.")
+    return "\n".join(lines).strip()
+
+
 def _parse_request(raw_prompt: str) -> dict:
     try:
         request = json.loads(raw_prompt)
@@ -330,6 +426,36 @@ def build_llm_request(
             KEYWORD_SEARCH_SYSTEM_PROMPT,
             _build_keyword_search_prompt(selected_text, matches),
         )
+
+    if command == "synthesize_session":
+        if db is None:
+            return SYNTHESIS_SYSTEM_PROMPT, "(no database available)"
+        session = db.get_active_session()
+        if session is None:
+            return SYNTHESIS_SYSTEM_PROMPT, "(no active session)"
+        window_minutes = int(request.get("window_minutes") or 30)
+        cutoff = time.time() - (window_minutes * 60)
+        candidates = db.get_recent_sessions_since(cutoff, limit=20, dedupe=True)
+        anchor_terms = _extract_relevance_terms(
+            session["window_title"],
+            session["tab_title"],
+            session["url"],
+            (session["text"] or "")[:_SYNTHESIS_ANCHOR_TEXT_RELEVANCE_CHARS],
+        )
+        related = []
+        for row in candidates:
+            if int(row["id"]) == int(session["id"]):
+                continue
+            score = _score_related_session(anchor_terms, row)
+            if score >= _SYNTHESIS_MIN_RELEVANCE_SCORE:
+                related.append((score, row))
+        related.sort(key=lambda item: item[0], reverse=True)
+        user_prompt = _build_synthesize_session_prompt(
+            session,
+            [row for _, row in related[:_SYNTHESIS_MAX_RELATED]],
+            window_minutes=window_minutes,
+        )
+        return SYNTHESIS_SYSTEM_PROMPT, user_prompt
 
     if command == "summarize":
         if db is None:
@@ -487,7 +613,12 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
         db=db,
         _request=request,
     )
-    structured = args.structured and command not in {"reformat_selection", "respond_selection", "keyword_search"}
+    structured = args.structured and command not in {
+        "reformat_selection",
+        "respond_selection",
+        "keyword_search",
+        "synthesize_session",
+    }
     logger.info(
         "Handling summarize request: chars=%d stream=%s structured=%s llm_url=%s command=%s",
         len(request_text or ""),
@@ -685,7 +816,7 @@ def run_bridge(args) -> int:
             db.on_button_press(pkt["button_id"])
             threading.Thread(
                 target=handle_summarize_request,
-                args=(ser, '{"command": "summarize"}', args),
+                args=(ser, _button_press_request_text(pkt["button_id"]), args),
                 kwargs={"db": db},
                 daemon=True,
             ).start()

@@ -13,7 +13,7 @@
 ### Task 1: Plan File And Folder Layout
 
 **Files:**
-- Create: `docs/superpowers/plans/2026-04-19-respond-latency-use-case-testing.md`
+- Create: `docs/plans/2026-04-19-respond-latency-use-case-testing.md`
 - Create: `use-case testing/README.md`
 - Create: `use-case testing/feature4_respond_snippets.json`
 - Create: `use-case testing/respond_latency_feature4.py`

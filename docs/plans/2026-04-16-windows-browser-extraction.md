@@ -32,7 +32,7 @@
   Cover Windows poll-loop ordering and filtered fallback decisions.
 - Create: `tests/test_web_content_windows.py`
   Focused unit tests for Windows content-region scoring, noise filtering, and fallback helpers.
-- Reference: `docs/superpowers/specs/2026-04-16-windows-browser-extraction-design.md`
+- Reference: `docs/specs/2026-04-16-windows-browser-extraction-design.md`
 
 ## Task 1: Add Shared Browser Normalization And Stronger Windows Metadata Ranking
 

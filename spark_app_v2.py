@@ -48,7 +48,7 @@ from host_pc.summarize_stream import (
      build_respond_request,
      build_reformat_request,
      build_summary_request,
-     build_summarize_command,
+     build_synthesize_session_request,
      build_test_summary_request,
 )
 from host_pc.single_instance import SingleInstanceGuard
@@ -1095,7 +1095,7 @@ class SparkPanel(QWidget):
 
         self.btn_capture  = ActionButton("Capture Text", f"{CAPTURE_HOTKEY_LABEL} - grab selection", self)
         self.btn_release  = ActionButton("Release Text", f"{RELEASE_HOTKEY_LABEL} - send to SPARK", self)
-        self.btn_summarize = ActionButton("Summarize Window", "Quick overview of visible text", self)
+        self.btn_summarize = ActionButton("Synthesis", "Synthesize anchored session context", self)
         self.btn_reformat = ActionButton("Reformat Selection", "Reformat highlighted text")
         self.btn_reformat.setProperty("test_id", "btn_reformat")
         self.btn_test_context = ActionButton("Test Context", "Send a fixed fake app context")
@@ -1107,6 +1107,7 @@ class SparkPanel(QWidget):
         self.btn_capture.hide()
         self.btn_release.hide()
         self.btn_summarize.hide()
+        self.btn_test_context.hide()
         self.btn_history.hide()
 
         self.btn_capture.clicked.connect(self._on_capture)
@@ -1372,13 +1373,15 @@ class SparkPanel(QWidget):
             self._set_status("Jetson response complete — output updated", GREEN)
             return
 
-        self.release_output_lbl.setPlainText(text if text else "No summary returned.")
         if self._active_feature_command == AppCommand.FEATURE_2:
+            self.release_output_lbl.setPlainText(text if text else "No summary returned.")
             if text:
                 QApplication.clipboard().setText(text)
             self._set_status("Jetson reformat complete — output updated", GREEN)
             return
-        self._set_status("Jetson summary complete — output updated", GREEN)
+
+        self.release_output_lbl.setPlainText(text if text else "No synthesis returned.")
+        self._set_status("Jetson synthesis complete - output updated", GREEN)
 
     def _on_summarize_progress(self, text: str):
         self.release_output_lbl.setPlainText(text)
@@ -1391,7 +1394,7 @@ class SparkPanel(QWidget):
         if self._active_feature_command == AppCommand.FEATURE_2:
             self._set_status("Streaming reformat from Jetson…", ORANGE)
             return
-        self._set_status("Streaming summary from Jetson…", ORANGE)
+        self._set_status("Streaming synthesis from Jetson...", ORANGE)
 
     def _on_summarize_failed(self, message: str):
         self._set_status(message, RED)
@@ -1484,13 +1487,13 @@ class SparkPanel(QWidget):
                 text = self.hid_client.fetch_response(info)
             except Exception:
                 return
-            self.release_output_lbl.setPlainText(text if text else "No summary returned.")
+            self.release_output_lbl.setPlainText(text if text else "No synthesis returned.")
 
         if info.complete:
-            self._set_status("Jetson summary complete — output updated", GREEN)
+            self._set_status("Jetson synthesis complete - output updated", GREEN)
             self._stop_device_response_polling()
         else:
-            self._set_status("Streaming summary from Jetson…", ORANGE)
+            self._set_status("Streaming synthesis from Jetson...", ORANGE)
 
     # ─────────────────────────────────────────────────────────────
     # Polling — identical logic to SparkPipeline._on_poll_tick
@@ -1823,13 +1826,13 @@ class SparkPanel(QWidget):
             self.hid_signals.release_finished.emit()
 
     def _on_summarize(self):
-        """Send lightweight summarize signal — Jetson reads context from its own DB."""
-        request = build_summarize_command()
+        """Send anchored session synthesis command; Jetson builds the source bundle."""
+        request = build_synthesize_session_request()
         self._start_feature_request(
             AppCommand.FEATURE_1,
             request=request,
-            capture_label="[SUMMARY REQUEST] Summarize active context",
-            status_text="Sending summarize command to Jetson…",
+            capture_label="[SYNTHESIS] Anchor active app and recent context",
+            status_text="Sending session synthesis request to Jetson...",
         )
 
     def _on_test_context(self):

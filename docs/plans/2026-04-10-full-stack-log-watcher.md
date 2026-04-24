@@ -22,7 +22,7 @@
   Unit tests for source mapping, state transitions, quiet gating, expectation allowlist behavior, and startup/file-tail semantics.
 - Possibly reuse as reference only: `watch_pico_cdc_debug.py`
   Do not re-open Pico CDC in default mode; only borrow naming/style ideas if useful.
-- Reference: `docs/superpowers/specs/2026-04-10-full-stack-log-watcher-design.md`
+- Reference: `docs/specs/2026-04-10-full-stack-log-watcher-design.md`
 
 ## Task 1: Add Stable App File Logging
 

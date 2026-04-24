@@ -57,27 +57,29 @@ python3 -u pico_llm_bridge.py --port /dev/ttyTHS0 --baud 115200 --db /mnt/usb_dr
 5. Verify the Jetson sees valid `CONTEXT_NEW` and `CONTEXT_UPDATE` packets and continues parsing them without framing errors.
 6. Verify the Jetson database updates in `/mnt/usb_drive/demo/pico_bridge/jetson_spark.db`.
 
-## PB1-PB4 inactivity
+## PB1 synthesis and PB2-PB4 inactivity
 
-1. Press `PB1` through `PB4` on the board.
-2. Verify nothing new appears on the device itself.
-3. Verify no host-side or Jetson-side action is triggered by those presses.
+1. Press `PB1` on the board.
+2. Verify the Pico starts a Jetson-backed `FEATURE_1` request carrying `{"command":"synthesize_session","window_minutes":30}`.
+3. Press `PB2` through `PB4`.
+4. Verify those buttons do not start a Jetson request in the current runtime.
 
-## Summarize path
+## Synthesis path
 
 1. With the Jetson bridge still running and the llama.cpp server reachable on the Jetson, run:
 
 ```python
 from host_pc.raw_hid import AppCommand, SparkHIDClient
-from host_pc.summarize_stream import build_test_summary_request
+from host_pc.summarize_stream import build_synthesize_session_request
 
 client = SparkHIDClient()
-print(client.stream_round_trip_text(AppCommand.FEATURE_1, build_test_summary_request()))
+print(client.stream_round_trip_text(AppCommand.FEATURE_1, build_synthesize_session_request()))
 ```
 
 2. Verify:
    - the Pico accepts the `FEATURE_1` upload
-   - the Jetson receives a framed `SUMMARIZE_REQUEST`
+   - the Jetson receives a framed `SUMMARIZE_REQUEST` carrying `synthesize_session`
+   - the Jetson prompt anchors on the active app and uses related recent context when available
    - the Jetson sends multiple `SUMMARIZE_CHUNK` packets for longer responses
    - the host receives incremental response updates over Raw HID
    - the request completes with a final streamed result instead of timing out

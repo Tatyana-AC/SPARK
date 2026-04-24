@@ -382,6 +382,7 @@ class SshTailSource:
 
     @staticmethod
     def _overlap_size(previous_lines, current_lines):
+        current_lines = tuple(current_lines)
         max_overlap = min(len(previous_lines), len(current_lines))
         for overlap in range(max_overlap, 0, -1):
             if previous_lines[-overlap:] == current_lines[:overlap]:
@@ -483,6 +484,19 @@ def _strip_bridge_log_prefix(line):
 
 def map_bridge_log_line(line):
     message = _strip_bridge_log_prefix(line)
+
+    if message.startswith("[UART IN] summarize_request"):
+        command_match = re.search(r"\bcommand=([^\s]+)", message)
+        chars_match = re.search(r"\bchars=(\d+)", message)
+        detail = []
+        if command_match:
+            detail.append(f"command={command_match.group(1)}")
+        if chars_match:
+            detail.append(f"chars={chars_match.group(1)}")
+        summary = "request received"
+        if detail:
+            summary = f"{summary} ({', '.join(detail)})"
+        return LogEvent(source="JETSON-BRIDGE", message=summary)
 
     if message.startswith("Handling summarize request:"):
         return LogEvent(source="JETSON-BRIDGE", message="summarize request started")

@@ -80,7 +80,6 @@ class SparkPanelUiTests(unittest.TestCase):
             [
                 "Custom Context",
                 "Reformat Selection",
-                "Test Context",
                 "View Jetson DB",
             ],
         )
@@ -88,7 +87,21 @@ class SparkPanelUiTests(unittest.TestCase):
         self.assertTrue(panel.btn_capture.isHidden())
         self.assertTrue(panel.btn_release.isHidden())
         self.assertTrue(panel.btn_summarize.isHidden())
+        self.assertTrue(panel.btn_test_context.isHidden())
         self.assertTrue(panel.btn_history.isHidden())
+
+    def test_no_visible_button_exposes_legacy_summarize_actions(self):
+        panel = self._make_panel()
+
+        visible_titles = [
+            btn._title_lbl.text()
+            for btn in panel.findChildren(spark_app_v2.ActionButton)
+            if not btn.isHidden()
+        ]
+
+        self.assertNotIn("Summarize Window", visible_titles)
+        self.assertNotIn("Test Context", visible_titles)
+        self.assertEqual(panel.btn_summarize._title_lbl.text(), "Synthesis")
 
     def test_view_jetson_db_button_opens_dialog(self):
         panel = self._make_panel()
@@ -519,6 +532,20 @@ class SparkPanelUiTests(unittest.TestCase):
 
         clipboard.setText.assert_called_once_with("reformatted text")
 
+    def test_reformat_empty_completion_uses_reformat_fallback(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_2
+        panel._set_status = mock.Mock()
+        clipboard = mock.Mock()
+
+        with mock.patch.object(spark_app_v2.QApplication, "clipboard", return_value=clipboard):
+            panel._on_summarize_succeeded("")
+
+        self.assertEqual(panel.release_output_lbl.toPlainText(), "No summary returned.")
+        self.assertNotEqual(panel.release_output_lbl.toPlainText(), "No synthesis returned.")
+        clipboard.setText.assert_not_called()
+        panel._set_status.assert_called_once_with("Jetson reformat complete — output updated", spark_app_v2.GREEN)
+
     def test_summary_completion_does_not_copy_text_to_clipboard(self):
         panel = self._make_panel()
         panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_1
@@ -529,6 +556,17 @@ class SparkPanelUiTests(unittest.TestCase):
             panel._on_summarize_succeeded("summary text")
 
         clipboard.setText.assert_not_called()
+        panel._set_status.assert_called_once_with("Jetson synthesis complete - output updated", spark_app_v2.GREEN)
+
+    def test_synthesis_streaming_status_text_is_feature_specific(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_1
+        panel._set_status = mock.Mock()
+
+        panel._on_summarize_progress("partial synthesis")
+
+        panel._set_status.assert_called_once_with("Streaming synthesis from Jetson...", spark_app_v2.ORANGE)
+        self.assertEqual(panel.release_output_lbl.toPlainText(), "partial synthesis")
 
     def test_reformat_streaming_status_text_is_feature_specific(self):
         panel = self._make_panel()
@@ -606,22 +644,20 @@ class SparkPanelUiTests(unittest.TestCase):
 
         self.assertEqual(hid_client.get_debug_event.call_count, 4)
 
-    def test_summarize_sends_lightweight_command(self):
-        """_on_summarize sends a lightweight DB-backed command, no window scraping."""
-        hid_client = mock.Mock()
-        hid_client.is_connected.return_value = True
-
-        panel = self._make_panel(hid_client=hid_client)
+    def test_synthesis_action_sends_session_synthesis_command(self):
+        panel = self._make_panel()
         panel._start_feature_request = mock.Mock()
-        panel._on_summarize()
 
+        with mock.patch.object(spark_app_v2, "build_synthesize_session_request", return_value="SYNTH_REQUEST") as build:
+            panel._on_summarize()
+
+        build.assert_called_once_with()
         panel._start_feature_request.assert_called_once()
         args, kwargs = panel._start_feature_request.call_args
-        request = kwargs.get("request", args[1] if len(args) > 1 else None)
-        app_command = kwargs.get("app_command", args[0])
-        self.assertIn("summarize", request)
-        self.assertNotIn("window_text", request)
-        self.assertEqual(app_command, spark_app_v2.AppCommand.FEATURE_1)
+        self.assertEqual(kwargs.get("app_command", args[0]), spark_app_v2.AppCommand.FEATURE_1)
+        self.assertEqual(kwargs.get("request", args[1] if len(args) > 1 else None), "SYNTH_REQUEST")
+        self.assertIn("SYNTHESIS", kwargs.get("capture_label", ""))
+        self.assertIn("synthesis", kwargs.get("status_text", "").lower())
 
     def test_unsolicited_device_response_updates_release_output(self):
         hid_client = mock.Mock()
@@ -636,7 +672,7 @@ class SparkPanelUiTests(unittest.TestCase):
 
         hid_client.fetch_response.assert_called_once_with(info)
         self.assertEqual(panel.release_output_lbl.toPlainText(), "Partial output")
-        self.assertEqual(panel.status_lbl.text(), "Streaming summary from Jetson…")
+        self.assertEqual(panel.status_lbl.text(), "Streaming synthesis from Jetson...")
 
     def test_response_poll_timer_starts_idle(self):
         panel = self._make_panel()

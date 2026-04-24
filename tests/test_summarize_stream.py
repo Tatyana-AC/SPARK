@@ -35,6 +35,21 @@ class SummarizeStreamTests(unittest.TestCase):
 
         self.assertEqual(request["command"], "summarize")
 
+    def test_build_synthesize_session_request_uses_fixed_default_window(self):
+        from host_pc.summarize_stream import build_synthesize_session_request
+
+        request = json.loads(build_synthesize_session_request())
+
+        self.assertEqual(request["command"], "synthesize_session")
+        self.assertEqual(request["window_minutes"], 30)
+        self.assertEqual(len(request), 2)
+
+    def test_build_synthesize_session_request_rejects_non_positive_windows(self):
+        from host_pc.summarize_stream import build_synthesize_session_request
+
+        with self.assertRaises(ValueError):
+            build_synthesize_session_request(0)
+
     def test_build_reformat_request_trims_and_serializes_selected_text(self):
         from host_pc.summarize_stream import build_reformat_request
 

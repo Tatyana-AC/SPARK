@@ -294,6 +294,45 @@ class JetsonDB:
             (limit,),
         ).fetchall()
 
+    def get_recent_sessions_since(self, cutoff_timestamp: float, *, limit: int = 20, dedupe: bool = True):
+        limit = int(limit)
+        if limit <= 0:
+            return []
+
+        if not dedupe:
+            return self._conn.execute(
+                f"""
+                SELECT *
+                FROM sessions
+                WHERE COALESCE(host_observed_at, updated_at) >= ?
+                ORDER BY {_SESSION_RECENCY_ORDER}
+                LIMIT ?
+                """,
+                (float(cutoff_timestamp), limit),
+            ).fetchall()
+
+        rows = self._conn.execute(
+            f"""
+            SELECT *
+            FROM sessions
+            WHERE COALESCE(host_observed_at, updated_at) >= ?
+            ORDER BY {_SESSION_RECENCY_ORDER}
+            """,
+            (float(cutoff_timestamp),),
+        ).fetchall()
+
+        seen = set()
+        deduped = []
+        for row in rows:
+            key = row["context_key"]
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+            if len(deduped) >= limit:
+                break
+        return deduped
+
     def get_recent_sessions_matching_text(self, query_text: str, limit: int = 3):
         normalized_query = _normalize(query_text)
         if not normalized_query:

@@ -22,7 +22,7 @@
   Keep the main panel action-grid assertions current and verify the new Jetson DB action is visible and wired.
 - Create: `tests/test_jetson_db_viewer_ui.py`
   Focused `unittest`-style Qt tests for dialog refresh behavior, disabled refresh during single-flight load, table selector population, paging controls, retry exhaustion, and failure-state messaging.
-- Reference: `docs/superpowers/specs/2026-04-15-jetson-db-viewer-design.md`
+- Reference: `docs/specs/2026-04-15-jetson-db-viewer-design.md`
 
 ## Task 1: Build Snapshot Creation And Validation Helper
 
