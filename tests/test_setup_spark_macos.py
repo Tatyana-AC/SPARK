@@ -45,6 +45,9 @@ class SetupSparkMacOSTests(unittest.TestCase):
         self.assertIn("rsync", result.stdout)
         self.assertIn("sidac@10.0.0.2:/mnt/usb_drive/demo/pico_bridge/", result.stdout)
         self.assertIn("chmod\\ +x\\ \\'/mnt/usb_drive/demo/pico_bridge/run_bridge.sh\\'", result.stdout)
+        self.assertIn("Jetson time", result.stdout)
+        self.assertIn("sudo date -s", result.stdout)
+        self.assertIn("hwclock", result.stdout)
         self.assertNotIn("spark_app_v2.py launched", result.stdout)
         self.assertNotIn("tools/monitoring/watch_full_stack.py launched", result.stdout)
 

@@ -73,12 +73,9 @@ class BridgeAppTests(unittest.TestCase):
         self.assertEqual(result["accepted_count"], len(payload))
         self.assertEqual(result["detail"], "forwarded")
 
-    def test_button_0_uses_session_synthesis_payload(self):
+    def test_button_0_no_longer_originates_synthesis_request(self):
         from pico.bridge_app import BridgeApp
-        from pico.upload_protocol import AppCommand
-        from host_pc.summarize_stream import build_synthesize_session_request
 
-        payload = build_synthesize_session_request()
         transport = types.SimpleNamespace(start_request=mock.Mock())
         app = BridgeApp(
             jetson_transport=transport,
@@ -87,13 +84,11 @@ class BridgeAppTests(unittest.TestCase):
 
         result = app.handle_button_press(0)
 
-        transport.start_request.assert_called_once_with(payload.encode("utf-8"))
-        self.assertEqual(result["accepted_text"], payload)
-        self.assertEqual(result["app_command"], int(AppCommand.FEATURE_1))
+        transport.start_request.assert_not_called()
+        self.assertIsNone(result)
 
     def test_button_0_skips_when_transport_is_busy(self):
         from pico.bridge_app import BridgeApp, RuntimeStatus
-        from pico.upload_protocol import AppCommand, StatusCode
 
         transport = types.SimpleNamespace(start_request=mock.Mock())
         app = BridgeApp(
@@ -110,15 +105,7 @@ class BridgeAppTests(unittest.TestCase):
         result = app.handle_button_press(0)
 
         transport.start_request.assert_not_called()
-        self.assertEqual(
-            result,
-            {
-                "status_code": StatusCode.BUSY,
-                "detail": "busy",
-                "accepted_count": 0,
-                "skipped_count": 0,
-            },
-        )
+        self.assertIsNone(result)
 
     def test_feature_1_returns_uart_unavailable_when_transport_missing(self):
         from pico.bridge_app import BridgeApp
@@ -220,7 +207,6 @@ class BridgeAppTests(unittest.TestCase):
 
     def test_button_start_failure_is_contained_to_result(self):
         from pico.bridge_app import BridgeApp
-        from pico.upload_protocol import StatusCode
 
         transport = types.SimpleNamespace(start_request=mock.Mock(side_effect=ValueError("boom")))
         app = BridgeApp(
@@ -230,32 +216,20 @@ class BridgeAppTests(unittest.TestCase):
 
         result = app.handle_button_press(0)
 
-        self.assertEqual(
-            result,
-            {
-                "status_code": StatusCode.INTERNAL_ERROR,
-                "detail": "start:ValueError",
-                "accepted_count": 0,
-                "skipped_count": 0,
-            },
-        )
+        transport.start_request.assert_not_called()
+        self.assertIsNone(result)
 
-    def test_feature_1_returns_busy_while_button_started_request_is_active(self):
+    def test_feature_1_is_not_blocked_by_button_0_after_pb1_becomes_host_mediated(self):
         from pico.bridge_app import BridgeApp, RuntimeStatus
-        from pico.upload_protocol import AppCommand, StatusCode
+        from pico.upload_protocol import AppCommand
 
-        transport = types.SimpleNamespace(request_active=False)
-
-        def start_request(_payload):
-            transport.request_active = True
-
-        transport.start_request = mock.Mock(side_effect=start_request)
+        transport = types.SimpleNamespace(start_request=mock.Mock())
         app = BridgeApp(
             jetson_transport=transport,
             runtime_status=lambda: RuntimeStatus(
-                cdc_debug_status="heartbeat|sent:27",
+                cdc_debug_status="heartbeat|idle",
                 loop_checkpoint="after_response_sync",
-                request_active=transport.request_active,
+                request_active=False,
                 response_length=0,
                 response_complete=False,
             ),
@@ -264,16 +238,8 @@ class BridgeAppTests(unittest.TestCase):
         button_result = app.handle_button_press(0)
         host_result = app.prepare_upload_result(AppCommand.FEATURE_1, "text")
 
-        self.assertEqual(button_result["detail"], "forwarded")
-        self.assertEqual(
-            host_result,
-            {
-                "status_code": StatusCode.BUSY,
-                "detail": "busy",
-                "accepted_count": 0,
-                "skipped_count": 0,
-            },
-        )
+        self.assertIsNone(button_result)
+        self.assertEqual(host_result["detail"], "forwarded")
         self.assertEqual(transport.start_request.call_count, 1)
 
     def test_echo_response_formats_runtime_status_text(self):

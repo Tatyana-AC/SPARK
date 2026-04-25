@@ -3,10 +3,6 @@ try:
 except ImportError:
     from upload_protocol import AppCommand, StatusCode
 
-
-SYNTHESIZE_SESSION_COMMAND_TEXT = '{"command": "synthesize_session", "window_minutes": 30}'
-
-
 class RuntimeStatus:
     def __init__(
         self,
@@ -138,11 +134,7 @@ class BridgeApp:
         if index != 0:
             return None
 
-        return self._forward_request_text(
-            SYNTHESIZE_SESSION_COMMAND_TEXT,
-            self._runtime_status(),
-            AppCommand.FEATURE_1,
-        )
+        return None
 
 
 def build_text_preparer(*, jetson_transport, runtime_status):

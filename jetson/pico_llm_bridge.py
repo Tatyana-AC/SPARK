@@ -163,11 +163,31 @@ SYNTHESIS_SYSTEM_PROMPT = (
     "You perform anchored session synthesis for SPARK. "
     "The active app is the anchor. Use only related recent context that helps explain or extend the active work."
 )
+SYNTHESIS_KEYWORD_EXTRACTION_SYSTEM_PROMPT = (
+    "You extract concise retrieval keywords from the active anchor context for SPARK session synthesis. "
+    "Return JSON only."
+)
+
+SYNTHESIS_KEYWORD_JSON_SCHEMA = {
+    "name": "synthesis_keywords",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["keywords"],
+        "additionalProperties": False,
+    },
+}
 
 _SYNTHESIS_MAX_RELATED = 5
 _SYNTHESIS_SOURCE_CHARS = 1200
 _SYNTHESIS_ANCHOR_TEXT_RELEVANCE_CHARS = 600
-_SYNTHESIS_MIN_RELEVANCE_SCORE = 2
+_SYNTHESIS_MAX_KEYWORDS = 8
+_SYNTHESIS_KEYWORD_MATCH_LIMIT = 5
 
 
 def _button_press_request_text(button_id: int) -> str:
@@ -292,34 +312,120 @@ def _extract_keyword_snippet(text: str, selected_text: str, max_chars: int = _KE
     return snippet
 
 
-def _extract_relevance_terms(*parts: str) -> set[str]:
-    text = " ".join(part or "" for part in parts).lower()
-    raw_terms = re.findall(r"[a-z0-9][a-z0-9-]{2,}", text)
-    stop = {
-        "the",
-        "and",
-        "for",
-        "with",
-        "from",
-        "this",
-        "that",
-        "window",
-        "https",
-        "www",
-        "spark",
-        "repo",
+def _is_related_session_candidate(anchor, row) -> bool:
+    anchor_app = (anchor["app_name"] or "").strip().lower()
+    row_app = (row["app_name"] or "").strip().lower()
+    row_source = (row["source"] or "").strip().lower()
+    row_url = (row["url"] or "").strip()
+    same_app = False
+    if anchor_app and row_app:
+        same_app = anchor_app == row_app or anchor_app in row_app or row_app in anchor_app
+
+    if same_app and (not row_url or row_source != "web_content"):
+        return False
+
+    return True
+
+
+def _build_synthesis_keyword_prompt(anchor) -> str:
+    return "\n".join(
+        [
+            "Extract a short list of retrieval keywords from this anchor context.",
+            "Return the most topic-bearing entities, concepts, events, organizations, people, and laws only.",
+            "Expand abbreviations into both forms when relevant, for example include both 'EIC' and 'East India Company'.",
+            "Do not include generic UI words, browser names, filler words, or broad terms that would match unrelated technical pages.",
+            f"Return 3 to {_SYNTHESIS_MAX_KEYWORDS} keywords.",
+            "",
+            "ANCHOR SOURCE",
+            f"App: {(anchor['app_name'] or '').strip() or '(unknown app)'}",
+            f"Window title: {(anchor['window_title'] or '').strip() or '(untitled window)'}",
+            f"Tab title: {(anchor['tab_title'] or '').strip() or '(untitled tab)'}",
+            f"URL: {(anchor['url'] or '').strip() or '(no url)'}",
+            "Visible text:",
+            _trim_synthesis_text((anchor["text"] or "")[:_SYNTHESIS_SOURCE_CHARS]),
+        ]
+    ).strip()
+
+
+def _parse_synthesis_keywords(raw: str) -> list[str]:
+    try:
+        payload = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return []
+    values = payload.get("keywords")
+    if not isinstance(values, list):
+        return []
+
+    seen = set()
+    keywords: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        keyword = value.strip()
+        if not keyword:
+            continue
+        lowered = keyword.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        keywords.append(keyword)
+        if len(keywords) >= _SYNTHESIS_MAX_KEYWORDS:
+            break
+    return keywords
+
+
+def _prepare_keyword_extraction_http_request(url: str, prompt: str) -> tuple[str, dict]:
+    endpoint = f"{url}/v1/chat/completions"
+    payload = {
+        "messages": [
+            {"role": "system", "content": SYNTHESIS_KEYWORD_EXTRACTION_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": SYNTHESIS_KEYWORD_JSON_SCHEMA,
+        },
     }
-    return {term for term in raw_terms if term not in stop}
+    return endpoint, payload
 
 
-def _score_related_session(anchor_terms: set[str], row) -> int:
-    haystack_terms = _extract_relevance_terms(
-        row["window_title"],
-        row["tab_title"],
-        row["url"],
-        row["text"],
+def _collect_synthesis_related_rows(db, anchor, *, keywords: list[str], cutoff_timestamp: float):
+    hits_by_context: dict[str, dict] = {}
+    for keyword in keywords:
+        for row in db.get_recent_sessions_matching_text_since(
+            keyword,
+            cutoff_timestamp,
+            limit=_SYNTHESIS_KEYWORD_MATCH_LIMIT,
+            dedupe=True,
+        ):
+            if int(row["id"]) == int(anchor["id"]):
+                continue
+            if not _is_related_session_candidate(anchor, row):
+                continue
+
+            context_key = row["context_key"]
+            lowered = keyword.strip().lower()
+            entry = hits_by_context.setdefault(
+                context_key,
+                {"row": row, "keywords": set()},
+            )
+            entry["keywords"].add(lowered)
+
+    ranked = sorted(
+        hits_by_context.values(),
+        key=lambda entry: (
+            -len(entry["keywords"]),
+            -(entry["row"]["host_observed_at"] or entry["row"]["updated_at"] or 0),
+            -int(entry["row"]["id"]),
+        ),
     )
-    return len(anchor_terms & haystack_terms)
+    return [entry["row"] for entry in ranked[:_SYNTHESIS_MAX_RELATED]]
+
+
+def _synthesis_cutoff_timestamp(anchor, *, window_minutes: int) -> float:
+    anchor_timestamp = anchor["host_observed_at"] or anchor["updated_at"] or time.time()
+    return float(anchor_timestamp) - (int(window_minutes) * 60)
 
 
 def _trim_synthesis_text(text: str) -> str:
@@ -347,21 +453,73 @@ def _build_synthesize_session_prompt(anchor, related_rows, *, window_minutes: in
         "The active app is the anchor. Summarize it first, then use related recent context "
         f"from the last {window_minutes} minutes only when it helps explain or extend the active work.",
         "Do not include unrelated recent windows.",
-        "If related sources are listed, include a 'Related context' section in your answer "
+        "Only include a 'Related context' section if related sources are listed below, "
         "and mention what each related source contributes.",
-        "If no related context is found, say that the synthesis is based only on the active app.",
+        "If no related sources are listed below, do not mention related context, "
+        "related sources, or the absence of related context at all.",
         "",
         "ANCHOR SOURCE",
     ]
     _append_synthesis_source(lines, anchor)
-    lines.extend(["", "RELATED RECENT SOURCES"])
     if related_rows:
+        lines.extend(["", "RELATED RECENT SOURCES"])
         for idx, row in enumerate(related_rows, start=1):
             lines.extend(["", f"Related source {idx}:"])
             _append_synthesis_source(lines, row)
-    else:
-        lines.append("No related recent context cleared the relevance threshold.")
     return "\n".join(lines).strip()
+
+
+def _missing_synthesis_anchor_message(anchor_context_key: str | None) -> str:
+    anchor_context_key = (anchor_context_key or "").strip()
+    if not anchor_context_key:
+        return "(missing anchor_context_key for synthesize_session)"
+    return f"(no session found for anchor_context_key: {anchor_context_key})"
+
+
+def _synthesis_request_error_message(llm_prompt: str) -> str | None:
+    if llm_prompt == "(missing anchor_context_key for synthesize_session)":
+        return "[ERROR] Cannot synthesize without anchor_context_key."
+    if isinstance(llm_prompt, str) and llm_prompt.startswith("(no session found for anchor_context_key:"):
+        return "[ERROR] Cannot synthesize: no session found for anchor_context_key."
+    return None
+
+
+_RELATED_CONTEXT_HEADING_RE = re.compile(
+    r"(?im)^(?:#{1,6}\s*)?related context(?:\s*\(none\))?\s*:?\s*$"
+)
+_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6}\s+.+)$")
+
+
+def _synthesis_prompt_has_related_sources(llm_prompt: str) -> bool:
+    return isinstance(llm_prompt, str) and "RELATED RECENT SOURCES" in llm_prompt
+
+
+def _strip_empty_related_context_sections(text: str) -> str:
+    if not isinstance(text, str) or not text.strip():
+        return text
+
+    lines = text.splitlines()
+    kept: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not _RELATED_CONTEXT_HEADING_RE.match(line.strip()):
+            kept.append(line)
+            index += 1
+            continue
+
+        index += 1
+        while index < len(lines):
+            candidate = lines[index]
+            stripped = candidate.strip()
+            if _MARKDOWN_HEADING_RE.match(stripped) and not _RELATED_CONTEXT_HEADING_RE.match(stripped):
+                break
+            index += 1
+
+        while kept and not kept[-1].strip():
+            kept.pop()
+
+    return "\n".join(kept).strip()
 
 
 def _parse_request(raw_prompt: str) -> dict:
@@ -430,29 +588,24 @@ def build_llm_request(
     if command == "synthesize_session":
         if db is None:
             return SYNTHESIS_SYSTEM_PROMPT, "(no database available)"
-        session = db.get_active_session()
+        anchor_context_key = request.get("anchor_context_key")
+        session = db.get_latest_session_for_context_key(anchor_context_key)
         if session is None:
-            return SYNTHESIS_SYSTEM_PROMPT, "(no active session)"
+            return SYNTHESIS_SYSTEM_PROMPT, _missing_synthesis_anchor_message(anchor_context_key)
         window_minutes = int(request.get("window_minutes") or 30)
-        cutoff = time.time() - (window_minutes * 60)
-        candidates = db.get_recent_sessions_since(cutoff, limit=20, dedupe=True)
-        anchor_terms = _extract_relevance_terms(
-            session["window_title"],
-            session["tab_title"],
-            session["url"],
-            (session["text"] or "")[:_SYNTHESIS_ANCHOR_TEXT_RELEVANCE_CHARS],
+        cutoff = _synthesis_cutoff_timestamp(session, window_minutes=window_minutes)
+        keywords = request.get("keywords") or []
+        if not isinstance(keywords, list):
+            keywords = []
+        related = _collect_synthesis_related_rows(
+            db,
+            session,
+            keywords=keywords,
+            cutoff_timestamp=cutoff,
         )
-        related = []
-        for row in candidates:
-            if int(row["id"]) == int(session["id"]):
-                continue
-            score = _score_related_session(anchor_terms, row)
-            if score >= _SYNTHESIS_MIN_RELEVANCE_SCORE:
-                related.append((score, row))
-        related.sort(key=lambda item: item[0], reverse=True)
         user_prompt = _build_synthesize_session_prompt(
             session,
-            [row for _, row in related[:_SYNTHESIS_MAX_RELATED]],
+            related,
             window_minutes=window_minutes,
         )
         return SYNTHESIS_SYSTEM_PROMPT, user_prompt
@@ -607,12 +760,48 @@ def _emit_summary_response(ser, text: str) -> None:
 def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
     request = _parse_request(request_text)
     command = request.get("command") if request else None
-    llm_system_prompt, llm_prompt = build_llm_request(
-        request_text,
-        args.system_prompt,
-        db=db,
-        _request=request,
-    )
+    llm_system_prompt = args.system_prompt
+    llm_prompt = ""
+    if command == "synthesize_session":
+        if db is None:
+            llm_system_prompt, llm_prompt = SYNTHESIS_SYSTEM_PROMPT, "(no database available)"
+        else:
+            anchor_context_key = request.get("anchor_context_key")
+            anchor = db.get_latest_session_for_context_key(anchor_context_key)
+            if anchor is None:
+                llm_system_prompt, llm_prompt = (
+                    SYNTHESIS_SYSTEM_PROMPT,
+                    _missing_synthesis_anchor_message(anchor_context_key),
+                )
+            else:
+                window_minutes = int(request.get("window_minutes") or 30)
+                cutoff = _synthesis_cutoff_timestamp(anchor, window_minutes=window_minutes)
+                keyword_prompt = _build_synthesis_keyword_prompt(anchor)
+                keyword_endpoint, keyword_payload = _prepare_keyword_extraction_http_request(
+                    args.llm_url,
+                    keyword_prompt,
+                )
+                try:
+                    keyword_raw = query_llm_blocking(keyword_endpoint, keyword_payload, args.timeout)
+                except Exception:
+                    logger.exception("Keyword extraction request failed for synthesize_session")
+                    keyword_raw = ""
+                keywords = _parse_synthesis_keywords(keyword_raw)
+                request = dict(request)
+                request["keywords"] = keywords
+                llm_system_prompt, llm_prompt = build_llm_request(
+                    json.dumps(request),
+                    args.system_prompt,
+                    db=db,
+                    _request=request,
+                )
+    else:
+        llm_system_prompt, llm_prompt = build_llm_request(
+            request_text,
+            args.system_prompt,
+            db=db,
+            _request=request,
+        )
     structured = args.structured and command not in {
         "reformat_selection",
         "respond_selection",
@@ -627,6 +816,15 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
         args.llm_url,
         command,
     )
+
+    synthesis_error_msg = _synthesis_request_error_message(llm_prompt)
+    if synthesis_error_msg is not None:
+        logger.warning("%s skipped LLM: %s", command, synthesis_error_msg)
+        try:
+            _write_bridge_packet(ser, build_error(synthesis_error_msg), label="error")
+        except Exception:
+            logger.exception("Failed to send synthesis error back to Pico")
+        return
 
     # If no context has been received from the host, skip the LLM and send
     # a diagnostic warning back so the user knows what went wrong.
@@ -679,6 +877,9 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
         stream=args.stream,
         structured=structured,
     )
+    synthesize_without_related = (
+        command == "synthesize_session" and not _synthesis_prompt_has_related_sources(llm_prompt)
+    )
 
     try:
         audit_response_text = ""
@@ -705,15 +906,22 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
                     streamed_any = True
                     chunk_count += 1
                     emitted_chunks.append(chunk)
-                    _emit_summary_response(ser, chunk)
+                    if not synthesize_without_related:
+                        _emit_summary_response(ser, chunk)
                 if not streamed_any:
-                    _emit_summary_response(ser, "")
+                    if not synthesize_without_related:
+                        _emit_summary_response(ser, "")
                 audit_response_text = "".join(emitted_chunks)
+                if synthesize_without_related:
+                    audit_response_text = _strip_empty_related_context_sections(audit_response_text)
+                    _emit_summary_response(ser, audit_response_text)
                 logger.info("Summarize request completed with %d streamed chunk(s)", chunk_count)
         else:
             response = query_llm_blocking(endpoint, request_payload, args.timeout)
             if structured:
                 response = format_structured_summary(response)
+            if synthesize_without_related:
+                response = _strip_empty_related_context_sections(response)
             _emit_summary_response(ser, response)
             audit_response_text = response
             logger.info("Summarize request completed with blocking response (%d chars)", len(response))

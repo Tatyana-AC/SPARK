@@ -29,6 +29,7 @@ chmod +x setup_spark_macos.sh
 - install or repair `requirements.txt` inside that virtualenv
 - verify macOS Accessibility permissions for the repo Python
 - verify batch-mode SSH access to the Jetson
+- sync the Jetson system clock from the host Mac and refresh available Jetson RTC devices
 - deploy the Pico runtime to the mounted `CIRCUITPY` volume
 - sync the Jetson bridge bundle over SSH
 - start or restart the Jetson services
@@ -41,7 +42,7 @@ Important macOS setup notes:
 - The first run may trigger macOS permission prompts. If Terminal or the repo Python asks for Accessibility or Input Monitoring, grant access, then rerun `./setup_spark_macos.sh`.
 - If you launch `./setup_spark_macos.sh` from a third-party terminal app such as `Cmux`, grant Accessibility to that terminal app as well. Accessibility granted only to the default Terminal app does not carry over to a different terminal host process.
 - If `CIRCUITPY` is mounted read-only, the script now stops before deployment and tells you to reconnect or reset the Pico so the volume remounts read-write. Rerun the same command after the board remounts.
-- The script expects passwordless SSH to `sidac@192.168.55.1` by default. Override host, user, or remote path with flags when needed:
+- The script expects passwordless SSH to `sidac@192.168.55.1` by default, and it also uses passwordless `sudo` on the Jetson for UART permissions and clock sync. Override host, user, or remote path with flags when needed:
 
 ```bash
 ./setup_spark_macos.sh --jetson-host 192.168.55.1 --jetson-user sidac --jetson-remote-path /mnt/usb_drive
@@ -226,7 +227,7 @@ If recovery stops on a Pico message about a read-only `CIRCUITPY` mount, reconne
 - `python tools/pico/deploy_to_pico.py` is the cross-platform helper to push the Pico firmware and `adafruit_hid` onto a mounted `CIRCUITPY` board.
 - Deploy now exact-syncs the default Pico runtime and removes stale non-preserved files from `CIRCUITPY`; use `--dry-run` to inspect planned deletions first.
 - `Release Text` uploads text to the Pico, waits for an acknowledgment, and updates the local `RELEASE OUTPUT` panel. It does not type text back into the currently focused external app.
-- `Synthesis` sends `{"command":"synthesize_session","window_minutes":30}` to the Pico over Raw HID. The Pico forwards that request to Jetson over UART, and the host streams the Jetson response into `RELEASE OUTPUT`.
+- `Synthesis` sends `{"command":"synthesize_session","window_minutes":30,"anchor_context_key":"..."}` to the Pico over Raw HID. The host computes `anchor_context_key` from the current active app using the same `app_name|url` / `app_name|window_title` rule Jetson stores in `sessions`, and the host streams the Jetson response into `RELEASE OUTPUT`.
 - `View Jetson DB` opens a read-only snapshot viewer for `Z:\demo\pico_bridge\jetson_spark.db`, including table paging and retry-safe refresh behavior.
 - Browser polling now uses `host_pc/web_content.py` plus `host_pc/web_content_windows.py` to reject noisy browser chrome, prefer real live-tab text, and fall back to HTTP article extraction when appropriate.
 - Jetson now owns session synthesis prompt wrapping. The active app is the anchor, and related context from the fixed last 30 minutes can be included when it matches the active topic.

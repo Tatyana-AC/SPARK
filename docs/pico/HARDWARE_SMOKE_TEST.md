@@ -60,7 +60,7 @@ python3 -u pico_llm_bridge.py --port /dev/ttyTHS0 --baud 115200 --db /mnt/usb_dr
 ## PB1 synthesis and PB2-PB4 inactivity
 
 1. Press `PB1` on the board.
-2. Verify the Pico starts a Jetson-backed `FEATURE_1` request carrying `{"command":"synthesize_session","window_minutes":30}`.
+2. Verify the host starts a Jetson-backed `FEATURE_1` request carrying `{"command":"synthesize_session","window_minutes":30,"anchor_context_key":"..."}`.
 3. Press `PB2` through `PB4`.
 4. Verify those buttons do not start a Jetson request in the current runtime.
 
@@ -70,15 +70,23 @@ python3 -u pico_llm_bridge.py --port /dev/ttyTHS0 --baud 115200 --db /mnt/usb_dr
 
 ```python
 from host_pc.raw_hid import AppCommand, SparkHIDClient
-from host_pc.summarize_stream import build_synthesize_session_request
+from host_pc.summarize_stream import build_context_key, build_synthesize_session_request
 
 client = SparkHIDClient()
-print(client.stream_round_trip_text(AppCommand.FEATURE_1, build_synthesize_session_request()))
+anchor_context_key = build_context_key(
+    app_name="Google Chrome",
+    window_title="Boston Tea Party - Wikipedia",
+    url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+)
+print(client.stream_round_trip_text(
+    AppCommand.FEATURE_1,
+    build_synthesize_session_request(anchor_context_key=anchor_context_key),
+))
 ```
 
 2. Verify:
    - the Pico accepts the `FEATURE_1` upload
-   - the Jetson receives a framed `SUMMARIZE_REQUEST` carrying `synthesize_session`
+   - the Jetson receives a framed `SUMMARIZE_REQUEST` carrying `synthesize_session` plus `anchor_context_key`
    - the Jetson prompt anchors on the active app and uses related recent context when available
    - the Jetson sends multiple `SUMMARIZE_CHUNK` packets for longer responses
    - the host receives incremental response updates over Raw HID

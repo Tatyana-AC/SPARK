@@ -288,6 +288,20 @@ class JetsonDB:
             (self._active_session_id,),
         ).fetchone()
 
+    def get_latest_session_for_context_key(self, context_key: str) -> Optional[sqlite3.Row]:
+        if not isinstance(context_key, str) or not context_key:
+            return None
+        return self._conn.execute(
+            f"""
+            SELECT *
+            FROM sessions
+            WHERE context_key = ?
+            ORDER BY {_SESSION_RECENCY_ORDER}
+            LIMIT 1
+            """,
+            (context_key,),
+        ).fetchone()
+
     def get_recent_sessions(self, limit: int = 20):
         return self._conn.execute(
             f"SELECT * FROM sessions ORDER BY {_SESSION_RECENCY_ORDER} LIMIT ?",
@@ -351,6 +365,45 @@ class JetsonDB:
                 matches.append(row)
                 if len(matches) >= limit:
                     break
+        return matches
+
+    def get_recent_sessions_matching_text_since(
+        self,
+        query_text: str,
+        cutoff_timestamp: float,
+        *,
+        limit: int = 20,
+        dedupe: bool = True,
+    ):
+        normalized_query = _normalize(query_text)
+        limit = int(limit)
+        if not normalized_query or limit <= 0:
+            return []
+
+        rows = self._conn.execute(
+            f"""
+            SELECT *
+            FROM sessions
+            WHERE text != ''
+              AND COALESCE(host_observed_at, updated_at) >= ?
+            ORDER BY {_SESSION_RECENCY_ORDER}
+            """,
+            (float(cutoff_timestamp),),
+        ).fetchall()
+
+        matches = []
+        seen = set()
+        for row in rows:
+            if normalized_query not in _normalize(row["text"]):
+                continue
+            if dedupe:
+                key = row["context_key"]
+                if key in seen:
+                    continue
+                seen.add(key)
+            matches.append(row)
+            if len(matches) >= limit:
+                break
         return matches
 
     def close(self) -> None:

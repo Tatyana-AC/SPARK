@@ -275,6 +275,52 @@ class JetsonDBTests(unittest.TestCase):
 
         self.assertEqual([row["window_title"] for row in rows], ["newer host", "older host"])
 
+    def test_get_latest_session_for_context_key_returns_newest_matching_row(self):
+        self.db.on_context_new(
+            make_payload(
+                app_name="Chrome",
+                process_name="chrome.exe",
+                pid=100,
+                window_title="Boston Tea Party",
+                url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                text="older capture",
+                timestamp=100.0,
+            )
+        )
+        self.db.on_context_new(
+            make_payload(
+                app_name="Notes",
+                process_name="notes.exe",
+                pid=200,
+                window_title="History notes",
+                text="related notes",
+                timestamp=150.0,
+            )
+        )
+        self.db.on_context_new(
+            make_payload(
+                app_name="Chrome",
+                process_name="chrome.exe",
+                pid=101,
+                window_title="Boston Tea Party",
+                url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                text="newer capture",
+                timestamp=200.0,
+            )
+        )
+
+        row = self.db.get_latest_session_for_context_key(
+            "Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party"
+        )
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["text"], "newer capture")
+
+    def test_get_latest_session_for_context_key_returns_none_when_missing(self):
+        row = self.db.get_latest_session_for_context_key("Chrome|https://example.com/missing")
+
+        self.assertIsNone(row)
+
     def test_recent_sessions_since_dedupes_context_key_to_newest(self):
         def insert_session(payload):
             self.db._conn.execute(

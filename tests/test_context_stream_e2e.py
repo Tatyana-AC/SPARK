@@ -315,7 +315,7 @@ class ContextStreamEndToEnd(unittest.TestCase):
         self.assertIn("def main(): pass", prompt)
         self.assertNotIn("browsing", prompt)
 
-    def test_button_request_synthesizes_active_anchor_with_related_recent_context(self):
+    def test_button_request_without_anchor_context_key_fails_explicitly(self):
         self.sender.send_context_new(
             _make_snapshot(
                 app_name="Notes",
@@ -344,11 +344,7 @@ class ContextStreamEndToEnd(unittest.TestCase):
         with mock.patch("jetson.pico_llm_bridge.time.time", return_value=2_000.0):
             _, prompt = build_llm_request(_button_press_request_text(1), "sys", db=self.db)
 
-        self.assertIn("ANCHOR SOURCE", prompt)
-        self.assertIn("Boston Tea Party - Wikipedia", prompt)
-        self.assertIn("RELATED RECENT SOURCES", prompt)
-        self.assertIn("History notes", prompt)
-        self.assertIn("last 30 minutes", prompt)
+        self.assertIn("missing anchor_context_key", prompt)
 
     # -- reformat selection path ---
 

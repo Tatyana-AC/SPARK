@@ -644,20 +644,57 @@ class SparkPanelUiTests(unittest.TestCase):
 
         self.assertEqual(hid_client.get_debug_event.call_count, 4)
 
-    def test_synthesis_action_sends_session_synthesis_command(self):
+    def test_synthesis_action_sends_session_synthesis_command_with_anchor_context_key(self):
         panel = self._make_panel()
         panel._start_feature_request = mock.Mock()
+        panel.manager = mock.Mock()
+        panel.manager.get_active_window_info.return_value = types.SimpleNamespace(
+            app_name="Google Chrome",
+            title="Boston Tea Party - Wikipedia",
+            bundle_id="com.google.Chrome",
+            window_handle=123,
+        )
+        panel.privacy_guard = mock.Mock()
+        panel.privacy_guard.is_safe.return_value = True
+        tab = types.SimpleNamespace(
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            tab_title="Boston Tea Party - Wikipedia",
+        )
 
-        with mock.patch.object(spark_app_v2, "build_synthesize_session_request", return_value="SYNTH_REQUEST") as build:
+        with (
+            mock.patch.object(spark_app_v2, "get_browser_tab", return_value=tab),
+            mock.patch.object(spark_app_v2, "build_synthesize_session_request", return_value="SYNTH_REQUEST") as build,
+        ):
             panel._on_summarize()
 
-        build.assert_called_once_with()
+        build.assert_called_once_with(
+            anchor_context_key="Google Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party"
+        )
         panel._start_feature_request.assert_called_once()
         args, kwargs = panel._start_feature_request.call_args
         self.assertEqual(kwargs.get("app_command", args[0]), spark_app_v2.AppCommand.FEATURE_1)
         self.assertEqual(kwargs.get("request", args[1] if len(args) > 1 else None), "SYNTH_REQUEST")
         self.assertIn("SYNTHESIS", kwargs.get("capture_label", ""))
         self.assertIn("synthesis", kwargs.get("status_text", "").lower())
+
+    def test_synthesis_action_fails_fast_when_no_active_window_is_available(self):
+        panel = self._make_panel()
+        panel.manager = mock.Mock()
+        panel.manager.get_active_window_info.return_value = None
+        panel._set_status = mock.Mock()
+
+        with (
+            mock.patch.object(spark_app_v2, "build_synthesize_session_request") as build,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            panel._on_summarize()
+
+        build.assert_not_called()
+        start_feature_request.assert_not_called()
+        panel._set_status.assert_called_once_with(
+            "Cannot synthesize: No active window detected",
+            spark_app_v2.RED,
+        )
 
     def test_unsolicited_device_response_updates_release_output(self):
         hid_client = mock.Mock()
@@ -679,12 +716,33 @@ class SparkPanelUiTests(unittest.TestCase):
 
         self.assertFalse(panel._response_poll_timer.isActive())
 
-    def test_button_one_debug_message_starts_response_polling(self):
+    def test_button_one_post_press_triggers_synthesis_without_starting_response_polling(self):
         panel = self._make_panel()
 
-        panel._on_pico_debug_message("button:1")
+        with mock.patch.object(panel, "_on_summarize") as on_summarize:
+            panel._on_pico_debug_message("post_press:1")
 
-        self.assertTrue(panel._response_poll_timer.isActive())
+        on_summarize.assert_called_once_with()
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_one_edge_debug_message_does_not_trigger_synthesis(self):
+        panel = self._make_panel()
+
+        with mock.patch.object(panel, "_on_summarize") as on_summarize:
+            panel._on_pico_debug_message("button:1")
+
+        on_summarize.assert_not_called()
+        self.assertFalse(panel._response_poll_timer.isActive())
+
+    def test_button_one_post_press_is_ignored_while_request_in_flight(self):
+        panel = self._make_panel()
+        panel._summary_request_in_flight = True
+
+        with mock.patch.object(panel, "_on_summarize") as on_summarize:
+            panel._on_pico_debug_message("post_press:1")
+
+        on_summarize.assert_not_called()
+        self.assertFalse(panel._response_poll_timer.isActive())
 
     def test_button_two_edge_debug_message_does_not_trigger_reformat(self):
         panel = self._make_panel()

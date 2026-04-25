@@ -397,6 +397,83 @@ run_jetson_ssh_script() {
   printf '%s\n' "$script_text" | ssh -o BatchMode=yes -o "ConnectTimeout=$JETSON_SSH_CONNECT_TIMEOUT_SECONDS" "$target" "bash -s"
 }
 
+sync_jetson_time() {
+  local host_epoch
+  local host_time_display
+  local remote_script
+  local output
+  local rc
+  local rtc_synced
+  local rtc_failed
+
+  host_epoch="$(date +%s)"
+  host_time_display="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+
+  if (( DRY_RUN )); then
+    write_status "Jetson time" "DRY-RUN: would sync to $host_time_display via sudo date -s @$host_epoch and hwclock --systohc"
+    return 0
+  fi
+
+  remote_script=$(cat <<EOF
+set -euo pipefail
+
+if ! command -v sudo >/dev/null 2>&1; then
+  echo "SUDO_MISSING"
+  exit 1
+fi
+
+if ! sudo -n true >/dev/null 2>&1; then
+  echo "SUDO_NOPASSWD_REQUIRED"
+  exit 1
+fi
+
+sudo -n date -s "@$host_epoch" >/dev/null
+
+rtc_synced=0
+rtc_failed=0
+for rtc in /dev/rtc /dev/rtc0 /dev/rtc1 /dev/rtc2 /dev/rtc3; do
+  [ -e "\$rtc" ] || continue
+  if sudo -n hwclock --rtc="\$rtc" --systohc >/dev/null 2>&1; then
+    rtc_synced=\$((rtc_synced + 1))
+  else
+    rtc_failed=\$((rtc_failed + 1))
+  fi
+done
+
+printf 'RTC_SYNCED=%s\n' "\$rtc_synced"
+printf 'RTC_FAILED=%s\n' "\$rtc_failed"
+timedatectl status | sed -n '1,8p' || true
+EOF
+)
+
+  set +e
+  output="$(run_jetson_ssh_script "$remote_script" 2>&1)"
+  rc=$?
+  set -e
+
+  if (( rc != 0 )); then
+    if [[ "$output" == *"SUDO_MISSING"* ]]; then
+      die "Jetson time sync requires sudo on $JETSON_USER@$JETSON_HOST, but sudo was not found."
+    fi
+    if [[ "$output" == *"SUDO_NOPASSWD_REQUIRED"* ]]; then
+      die "Jetson time sync requires passwordless sudo on $JETSON_USER@$JETSON_HOST."
+    fi
+    die "Jetson time sync failed: $output"
+  fi
+
+  rtc_synced="$(printf '%s\n' "$output" | awk -F= '/^RTC_SYNCED=/ {print $2; exit}')"
+  rtc_failed="$(printf '%s\n' "$output" | awk -F= '/^RTC_FAILED=/ {print $2; exit}')"
+  [[ -n "$rtc_synced" ]] || rtc_synced="0"
+  [[ -n "$rtc_failed" ]] || rtc_failed="0"
+
+  write_status "Jetson time" "Synced to host time ($host_time_display)"
+  write_status "Jetson RTCs" "synced $rtc_synced, failed $rtc_failed"
+
+  if printf '%s\n' "$output" | grep -Fq "System clock synchronized: no"; then
+    write_status "Jetson NTP" "active but unsynchronized"
+  fi
+}
+
 assert_jetson_writable_mount() {
   local remote_script
   remote_script=$(cat <<EOF
@@ -912,6 +989,8 @@ invoke_setup_spark() {
   [[ "$llama_exists" == "true" ]] || die "Jetson llama folder was not found."
 
   assert_jetson_writable_mount
+  write_section "Jetson Clock"
+  sync_jetson_time
 
   write_section "Deployment"
   deploy_pico_firmware "$python_exe" "$pico_mount"

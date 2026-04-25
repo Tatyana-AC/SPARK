@@ -44,6 +44,7 @@ from host_pc.serial_sender import SerialSender
 from host_pc.live_capture import LiveCaptureFeed
 from host_pc.snapshot_policy import is_relevant_snapshot, snapshot_fingerprint
 from host_pc.summarize_stream import (
+     build_context_key,
      build_keyword_search_request,
      build_respond_request,
      build_reformat_request,
@@ -955,6 +956,7 @@ class SparkPanel(QWidget):
         self._active_feature_command: AppCommand | None = None
         self._last_device_response_signature = (0, False, False)
         self._device_response_poll_deadline = 0.0
+        self._last_physical_synthesis_trigger_at = 0.0
         self._last_physical_reformat_trigger_at = 0.0
         self._last_physical_keyword_trigger_at = 0.0
         self._last_physical_respond_trigger_at = 0.0
@@ -1417,8 +1419,12 @@ class SparkPanel(QWidget):
         self._set_summary_buttons_enabled(True)
 
     def _on_pico_debug_message(self, message: str):
-        if message == "button:1" and not self._summary_request_in_flight:
-            self._start_device_response_polling()
+        if message == "post_press:1" and not self._summary_request_in_flight:
+            now = time.monotonic()
+            if (now - self._last_physical_synthesis_trigger_at) < 1.0:
+                return
+            self._last_physical_synthesis_trigger_at = now
+            self._on_summarize()
             return
         if message == "post_press:2" and not self._summary_request_in_flight:
             now = time.monotonic()
@@ -1564,8 +1570,11 @@ class SparkPanel(QWidget):
 
     @staticmethod
     def _build_context_key(info, tab) -> str:
-        url = tab.url if (tab and getattr(tab, "url", None)) else ""
-        return f"{info.app_name}|{url}" if url else f"{info.app_name}|{info.title}"
+        return build_context_key(
+            app_name=getattr(info, "app_name", ""),
+            window_title=getattr(info, "title", ""),
+            url=(tab.url if (tab and getattr(tab, "url", None)) else None),
+        )
 
     @staticmethod
     def _build_active_context_subtitle(info, tab) -> str:
@@ -1577,6 +1586,22 @@ class SparkPanel(QWidget):
         context_key = SparkPanel._build_context_key(info, tab)
         url_display = url or "(missing)"
         return f"{detail}\nURL: {url_display}\nKey: {context_key}"
+
+    def _current_synthesis_anchor_context_key(self) -> str:
+        info = self.manager.get_active_window_info()
+        if not info:
+            raise ValueError("No active window detected")
+        if not self.privacy_guard.is_safe(info.bundle_id, info.title):
+            raise PermissionError("Sensitive window detected")
+
+        window_target = getattr(info, "window_handle", None)
+        if not isinstance(window_target, int) or isinstance(window_target, bool):
+            window_target = None
+
+        tab = get_browser_tab(info.app_name, window_target=window_target)
+        if tab and not self.privacy_guard.is_safe(info.bundle_id, tab.tab_title):
+            raise PermissionError("Sensitive window detected")
+        return self._build_context_key(info, tab)
 
     def _on_toggle_polling(self):
         if self.is_polling:
@@ -1827,7 +1852,16 @@ class SparkPanel(QWidget):
 
     def _on_summarize(self):
         """Send anchored session synthesis command; Jetson builds the source bundle."""
-        request = build_synthesize_session_request()
+        try:
+            anchor_context_key = self._current_synthesis_anchor_context_key()
+        except PermissionError:
+            self._set_status("Cannot synthesize: Sensitive window detected", RED)
+            return
+        except ValueError as exc:
+            self._set_status(f"Cannot synthesize: {exc}", RED)
+            return
+
+        request = build_synthesize_session_request(anchor_context_key=anchor_context_key)
         self._start_feature_request(
             AppCommand.FEATURE_1,
             request=request,

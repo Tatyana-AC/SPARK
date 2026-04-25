@@ -102,7 +102,8 @@ The active firmware contract is V2 upload-only:
 - successful uploads can leave a device-side response buffer that the host reads back over Raw HID
 - the host app shows released text locally after the Pico acknowledges the upload
 - `FEATURE_1` forwards a session synthesis request to Jetson over UART and buffers the streamed Jetson response for host polling
-- `Synthesis` and physical `PB1` send `{"command":"synthesize_session","window_minutes":30}` by default
+- `Synthesis` sends `{"command":"synthesize_session","window_minutes":30,"anchor_context_key":"..."}` by default
+- physical `PB1` is host-mediated: the Pico reports the press, then the host computes the current active app `anchor_context_key` and sends the same anchored synthesis request
 - session synthesis anchors on the active app and may include related context from the fixed last 30 minutes
 - large Jetson responses must be split across multiple framed UART packets; the Jetson bridge in `jetson/pico_llm_bridge.py` now does that explicitly for the real board
 - the current hardware-verified deployment flow is: copy the repo `jetson/` folder into the Jetson `demo/pico_bridge` directory, then run `python tools/pico/deploy_to_pico.py` to exact-sync the default `pico/` runtime onto `CIRCUITPY`

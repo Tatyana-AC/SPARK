@@ -3,6 +3,37 @@ import json
 
 
 class SummarizeStreamTests(unittest.TestCase):
+    def test_build_context_key_prefers_url_over_window_title(self):
+        from host_pc.summarize_stream import build_context_key
+
+        context_key = build_context_key(
+            app_name="Google Chrome",
+            window_title="Boston Tea Party - Wikipedia",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+        )
+
+        self.assertEqual(
+            context_key,
+            "Google Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party",
+        )
+
+    def test_build_context_key_falls_back_to_window_title_when_url_missing(self):
+        from host_pc.summarize_stream import build_context_key
+
+        context_key = build_context_key(
+            app_name="Notes",
+            window_title="History notes",
+            url=None,
+        )
+
+        self.assertEqual(context_key, "Notes|History notes")
+
+    def test_build_context_key_rejects_missing_anchor_fields(self):
+        from host_pc.summarize_stream import build_context_key
+
+        with self.assertRaises(ValueError):
+            build_context_key(app_name="Notes", window_title="   ", url=None)
+
     def test_build_summary_request_includes_window_metadata_and_visible_text(self):
         from host_pc.summarize_stream import build_summary_request
 
@@ -35,20 +66,34 @@ class SummarizeStreamTests(unittest.TestCase):
 
         self.assertEqual(request["command"], "summarize")
 
-    def test_build_synthesize_session_request_uses_fixed_default_window(self):
+    def test_build_synthesize_session_request_uses_fixed_default_window_and_anchor_key(self):
         from host_pc.summarize_stream import build_synthesize_session_request
 
-        request = json.loads(build_synthesize_session_request())
+        request = json.loads(
+            build_synthesize_session_request(
+                anchor_context_key="Google Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party"
+            )
+        )
 
         self.assertEqual(request["command"], "synthesize_session")
         self.assertEqual(request["window_minutes"], 30)
-        self.assertEqual(len(request), 2)
+        self.assertEqual(
+            request["anchor_context_key"],
+            "Google Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party",
+        )
+        self.assertEqual(len(request), 3)
 
     def test_build_synthesize_session_request_rejects_non_positive_windows(self):
         from host_pc.summarize_stream import build_synthesize_session_request
 
         with self.assertRaises(ValueError):
-            build_synthesize_session_request(0)
+            build_synthesize_session_request("Google Chrome|https://example.com", 0)
+
+    def test_build_synthesize_session_request_rejects_missing_anchor_key(self):
+        from host_pc.summarize_stream import build_synthesize_session_request
+
+        with self.assertRaises(ValueError):
+            build_synthesize_session_request("   ")
 
     def test_build_reformat_request_trims_and_serializes_selected_text(self):
         from host_pc.summarize_stream import build_reformat_request

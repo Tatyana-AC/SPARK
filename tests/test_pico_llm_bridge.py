@@ -10,10 +10,12 @@ from jetson.db_manager import JetsonDB
 from jetson.pico_llm_bridge import (
     _append_llm_audit_record,
     _button_press_request_text,
+    _collect_synthesis_related_rows,
     build_llm_request,
     _build_respond_prompt,
     _build_summarize_prompt,
     _log_inbound_packet,
+    _strip_empty_related_context_sections,
     handle_summarize_request,
     run_bridge,
     _write_bridge_packet,
@@ -80,7 +82,7 @@ class BuildLlmRequestTests(unittest.TestCase):
 
         self.assertIn("no database available", prompt)
 
-    def test_synthesize_session_prompt_includes_active_anchor_and_related_notes(self):
+    def test_synthesize_session_prompt_includes_requested_anchor_and_related_notes(self):
         self.db.on_context_new(_make_context_payload(
             app_name="Notes",
             window_title="History notes",
@@ -106,7 +108,12 @@ class BuildLlmRequestTests(unittest.TestCase):
             timestamp=1200.0,
         ))
 
-        raw = json.dumps({"command": "synthesize_session", "window_minutes": 30})
+        raw = json.dumps({
+            "command": "synthesize_session",
+            "window_minutes": 30,
+            "anchor_context_key": "Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            "keywords": ["Tea Act", "East India Company", "EIC", "Parliament"],
+        })
         with mock.patch("jetson.pico_llm_bridge.time.time", return_value=1200.0):
             system, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
 
@@ -147,7 +154,12 @@ class BuildLlmRequestTests(unittest.TestCase):
 
         with mock.patch("jetson.pico_llm_bridge.time.time", return_value=1200.0):
             _, prompt = build_llm_request(
-                json.dumps({"command": "synthesize_session", "window_minutes": 30}),
+                json.dumps({
+                    "command": "synthesize_session",
+                    "window_minutes": 30,
+                    "anchor_context_key": "Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                    "keywords": ["Tea Act", "East India Company", "EIC", "Parliament"],
+                }),
                 SYSTEM_PROMPT,
                 db=self.db,
             )
@@ -155,22 +167,243 @@ class BuildLlmRequestTests(unittest.TestCase):
         self.assertIn("History notes", prompt)
         self.assertNotIn("Project docs", prompt)
 
-    def test_synthesize_session_without_related_context_is_anchor_only(self):
+    def test_synthesize_session_without_related_context_omits_related_section(self):
         self.db.on_context_new(_make_context_payload(
             app_name="Chrome",
             window_title="Boston Tea Party - Wikipedia",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
             text="Boston Tea Party article text",
             timestamp=1200.0,
         ))
 
         with mock.patch("jetson.pico_llm_bridge.time.time", return_value=1200.0):
             _, prompt = build_llm_request(
-                json.dumps({"command": "synthesize_session", "window_minutes": 30}),
+                json.dumps({
+                    "command": "synthesize_session",
+                    "window_minutes": 30,
+                    "anchor_context_key": "Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                    "keywords": ["Tea Act", "East India Company", "EIC", "Parliament"],
+                }),
                 SYSTEM_PROMPT,
                 db=self.db,
             )
 
-        self.assertIn("No related recent context cleared the relevance threshold", prompt)
+        self.assertIn("ANCHOR SOURCE", prompt)
+        self.assertIn("Boston Tea Party article text", prompt)
+        self.assertNotIn("RELATED RECENT SOURCES", prompt)
+        self.assertNotIn("No related recent context cleared", prompt)
+        self.assertIn("If no related sources are listed below, do not mention related context", prompt)
+
+    def test_synthesize_session_excludes_same_app_shell_rows_that_only_echo_browser_noise(self):
+        self.db.on_context_new(_make_context_payload(
+            app_name="Notes",
+            window_title="Notes",
+            pid=2001,
+            url=None,
+            text="Tea Act, East India Company, and colonial monopoly concerns.",
+            timestamp=1000.0,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Google Chrome",
+            window_title="Chrome",
+            pid=2002,
+            source="full_window",
+            url=None,
+            tab_title="(untitled tab)",
+            text=(
+                "Chrome\n"
+                "Boston Tea Party - Wikipedia - Google Chrome - Sida (Work)\n"
+                "en.wikipedia.org/wiki/Boston_Tea_Party\n"
+                "True\n"
+                "We've been testing GPT-5.5 for a few weeks now... - YouTube\n"
+                "youtube.com/watch?v=xKOU...\n"
+                "Recent Items\n"
+                "Notes.app\n"
+                "Codex.app"
+            ),
+            timestamp=1100.0,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Chrome",
+            window_title="Chrome",
+            pid=2003,
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="The Boston Tea Party was a protest involving the Tea Act and East India Company.",
+            timestamp=1200.0,
+        ))
+
+        with mock.patch("jetson.pico_llm_bridge.time.time", return_value=1200.0):
+            _, prompt = build_llm_request(
+                json.dumps({
+                    "command": "synthesize_session",
+                    "window_minutes": 30,
+                    "anchor_context_key": "Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                    "keywords": ["Tea Act", "East India Company", "EIC", "Parliament"],
+                }),
+                SYSTEM_PROMPT,
+                db=self.db,
+            )
+
+        self.assertIn("Notes", prompt)
+        self.assertNotIn("We've been testing GPT-5.5", prompt)
+        self.assertNotIn("Recent Items", prompt)
+        self.assertNotIn("(untitled tab)", prompt)
+
+    def test_synthesize_session_window_uses_anchor_timestamp_not_jetson_wall_clock(self):
+        self.db.on_context_new(_make_context_payload(
+            app_name="Safari",
+            window_title="Safari",
+            pid=2001,
+            process_name="Safari",
+            url="https://www.history.com/articles/boston-tea-party-surprising-facts",
+            tab_title="7 Surprising Facts About the Boston Tea Party | HISTORY",
+            text=(
+                "This Safari page explains that the Tea Act did not raise the price of tea and "
+                "that the East India Company gained a monopoly advantage."
+            ),
+            timestamp=1_776_643_838.189482,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Notes",
+            window_title="Notes",
+            pid=2002,
+            process_name="Notes",
+            url=None,
+            text=(
+                "The Tea Act of 1773 gave the East India Company a competitive edge. "
+                "Parliament kept the Townshend duty and colonists rejected the monopoly."
+            ),
+            timestamp=1_777_091_084.6411252,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Google Chrome",
+            window_title="Chrome",
+            pid=2003,
+            process_name="Google Chrome",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            tab_title="Boston Tea Party - Wikipedia",
+            text=(
+                "The Boston Tea Party protest followed the Tea Act and East India Company crisis."
+            ),
+            timestamp=1_777_091_080.58657,
+        ))
+
+        with mock.patch("jetson.pico_llm_bridge.time.time", return_value=947_239_094.0):
+            _, prompt = build_llm_request(
+                json.dumps({
+                    "command": "synthesize_session",
+                    "window_minutes": 30,
+                    "anchor_context_key": "Google Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                    "keywords": ["Tea Act", "East India Company", "EIC", "Parliament"],
+                }),
+                SYSTEM_PROMPT,
+                db=self.db,
+            )
+
+        self.assertIn("Notes", prompt)
+        self.assertNotIn("7 Surprising Facts About the Boston Tea Party", prompt)
+
+    def test_collect_synthesis_related_rows_uses_extracted_keywords_not_generic_overlap(self):
+        self.db.on_context_new(_make_context_payload(
+            app_name="Notes",
+            window_title="Notes",
+            pid=2001,
+            url=None,
+            text=(
+                "The Tea Act of 1773 gave the East India Company a competitive edge. "
+                "Parliament kept the Townshend duty and colonists rejected the monopoly."
+            ),
+            timestamp=1000.0,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Google Chrome",
+            window_title="Chrome",
+            pid=2002,
+            url="https://dev.to/example/codex-provider-sync",
+            tab_title="Codex provider sync",
+            text=(
+                "I ran into an annoying Codex problem while switching providers. "
+                "Sessions were not actually gone."
+            ),
+            timestamp=1100.0,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Google Chrome",
+            window_title="Chrome",
+            pid=2003,
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            tab_title="Boston Tea Party - Wikipedia",
+            text=(
+                "The Boston Tea Party protest followed the Tea Act and the East India Company crisis."
+            ),
+            timestamp=1200.0,
+        ))
+
+        anchor = self.db.get_latest_session_for_context_key(
+            "Google Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party"
+        )
+        related = _collect_synthesis_related_rows(
+            self.db,
+            anchor,
+            keywords=["Tea Act", "East India Company", "EIC", "Parliament"],
+            cutoff_timestamp=0.0,
+        )
+
+        titles = [row["window_title"] for row in related]
+        self.assertIn("Notes", titles)
+        self.assertNotIn("Chrome", [title for title in titles if title == "Chrome"])
+
+    def test_strip_empty_related_context_sections_removes_empty_related_tail(self):
+        text = (
+            "### Summary\n"
+            "The active app is Codex.\n\n"
+            "### Related context\n"
+            "None.\n"
+        )
+
+        cleaned = _strip_empty_related_context_sections(text)
+
+        self.assertEqual(cleaned, "### Summary\nThe active app is Codex.")
+
+    def test_synthesize_session_uses_newest_row_for_requested_context_key_not_current_active_session(self):
+        self.db.on_context_new(_make_context_payload(
+            app_name="Chrome",
+            window_title="Boston Tea Party - Wikipedia",
+            pid=2001,
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="older Boston article text",
+            timestamp=1000.0,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Codex",
+            window_title="Codex",
+            pid=2002,
+            url=None,
+            text="currently active codex context",
+            timestamp=1300.0,
+        ))
+        self.db.on_context_new(_make_context_payload(
+            app_name="Chrome",
+            window_title="Boston Tea Party - Wikipedia",
+            pid=2003,
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="newest Boston article text",
+            timestamp=1200.0,
+        ))
+
+        with mock.patch("jetson.pico_llm_bridge.time.time", return_value=1300.0):
+            _, prompt = build_llm_request(
+                json.dumps({
+                    "command": "synthesize_session",
+                    "window_minutes": 30,
+                    "anchor_context_key": "Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                }),
+                SYSTEM_PROMPT,
+                db=self.db,
+            )
+
+        self.assertIn("newest Boston article text", prompt)
+        self.assertNotIn("currently active codex context", prompt)
 
     def test_button_press_request_text_uses_session_synthesis(self):
         payload = json.loads(_button_press_request_text(0))
@@ -547,6 +780,131 @@ class AuditLoggingTests(unittest.TestCase):
         self.assertIn('"role": "user"', text)
         self.assertIn("hello world", text)
 
+    def test_synthesize_session_without_related_sources_strips_empty_related_section_before_emit(self):
+        db = JetsonDB(str(Path(self._tmpdir.name) / "synth.db"))
+        try:
+            db.on_context_new(_make_context_payload(
+                app_name="Codex",
+                window_title="Codex",
+                url=None,
+                text="Codex",
+                timestamp=1200.0,
+            ))
+
+            ser = mock.Mock()
+            request = json.dumps(
+                {
+                    "command": "synthesize_session",
+                    "window_minutes": 30,
+                    "anchor_context_key": "Codex|Codex",
+                }
+            )
+            args = mock.Mock(
+                stream=True,
+                structured=False,
+                timeout=120,
+                llm_url="http://127.0.0.1:8080",
+                system_prompt=SYSTEM_PROMPT,
+                audit_log=str(self.audit_log),
+            )
+
+            chunks = [
+                "### Summary\nThe active app is Codex.\n\n",
+                "### Related context\nNone.\n",
+            ]
+
+            with mock.patch("jetson.pico_llm_bridge.query_llm_streaming", return_value=iter(chunks)):
+                with mock.patch("jetson.pico_llm_bridge._emit_summary_response") as emit_chunks:
+                    with mock.patch("jetson.pico_llm_bridge._write_bridge_packet"):
+                        with mock.patch("jetson.pico_llm_bridge.time.sleep"):
+                            handle_summarize_request(ser, request, args, db=db)
+
+            emit_chunks.assert_called_once_with(ser, "### Summary\nThe active app is Codex.")
+            text = self.audit_log.read_text(encoding="utf-8")
+            self.assertIn("### Summary", text)
+            self.assertNotIn("### Related context", text)
+        finally:
+            db.close()
+
+    def test_handle_synthesize_session_uses_two_round_keyword_retrieval(self):
+        db = JetsonDB(str(Path(self._tmpdir.name) / "synth_keywords.db"))
+        try:
+            db.on_context_new(_make_context_payload(
+                app_name="Notes",
+                window_title="Notes",
+                pid=2001,
+                url=None,
+                text=(
+                    "The Tea Act let the East India Company ship tea directly while Parliament "
+                    "kept the Townshend duty."
+                ),
+                timestamp=1000.0,
+            ))
+            db.on_context_new(_make_context_payload(
+                app_name="Google Chrome",
+                window_title="Chrome",
+                pid=2002,
+                url="https://dev.to/example/codex-provider-sync",
+                tab_title="Codex provider sync",
+                text="Switching providers can make Codex history look inconsistent.",
+                timestamp=1100.0,
+            ))
+            db.on_context_new(_make_context_payload(
+                app_name="Google Chrome",
+                window_title="Chrome",
+                pid=2003,
+                url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                tab_title="Boston Tea Party - Wikipedia",
+                text="The Boston Tea Party protest followed the Tea Act and East India Company crisis.",
+                timestamp=1200.0,
+            ))
+
+            ser = mock.Mock()
+            request = json.dumps(
+                {
+                    "command": "synthesize_session",
+                    "window_minutes": 30,
+                    "anchor_context_key": "Google Chrome|https://en.wikipedia.org/wiki/Boston_Tea_Party",
+                }
+            )
+            args = mock.Mock(
+                stream=True,
+                structured=False,
+                timeout=120,
+                llm_url="http://127.0.0.1:8080",
+                system_prompt=SYSTEM_PROMPT,
+                audit_log=None,
+            )
+
+            with (
+                mock.patch("jetson.pico_llm_bridge.time.time", return_value=1200.0),
+                mock.patch(
+                    "jetson.pico_llm_bridge.query_llm_blocking",
+                    return_value=json.dumps(
+                        {"keywords": ["Tea Act", "East India Company", "EIC", "Parliament"]}
+                    ),
+                ) as keyword_query,
+                mock.patch(
+                    "jetson.pico_llm_bridge.query_llm_streaming",
+                    return_value=iter(["final synthesis"]),
+                ) as final_query,
+                mock.patch("jetson.pico_llm_bridge._emit_summary_response") as emit_chunks,
+                mock.patch("jetson.pico_llm_bridge._write_bridge_packet"),
+                mock.patch("jetson.pico_llm_bridge.time.sleep"),
+            ):
+                handle_summarize_request(ser, request, args, db=db)
+
+            keyword_payload = keyword_query.call_args.args[1]
+            self.assertIn("Boston Tea Party - Wikipedia", keyword_payload["messages"][1]["content"])
+            final_payload = final_query.call_args.args[1]
+            final_prompt = final_payload["messages"][1]["content"]
+            self.assertIn("Related source 1", final_prompt)
+            self.assertIn("Notes", final_prompt)
+            self.assertNotIn("Codex provider sync", final_prompt)
+            emit_chunks.assert_called_once_with(ser, "final synthesis")
+        finally:
+            db.close()
+
 
 class ReformatHandlingTests(unittest.TestCase):
     def setUp(self):
@@ -675,6 +1033,48 @@ class ReformatHandlingTests(unittest.TestCase):
 
         query.assert_not_called()
         emit_chunks.assert_any_call(ser, 'No recent entries matched "irrational".')
+
+    def test_synthesize_session_without_anchor_context_key_sends_error(self):
+        ser = mock.Mock()
+        request = json.dumps({
+            "command": "synthesize_session",
+            "window_minutes": 30,
+        })
+
+        with mock.patch("jetson.pico_llm_bridge.build_error", return_value=b"ERROR") as mk_error:
+            with mock.patch("jetson.pico_llm_bridge.query_llm_blocking") as query:
+                with mock.patch("jetson.pico_llm_bridge._write_bridge_packet") as writer:
+                    handle_summarize_request(ser, request, self._make_args(), db=self.db)
+
+        mk_error.assert_called_once()
+        self.assertIn("anchor_context_key", mk_error.call_args.args[0])
+        query.assert_not_called()
+        writer.assert_called_once_with(ser, b"ERROR", label="error")
+
+    def test_synthesize_session_without_matching_anchor_context_key_sends_error(self):
+        self.db.on_context_new(_make_context_payload(
+            app_name="Chrome",
+            window_title="Boston Tea Party - Wikipedia",
+            url="https://en.wikipedia.org/wiki/Boston_Tea_Party",
+            text="Boston Tea Party article text",
+            timestamp=1200.0,
+        ))
+        ser = mock.Mock()
+        request = json.dumps({
+            "command": "synthesize_session",
+            "window_minutes": 30,
+            "anchor_context_key": "Firefox|https://example.com/missing",
+        })
+
+        with mock.patch("jetson.pico_llm_bridge.build_error", return_value=b"ERROR") as mk_error:
+            with mock.patch("jetson.pico_llm_bridge.query_llm_blocking") as query:
+                with mock.patch("jetson.pico_llm_bridge._write_bridge_packet") as writer:
+                    handle_summarize_request(ser, request, self._make_args(), db=self.db)
+
+        mk_error.assert_called_once()
+        self.assertIn("no session found", mk_error.call_args.args[0])
+        query.assert_not_called()
+        writer.assert_called_once_with(ser, b"ERROR", label="error")
 
 
 if __name__ == "__main__":
