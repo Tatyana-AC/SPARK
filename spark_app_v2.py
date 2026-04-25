@@ -963,6 +963,7 @@ class SparkPanel(QWidget):
         self._last_pico_runtime_text = ""
         self._last_pico_runtime_emitted_at: float | None = None
         self._last_runtime_response_flags = (False, False)
+        self._release_output_plain_text = "No released text yet…"
         self._capture_feed = LiveCaptureFeed(max_lines=self.MAX_CAPTURE_LINES)
         self._drag_pos: QPoint | None = None
 
@@ -1103,6 +1104,7 @@ class SparkPanel(QWidget):
         self.btn_test_context = ActionButton("Test Context", "Send a fixed fake app context")
         self.btn_custom_context = ActionButton("Custom Context", "Edit and send a fake app context")
         self.btn_view_jetson_db = ActionButton("View Jetson DB", "Browse snapshot tables")
+        self.btn_copy_release_output = ActionButton("Copy Output", "Copy release output as plain text", self)
         self.btn_history  = ActionButton("Show History", "View previous window contexts", self)
 
         self.btn_release.setEnabled(False)
@@ -1119,10 +1121,11 @@ class SparkPanel(QWidget):
         self.btn_test_context.clicked.connect(self._on_test_context)
         self.btn_custom_context.clicked.connect(self._on_custom_context)
         self.btn_view_jetson_db.clicked.connect(self._on_view_jetson_db)
+        self.btn_copy_release_output.clicked.connect(self._copy_release_output)
         self.btn_history.clicked.connect(self._on_show_history)
 
         grid.addWidget(self.btn_reformat, 0, 0)
-        grid.addWidget(self.btn_test_context, 0, 1)
+        grid.addWidget(self.btn_copy_release_output, 0, 1)
         grid.addWidget(self.btn_custom_context, 1, 0)
         grid.addWidget(self.btn_view_jetson_db, 1, 1)
         left.addLayout(grid)
@@ -1175,13 +1178,14 @@ class SparkPanel(QWidget):
         out_inner = QVBoxLayout(out_frame)
         out_inner.setContentsMargins(14, 12, 14, 12)
 
-        self.release_output_lbl = QTextEdit("No released text yet…")
+        self.release_output_lbl = QTextEdit()
         self.release_output_lbl.setObjectName("release_output_text")
         self.release_output_lbl.setReadOnly(True)
         self.release_output_lbl.setFrameStyle(QFrame.Shape.NoFrame)
         self.release_output_lbl.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.release_output_lbl.setMinimumHeight(320)
         self.release_output_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._set_release_output("")
         out_inner.addWidget(self.release_output_lbl)
         out_frame.setMinimumHeight(380)
         right.addWidget(out_frame)
@@ -1341,8 +1345,18 @@ class SparkPanel(QWidget):
             else:
                 logger.warning("[HID] Device not found")
 
+    def _set_release_output(self, text: str, *, fallback: str = "No released text yet…"):
+        output = text if text else fallback
+        self._release_output_plain_text = output
+        self.release_output_lbl.setMarkdown(output)
+
+    def _copy_release_output(self):
+        text = self._release_output_plain_text or self.release_output_lbl.toPlainText()
+        QApplication.clipboard().setText(text)
+        self._set_status("Release output copied as plain text", GREEN)
+
     def _on_release_succeeded(self, text: str):
-        self.release_output_lbl.setPlainText(format_release_output(text) if text else "No released text yet…")
+        self._set_release_output(format_release_output(text) if text else "")
         self._set_status("Sent to SPARK — output updated ✓", GREEN)
 
     def _on_release_failed(self, message: str):
@@ -1362,31 +1376,31 @@ class SparkPanel(QWidget):
 
     def _on_summarize_succeeded(self, text: str):
         if self._active_feature_command == AppCommand.FEATURE_3:
-            self.release_output_lbl.setPlainText(text if text else "No keyword search result returned.")
+            self._set_release_output(text, fallback="No keyword search result returned.")
             if text:
                 QApplication.clipboard().setText(text)
             self._set_status("Jetson keyword search complete — output updated", GREEN)
             return
 
         if self._active_feature_command == AppCommand.FEATURE_4:
-            self.release_output_lbl.setPlainText(text if text else "No response returned.")
+            self._set_release_output(text, fallback="No response returned.")
             if text:
                 QApplication.clipboard().setText(text)
             self._set_status("Jetson response complete — output updated", GREEN)
             return
 
         if self._active_feature_command == AppCommand.FEATURE_2:
-            self.release_output_lbl.setPlainText(text if text else "No summary returned.")
+            self._set_release_output(text, fallback="No summary returned.")
             if text:
                 QApplication.clipboard().setText(text)
             self._set_status("Jetson reformat complete — output updated", GREEN)
             return
 
-        self.release_output_lbl.setPlainText(text if text else "No synthesis returned.")
+        self._set_release_output(text, fallback="No synthesis returned.")
         self._set_status("Jetson synthesis complete - output updated", GREEN)
 
     def _on_summarize_progress(self, text: str):
-        self.release_output_lbl.setPlainText(text)
+        self._set_release_output(text)
         if self._active_feature_command == AppCommand.FEATURE_3:
             self._set_status("Streaming keyword search from Jetson…", ORANGE)
             return
@@ -1493,7 +1507,7 @@ class SparkPanel(QWidget):
                 text = self.hid_client.fetch_response(info)
             except Exception:
                 return
-            self.release_output_lbl.setPlainText(text if text else "No synthesis returned.")
+            self._set_release_output(text, fallback="No synthesis returned.")
 
         if info.complete:
             self._set_status("Jetson synthesis complete - output updated", GREEN)

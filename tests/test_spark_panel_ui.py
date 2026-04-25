@@ -78,6 +78,7 @@ class SparkPanelUiTests(unittest.TestCase):
         self.assertEqual(
             visible_titles,
             [
+                "Copy Output",
                 "Custom Context",
                 "Reformat Selection",
                 "View Jetson DB",
@@ -626,6 +627,40 @@ class SparkPanelUiTests(unittest.TestCase):
 
         panel._set_status.assert_called_once_with("Streaming response from Jetson…", spark_app_v2.ORANGE)
         self.assertEqual(panel.release_output_lbl.toPlainText(), "partial response")
+
+    def test_feature_completion_renders_markdown_output(self):
+        panel = self._make_panel()
+        panel._active_feature_command = spark_app_v2.AppCommand.FEATURE_4
+        panel._set_status = mock.Mock()
+        clipboard = mock.Mock()
+        markdown = "# Heading\n\n- first\n- second"
+
+        with (
+            mock.patch.object(spark_app_v2.QApplication, "clipboard", return_value=clipboard),
+            mock.patch.object(
+                panel.release_output_lbl,
+                "setMarkdown",
+                wraps=panel.release_output_lbl.setMarkdown,
+            ) as set_markdown,
+        ):
+            panel._on_summarize_succeeded(markdown)
+
+        set_markdown.assert_called_once_with(markdown)
+        self.assertEqual(panel._release_output_plain_text, markdown)
+        self.assertIn("Heading", panel.release_output_lbl.toPlainText())
+        clipboard.setText.assert_called_once_with(markdown)
+
+    def test_copy_release_output_copies_raw_markdown_text(self):
+        panel = self._make_panel()
+        clipboard = mock.Mock()
+        markdown = "# Heading\n\n- first\n- second"
+
+        panel._set_release_output(markdown)
+
+        with mock.patch.object(spark_app_v2.QApplication, "clipboard", return_value=clipboard):
+            panel._copy_release_output()
+
+        clipboard.setText.assert_called_once_with(markdown)
 
     def test_finished_feature_request_drains_stale_hid_debug_events(self):
         hid_client = mock.Mock()
