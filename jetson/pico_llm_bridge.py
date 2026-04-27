@@ -178,6 +178,11 @@ RESPOND_CLASSIFICATION_JSON_SCHEMA = {
     },
 }
 
+RESPOND_DRAFT_SYSTEM_PROMPT = (
+    "You draft concise response text for the user using the active app context and recent work context. "
+    "Return only the message text. Keep it concise, generally 2-3 sentences."
+)
+
 KEYWORD_SEARCH_SYSTEM_PROMPT = (
     "You summarize the three most recent matching entries from SPARK history. "
     "Return only a concise plain-text summary grounded in the matched entries."
@@ -346,6 +351,86 @@ def _parse_respond_classification(raw: str, *, active_text: str) -> dict:
         "reply_target_summary": summary.strip(),
         "confidence": confidence,
     }
+
+
+def _collect_respond_recent_rows(db, anchor, *, window_minutes: int, limit: int = _SYNTHESIS_MAX_RELATED):
+    cutoff = _synthesis_cutoff_timestamp(anchor, window_minutes=window_minutes)
+    rows = db.get_recent_sessions_since(cutoff, limit=limit + 1, dedupe=True)
+    result = []
+    seen = set()
+
+    anchor_key = anchor["context_key"]
+    result.append(anchor)
+    seen.add(anchor_key)
+
+    for row in rows:
+        key = row["context_key"]
+        if key in seen:
+            continue
+        result.append(row)
+        seen.add(key)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _append_respond_sources(lines: list[str], heading: str, rows) -> None:
+    if not rows:
+        return
+    lines.extend(["", heading])
+    for idx, row in enumerate(rows, start=1):
+        lines.extend(["", f"Source {idx}:"])
+        _append_synthesis_source(lines, row)
+
+
+def _build_respond_draft_prompt(
+    anchor,
+    classification: dict,
+    *,
+    previous_user_input: str,
+    related_rows,
+    window_minutes: int,
+) -> str:
+    previous_user_input = (previous_user_input or "").strip()
+    mode = classification.get("mode") or "proactive_update"
+    reply_target_summary = (classification.get("reply_target_summary") or "").strip()
+
+    if mode == "reply_to_visible_context" and previous_user_input:
+        task = "Continue or refine the user's partial answer to the visible message or request."
+    elif mode == "reply_to_visible_context":
+        task = "Draft a short neutral reply to the visible message or request."
+    elif previous_user_input:
+        task = "Continue the user's standalone draft using recent work context."
+    else:
+        task = "Draft a neutral short update or quick report about recent work."
+
+    lines = [
+        task,
+        "Return only the message text.",
+        "Keep the response concise, generally 2-3 sentences.",
+        "",
+        "Mode:",
+        mode,
+        "Reply target summary:",
+        reply_target_summary or "(none)",
+        f"Recent work window: {int(window_minutes)} minutes",
+        "",
+        "Part 1 - Current Draft",
+        "Current app:",
+        (anchor["app_name"] or "").strip() or "(unknown app)",
+        "Previous written text in current text box:",
+        previous_user_input or "(empty)",
+        "",
+        "Part 2 - Context",
+        "Window title:",
+        (anchor["window_title"] or "").strip() or "(untitled window)",
+        "Visible text:",
+        _trim_synthesis_text(anchor["text"] or ""),
+    ]
+
+    heading = "RELATED RECENT SOURCES" if mode == "reply_to_visible_context" or previous_user_input else "RECENT SOURCES"
+    _append_respond_sources(lines, heading, related_rows)
+    return "\n".join(lines).strip()
 
 
 def _build_keyword_search_prompt(selected_text: str, matches) -> str:

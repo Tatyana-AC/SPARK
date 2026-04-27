@@ -10,7 +10,9 @@ from jetson.db_manager import JetsonDB
 from jetson.pico_llm_bridge import (
     _append_llm_audit_record,
     _build_respond_classification_prompt,
+    _build_respond_draft_prompt,
     _button_press_request_text,
+    _collect_respond_recent_rows,
     _collect_synthesis_related_rows,
     build_llm_request,
     _parse_respond_classification,
@@ -554,6 +556,114 @@ class BuildLlmRequestTests(unittest.TestCase):
 
         self.assertEqual(parsed["mode"], "proactive_update")
         self.assertEqual(parsed["confidence"], "low")
+
+    def test_respond_draft_prompt_reply_with_existing_draft_includes_related_sources(self):
+        self.db.on_context_new(_make_context_payload(text="Alex: can you send an update on RESPOND?", timestamp=3000.0))
+        session = self.db.get_active_session()
+        self.db.on_context_new(
+            _make_context_payload(
+                app_name="Codex",
+                window_title="SPARK",
+                text="Implemented Jetson prompt changes.",
+                timestamp=2995.0,
+            )
+        )
+        related = [
+            row
+            for row in self.db.get_recent_sessions(limit=5)
+            if row["text"] == "Implemented Jetson prompt changes."
+        ]
+        classification = {
+            "mode": "reply_to_visible_context",
+            "reply_target_summary": "Alex asked for a RESPOND update.",
+            "confidence": "high",
+        }
+
+        prompt = _build_respond_draft_prompt(
+            session,
+            classification,
+            previous_user_input="Sure, quick update:",
+            related_rows=related,
+            window_minutes=30,
+        )
+
+        self.assertIn("Mode:\nreply_to_visible_context", prompt)
+        self.assertIn("Previous written text in current text box:\nSure, quick update:", prompt)
+        self.assertIn("Reply target summary:\nAlex asked for a RESPOND update.", prompt)
+        self.assertIn("RELATED RECENT SOURCES", prompt)
+        self.assertIn("Implemented Jetson prompt changes.", prompt)
+
+    def test_respond_draft_prompt_empty_reply_mode_writes_reply_to_visible_context(self):
+        self.db.on_context_new(_make_context_payload(text="Alex: what did you finish?"))
+        session = self.db.get_active_session()
+        classification = {
+            "mode": "reply_to_visible_context",
+            "reply_target_summary": "Alex asked what was finished.",
+            "confidence": "medium",
+        }
+
+        prompt = _build_respond_draft_prompt(
+            session,
+            classification,
+            previous_user_input="",
+            related_rows=[],
+            window_minutes=30,
+        )
+
+        self.assertIn("Draft a short neutral reply to the visible message or request.", prompt)
+        self.assertNotIn("RELATED RECENT SOURCES", prompt)
+
+    def test_respond_draft_prompt_empty_proactive_mode_uses_recent_sources(self):
+        self.db.on_context_new(_make_context_payload(text="Blank compose window", timestamp=3000.0))
+        session = self.db.get_active_session()
+        self.db.on_context_new(
+            _make_context_payload(
+                app_name="Terminal",
+                window_title="pytest",
+                text="Ran Jetson tests.",
+                timestamp=2995.0,
+            )
+        )
+        recent = [
+            row
+            for row in self.db.get_recent_sessions(limit=5)
+            if row["text"] == "Ran Jetson tests."
+        ]
+        classification = {
+            "mode": "proactive_update",
+            "reply_target_summary": "",
+            "confidence": "high",
+        }
+
+        prompt = _build_respond_draft_prompt(
+            session,
+            classification,
+            previous_user_input="",
+            related_rows=recent,
+            window_minutes=30,
+        )
+
+        self.assertIn("Draft a neutral short update or quick report about recent work.", prompt)
+        self.assertIn("RECENT SOURCES", prompt)
+        self.assertIn("Ran Jetson tests.", prompt)
+
+    def test_collect_respond_recent_rows_uses_active_first_then_recent_deduped(self):
+        self.db.on_context_new(
+            _make_context_payload(app_name="Slack", window_title="Draft", text="Blank chat draft", timestamp=3000.0)
+        )
+        anchor = self.db.get_active_session()
+        self.db.on_context_new(
+            _make_context_payload(app_name="Codex", window_title="Plan", text="Planned RESPOND redesign", timestamp=2990.0)
+        )
+        self.db.on_context_new(
+            _make_context_payload(app_name="Safari", window_title="Old", text="Old unrelated page", timestamp=100.0)
+        )
+
+        rows = _collect_respond_recent_rows(self.db, anchor, window_minutes=30, limit=5)
+
+        self.assertEqual(rows[0]["id"], anchor["id"])
+        self.assertTrue(any(row["text"] == "Planned RESPOND redesign" for row in rows))
+        self.assertFalse(any(row["text"] == "Old unrelated page" for row in rows))
 
     def test_keyword_search_command_uses_three_most_recent_matching_entries(self):
         self.db.on_context_new(
