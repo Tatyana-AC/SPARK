@@ -9,9 +9,11 @@ from unittest import mock
 from jetson.db_manager import JetsonDB
 from jetson.pico_llm_bridge import (
     _append_llm_audit_record,
+    _build_respond_classification_prompt,
     _button_press_request_text,
     _collect_synthesis_related_rows,
     build_llm_request,
+    _parse_respond_classification,
     _build_respond_prompt,
     _build_summarize_prompt,
     _log_inbound_packet,
@@ -501,8 +503,13 @@ class BuildLlmRequestTests(unittest.TestCase):
         system, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
 
         self.assertIn("continue and complete the user's in-progress text", system.lower())
-        self.assertIn("Active application: Firefox", prompt)
-        self.assertIn("Window title: GitHub - SPARK", prompt)
+        self.assertIn("generally 2-3 sentences", system.lower())
+        self.assertIn("Part 1 - Current Draft", prompt)
+        self.assertIn("Current app:\nFirefox", prompt)
+        self.assertIn("Previous written text in current text box:\nThanks for the update. I wanted to follow up on", prompt)
+        self.assertIn("Part 2 - Context", prompt)
+        self.assertIn("Window title:\nGitHub - SPARK", prompt)
+        self.assertLess(prompt.index("Part 1 - Current Draft"), prompt.index("Part 2 - Context"))
         self.assertIn("Visible draft context", prompt)
         self.assertIn("Thanks for the update. I wanted to follow up on", prompt)
 
@@ -514,6 +521,39 @@ class BuildLlmRequestTests(unittest.TestCase):
         _, prompt = build_llm_request(raw, SYSTEM_PROMPT, db=self.db)
 
         self.assertIn("no active session", prompt)
+
+    def test_respond_classification_prompt_includes_active_context(self):
+        self.db.on_context_new(_make_context_payload(text="Alex: can you send a quick update on the Jetson work?"))
+        session = self.db.get_active_session()
+
+        prompt = _build_respond_classification_prompt(session)
+
+        self.assertIn("Classify whether the visible app context contains something to respond to.", prompt)
+        self.assertIn("Active application:\nFirefox", prompt)
+        self.assertIn("Window title:\nGitHub - SPARK", prompt)
+        self.assertIn("Alex: can you send a quick update", prompt)
+
+    def test_parse_respond_classification_accepts_valid_json(self):
+        parsed = _parse_respond_classification(
+            '{"mode":"reply_to_visible_context","reply_target_summary":"Alex asked for an update.","confidence":"high"}',
+            active_text="Alex asked for an update.",
+        )
+
+        self.assertEqual(parsed["mode"], "reply_to_visible_context")
+        self.assertEqual(parsed["reply_target_summary"], "Alex asked for an update.")
+        self.assertEqual(parsed["confidence"], "high")
+
+    def test_parse_respond_classification_falls_back_from_bad_json_with_visible_text(self):
+        parsed = _parse_respond_classification("not json", active_text="Can you send an update?")
+
+        self.assertEqual(parsed["mode"], "reply_to_visible_context")
+        self.assertEqual(parsed["confidence"], "low")
+
+    def test_parse_respond_classification_falls_back_to_proactive_without_visible_text(self):
+        parsed = _parse_respond_classification("not json", active_text="   ")
+
+        self.assertEqual(parsed["mode"], "proactive_update")
+        self.assertEqual(parsed["confidence"], "low")
 
     def test_keyword_search_command_uses_three_most_recent_matching_entries(self):
         self.db.on_context_new(

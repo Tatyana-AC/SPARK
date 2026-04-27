@@ -149,8 +149,34 @@ REFORMAT_SYSTEM_PROMPT = (
 
 RESPOND_SYSTEM_PROMPT = (
     "You continue and complete the user's in-progress text using the active window context. "
-    "Return only the continuation text."
+    "Return only the continuation text. "
+    "Keep it concise, generally 2-3 sentences."
 )
+
+RESPOND_CLASSIFIER_SYSTEM_PROMPT = (
+    "You classify whether the visible app context contains something the user should respond to. "
+    "Return JSON only."
+)
+
+RESPOND_CLASSIFICATION_JSON_SCHEMA = {
+    "name": "respond_classification",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": ["reply_to_visible_context", "proactive_update"],
+            },
+            "reply_target_summary": {"type": "string"},
+            "confidence": {
+                "type": "string",
+                "enum": ["high", "medium", "low"],
+            },
+        },
+        "required": ["mode", "reply_target_summary", "confidence"],
+        "additionalProperties": False,
+    },
+}
 
 KEYWORD_SEARCH_SYSTEM_PROMPT = (
     "You summarize the three most recent matching entries from SPARK history. "
@@ -251,13 +277,75 @@ def _build_respond_prompt(
         "Keep the continuation consistent with the active application context and visible content.\n"
         "Return only the continuation text.\n"
         "Do not add labels, explanations, commentary, or JSON.\n\n"
-        f"Active application: {app_name}\n"
-        f"Window title: {window_title}\n"
+        "Part 1 - Current Draft\n"
+        "Current app:\n"
+        f"{app_name}\n"
+        "Previous written text in current text box:\n"
+        f"{previous_user_input}\n\n"
+        "Part 2 - Context\n"
+        "Window title:\n"
+        f"{window_title}\n"
         "Visible text:\n"
         f"{window_text}\n"
-        "Previous user input:\n"
-        f"{previous_user_input}\n"
     )
+
+
+def _build_respond_classification_prompt(anchor) -> str:
+    return "\n".join(
+        [
+            "Classify whether the visible app context contains something to respond to.",
+            "Choose reply_to_visible_context when the visible text includes a question, request, prompt, message, or thread that calls for a reply.",
+            "Choose proactive_update when there is no visible thing to answer and RESPOND should draft a neutral recent-work update instead.",
+            "Return JSON only.",
+            "",
+            "Active application:",
+            (anchor["app_name"] or "").strip() or "(unknown app)",
+            "Window title:",
+            (anchor["window_title"] or "").strip() or "(untitled window)",
+            "Tab title:",
+            (anchor["tab_title"] or "").strip() or "(untitled tab)",
+            "URL:",
+            (anchor["url"] or "").strip() or "(no url)",
+            "Visible text:",
+            _trim_synthesis_text(anchor["text"] or ""),
+        ]
+    ).strip()
+
+
+def _fallback_respond_classification(active_text: str) -> dict:
+    active_text = (active_text or "").strip()
+    return {
+        "mode": "reply_to_visible_context" if active_text else "proactive_update",
+        "reply_target_summary": active_text[:240],
+        "confidence": "low",
+    }
+
+
+def _parse_respond_classification(raw: str, *, active_text: str) -> dict:
+    try:
+        payload = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        logger.warning("RESPOND classification was not valid JSON")
+        return _fallback_respond_classification(active_text)
+
+    if not isinstance(payload, dict):
+        return _fallback_respond_classification(active_text)
+
+    mode = payload.get("mode")
+    confidence = payload.get("confidence")
+    summary = payload.get("reply_target_summary")
+    if mode not in {"reply_to_visible_context", "proactive_update"}:
+        return _fallback_respond_classification(active_text)
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "low"
+    if not isinstance(summary, str):
+        summary = ""
+
+    return {
+        "mode": mode,
+        "reply_target_summary": summary.strip(),
+        "confidence": confidence,
+    }
 
 
 def _build_keyword_search_prompt(selected_text: str, matches) -> str:
