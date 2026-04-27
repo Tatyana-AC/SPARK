@@ -433,6 +433,25 @@ def _build_respond_draft_prompt(
     return "\n".join(lines).strip()
 
 
+def _build_respond_keyword_prompt(anchor, classification: dict, previous_user_input: str) -> str:
+    return "\n".join(
+        [
+            "Extract retrieval keywords for drafting a RESPOND message.",
+            "Return topic-bearing entities, concepts, people, projects, apps, files, and concrete work items only.",
+            f"Return 3 to {_SYNTHESIS_MAX_KEYWORDS} keywords.",
+            "",
+            "Reply mode:",
+            classification.get("mode", "proactive_update"),
+            "Reply target summary:",
+            classification.get("reply_target_summary", "") or "(none)",
+            "Previous written text:",
+            (previous_user_input or "").strip() or "(empty)",
+            "",
+            "ANCHOR SOURCE",
+        ]
+    ) + "\n" + _build_synthesis_keyword_prompt(anchor)
+
+
 def _build_keyword_search_prompt(selected_text: str, matches) -> str:
     selected_text = (selected_text or "").strip()
     lines = [
@@ -558,6 +577,22 @@ def _prepare_keyword_extraction_http_request(url: str, prompt: str) -> tuple[str
         "response_format": {
             "type": "json_schema",
             "json_schema": SYNTHESIS_KEYWORD_JSON_SCHEMA,
+        },
+    }
+    return endpoint, payload
+
+
+def _prepare_respond_classification_http_request(url: str, prompt: str) -> tuple[str, dict]:
+    endpoint = f"{url}/v1/chat/completions"
+    payload = {
+        "messages": [
+            {"role": "system", "content": RESPOND_CLASSIFIER_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": RESPOND_CLASSIFICATION_JSON_SCHEMA,
         },
     }
     return endpoint, payload
@@ -832,6 +867,56 @@ def _prepare_llm_http_request(
     return endpoint, payload
 
 
+def _prepare_respond_llm_request(request: dict, args, *, db) -> tuple[str, str, dict | None]:
+    if db is None:
+        return RESPOND_DRAFT_SYSTEM_PROMPT, "(no database available)", None
+    anchor = db.get_active_session()
+    if anchor is None:
+        return RESPOND_DRAFT_SYSTEM_PROMPT, "(no active session)", None
+
+    classification_prompt = _build_respond_classification_prompt(anchor)
+    classifier_endpoint, classifier_payload = _prepare_respond_classification_http_request(
+        args.llm_url,
+        classification_prompt,
+    )
+    raw_classification = query_llm_blocking(classifier_endpoint, classifier_payload, args.timeout)
+    classification = _parse_respond_classification(raw_classification, active_text=anchor["text"] or "")
+
+    previous_user_input = (request.get("previous_user_input", "") or "").strip()
+    window_minutes = int(request.get("window_minutes") or 30)
+    cutoff = _synthesis_cutoff_timestamp(anchor, window_minutes=window_minutes)
+
+    if classification["mode"] == "proactive_update" and not previous_user_input:
+        related_rows = _collect_respond_recent_rows(db, anchor, window_minutes=window_minutes)
+    else:
+        keyword_prompt = _build_respond_keyword_prompt(anchor, classification, previous_user_input)
+        keyword_endpoint, keyword_payload = _prepare_keyword_extraction_http_request(args.llm_url, keyword_prompt)
+        try:
+            keyword_raw = query_llm_blocking(keyword_endpoint, keyword_payload, args.timeout)
+            keywords = _parse_synthesis_keywords(keyword_raw)
+        except Exception:
+            logger.exception("Keyword extraction request failed for respond_selection")
+            keywords = []
+        related_rows = _collect_synthesis_related_rows(
+            db,
+            anchor,
+            keywords=keywords,
+            cutoff_timestamp=cutoff,
+        )
+
+    prompt = _build_respond_draft_prompt(
+        anchor,
+        classification,
+        previous_user_input=previous_user_input,
+        related_rows=related_rows,
+        window_minutes=window_minutes,
+    )
+    return RESPOND_DRAFT_SYSTEM_PROMPT, prompt, {
+        "classification": classification,
+        "classifier_request_payload": classifier_payload,
+    }
+
+
 def _append_llm_audit_record(
     audit_log_path: str | Path | None,
     *,
@@ -935,7 +1020,23 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
     command = request.get("command") if request else None
     llm_system_prompt = args.system_prompt
     llm_prompt = ""
-    if command == "synthesize_session":
+    respond_audit_metadata = None
+    if command == "respond_selection":
+        try:
+            llm_system_prompt, llm_prompt, respond_audit_metadata = _prepare_respond_llm_request(
+                request,
+                args,
+                db=db,
+            )
+        except Exception as exc:
+            logger.exception("RESPOND preparation failed")
+            error_text = f"[ERROR] {exc}"
+            try:
+                _write_bridge_packet(ser, build_error(error_text), label="error")
+            except Exception:
+                logger.exception("Failed to send respond preparation error back to Pico")
+            return
+    elif command == "synthesize_session":
         if db is None:
             llm_system_prompt, llm_prompt = SYNTHESIS_SYSTEM_PROMPT, "(no database available)"
         else:
@@ -1108,6 +1209,14 @@ def handle_summarize_request(ser, request_text: str, args, *, db=None) -> None:
                 request_payload=request_payload,
                 response_text=audit_response_text,
             )
+            if respond_audit_metadata and respond_audit_metadata.get("classifier_request_payload"):
+                _append_llm_audit_record(
+                    args.audit_log,
+                    command="respond_classification",
+                    endpoint=f"{args.llm_url}/v1/chat/completions",
+                    request_payload=respond_audit_metadata["classifier_request_payload"],
+                    response_text=json.dumps(respond_audit_metadata.get("classification", {})),
+                )
         except Exception:
             logger.exception("Failed to append LLM audit record")
     except Exception as exc:

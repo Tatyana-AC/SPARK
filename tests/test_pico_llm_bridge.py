@@ -1125,10 +1125,11 @@ class ReformatHandlingTests(unittest.TestCase):
                     with mock.patch("jetson.pico_llm_bridge.time.sleep"):
                         handle_summarize_request(ser, request, self._make_args(), db=self.db)
 
-        query.assert_called_once()
+        self.assertEqual(query.call_count, 3)
         query_payload = query.call_args.args[1]
         self.assertFalse(query_payload["stream"])
         self.assertNotIn("response_format", query_payload)
+        self.assertIn("draft concise response text", query_payload["messages"][0]["content"].lower())
         emit_chunks.assert_any_call(ser, "completed reply")
 
     def test_respond_selection_without_session_sends_error(self):
@@ -1146,6 +1147,66 @@ class ReformatHandlingTests(unittest.TestCase):
         mk_error.assert_called_once()
         query.assert_not_called()
         writer.assert_called_once_with(ser, b"ERROR", label="error")
+
+    def test_respond_selection_runs_classifier_before_draft_request(self):
+        self.db.on_context_new(_make_context_payload(text="Alex: can you send an update?"))
+        ser = mock.Mock()
+        request = json.dumps({
+            "command": "respond_selection",
+            "previous_user_input": "",
+        })
+        args = self._make_args()
+        args.stream = True
+        calls = []
+
+        def fake_blocking(endpoint, payload, timeout):
+            calls.append(("blocking", payload["messages"][0]["content"], payload["messages"][1]["content"]))
+            return '{"mode":"reply_to_visible_context","reply_target_summary":"Alex asked for an update.","confidence":"high"}'
+
+        def fake_streaming(endpoint, payload, timeout):
+            calls.append(("streaming", payload["messages"][0]["content"], payload["messages"][1]["content"]))
+            yield "Here is the update."
+
+        with mock.patch("jetson.pico_llm_bridge.query_llm_blocking", side_effect=fake_blocking):
+            with mock.patch("jetson.pico_llm_bridge.query_llm_streaming", side_effect=fake_streaming):
+                with mock.patch("jetson.pico_llm_bridge._write_bridge_packet"):
+                    with mock.patch("jetson.pico_llm_bridge.time.sleep"):
+                        handle_summarize_request(ser, request, args, db=self.db)
+
+        self.assertEqual(calls[0][0], "blocking")
+        self.assertIn("classify whether the visible app context", calls[0][1].lower())
+        self.assertEqual(calls[-1][0], "streaming")
+        self.assertIn("draft concise response text", calls[-1][1].lower())
+
+    def test_respond_selection_empty_proactive_mode_includes_recent_sessions(self):
+        self.db.on_context_new(
+            _make_context_payload(app_name="Slack", window_title="Blank", text="Blank compose", timestamp=3000.0)
+        )
+        self.db.on_context_new(
+            _make_context_payload(app_name="Terminal", window_title="pytest", text="Ran all Jetson bridge tests.", timestamp=2995.0)
+        )
+        self.db.on_context_new(
+            _make_context_payload(app_name="Slack", window_title="Blank", text="Blank compose", timestamp=3001.0)
+        )
+        ser = mock.Mock()
+        request = json.dumps({
+            "command": "respond_selection",
+            "previous_user_input": "",
+        })
+        args = self._make_args()
+        args.stream = True
+
+        with mock.patch(
+            "jetson.pico_llm_bridge.query_llm_blocking",
+            return_value='{"mode":"proactive_update","reply_target_summary":"","confidence":"high"}',
+        ):
+            with mock.patch("jetson.pico_llm_bridge.query_llm_streaming", return_value=iter(["Quick update."])) as streaming:
+                with mock.patch("jetson.pico_llm_bridge._write_bridge_packet"):
+                    with mock.patch("jetson.pico_llm_bridge.time.sleep"):
+                        handle_summarize_request(ser, request, args, db=self.db)
+
+        draft_payload = streaming.call_args.args[1]
+        self.assertIn("Ran all Jetson bridge tests.", draft_payload["messages"][1]["content"])
 
     def test_keyword_search_ignores_structured_response_mode(self):
         self.db.on_context_new(_make_context_payload(text="irrational proof example"))
