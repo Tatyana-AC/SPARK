@@ -275,31 +275,11 @@ class SparkPanelUiTests(unittest.TestCase):
         request = kwargs.get("request", args[1] if len(args) > 1 else None)
         self.assertEqual(request, "RESPOND_REQUEST")
 
-    def test_respond_falls_back_to_processed_text_when_focused_text_is_empty(self):
+    def test_respond_sends_empty_draft_when_focused_text_is_empty(self):
         manager = mock.Mock()
-        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Mail draft")
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Messages")
         manager.get_focused_element_text.return_value = "   "
-        manager.get_window_text.return_value = None
-
-        panel = self._make_panel()
-        panel.manager = manager
-        panel.processed_text = "saved draft text"
-
-        with (
-            mock.patch.object(spark_app_v2, "build_respond_request") as build_respond,
-            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
-        ):
-            build_respond.return_value = "RESPOND_REQUEST"
-            panel._on_respond()
-
-        build_respond.assert_called_once_with("saved draft text")
-        start_feature_request.assert_called_once()
-
-    def test_respond_falls_back_to_window_text_when_focused_text_is_empty(self):
-        manager = mock.Mock()
-        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Note draft")
-        manager.get_focused_element_text.return_value = ""
-        manager.get_window_text.return_value = "This is the proof that the square root of 2 is irrational."
+        manager.get_window_text.return_value = "Other person: can you send me an update?"
 
         panel = self._make_panel()
         panel.manager = manager
@@ -313,13 +293,33 @@ class SparkPanelUiTests(unittest.TestCase):
             panel._on_respond()
 
         manager.get_focused_element_text.assert_called_once_with()
-        manager.get_window_text.assert_called_once_with()
-        build_respond.assert_called_once_with(
-            "This is the proof that the square root of 2 is irrational."
-        )
+        manager.get_window_text.assert_not_called()
+        build_respond.assert_called_once_with("")
         start_feature_request.assert_called_once()
 
-    def test_respond_fails_fast_when_no_draft_text_is_available(self):
+    def test_respond_does_not_use_window_text_as_draft(self):
+        manager = mock.Mock()
+        manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Slack")
+        manager.get_focused_element_text.return_value = ""
+        manager.get_window_text.return_value = "Teammate: what changed in RESPOND?"
+
+        panel = self._make_panel()
+        panel.manager = manager
+        panel.processed_text = "old captured text"
+
+        with (
+            mock.patch.object(spark_app_v2, "build_respond_request") as build_respond,
+            mock.patch.object(panel, "_start_feature_request") as start_feature_request,
+        ):
+            build_respond.return_value = "RESPOND_REQUEST"
+            panel._on_respond()
+
+        manager.get_focused_element_text.assert_called_once_with()
+        manager.get_window_text.assert_not_called()
+        build_respond.assert_called_once_with("")
+        start_feature_request.assert_called_once()
+
+    def test_respond_allows_empty_focused_text_without_failing_fast(self):
         manager = mock.Mock()
         manager.get_active_window_info.return_value = types.SimpleNamespace(bundle_id="com.test.app", title="Mail draft")
         manager.get_focused_element_text.return_value = None
@@ -334,14 +334,12 @@ class SparkPanelUiTests(unittest.TestCase):
             mock.patch.object(spark_app_v2, "build_respond_request") as build_respond,
             mock.patch.object(panel, "_start_feature_request") as start_feature_request,
         ):
+            build_respond.return_value = "RESPOND_REQUEST"
             panel._on_respond()
 
-        build_respond.assert_not_called()
-        start_feature_request.assert_not_called()
-        panel._set_status.assert_called_once_with(
-            "No draft text detected — place the cursor in the text field first",
-            spark_app_v2.RED,
-        )
+        build_respond.assert_called_once_with("")
+        start_feature_request.assert_called_once()
+        panel._set_status.assert_not_called()
 
     def test_start_feature_request_uses_feature_2_round_trip(self):
         hid_client = mock.Mock()

@@ -1952,19 +1952,18 @@ class SparkPanel(QWidget):
 
         draft_text = self.manager.get_focused_element_text()
         if not (draft_text and draft_text.strip()):
-            draft_text = self.manager.get_window_text()
-        if not (draft_text and draft_text.strip()):
-            draft_text = self.processed_text
-
-        if not (draft_text and draft_text.strip()):
-            self._set_status("No draft text detected — place the cursor in the text field first", RED)
-            return
+            draft_text = ""
 
         request = build_respond_request(draft_text)
+        capture_label = (
+            "[RESPOND] Continue current draft"
+            if draft_text.strip()
+            else "[RESPOND] Draft context-aware reply"
+        )
         self._start_feature_request(
             AppCommand.FEATURE_4,
             request=request,
-            capture_label="[RESPOND] Continue current draft",
+            capture_label=capture_label,
             status_text="Sending respond request to Jetson…",
         )
 
