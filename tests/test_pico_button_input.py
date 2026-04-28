@@ -51,6 +51,110 @@ class PicoButtonInputTests(unittest.TestCase):
             ],
         )
 
+    def test_auxiliary_input_initializes_slider_inputs_driven_common_and_encoder_from_shared_pin_config(self):
+        module = _load_button_input_module()
+        board = types.SimpleNamespace(
+            GP6="gp6",
+            GP7="gp7",
+            GP8="gp8",
+            GP10="gp10",
+            GP11="gp11",
+        )
+        created = []
+
+        class _FakeDigitalInOut:
+            def __init__(self, pin):
+                self.pin = pin
+                self.value = True
+                self.pull = None
+                self.output_value = None
+                created.append(self)
+
+            def switch_to_input(self, *, pull):
+                self.pull = pull
+
+            def switch_to_output(self, *, value):
+                self.output_value = value
+
+        digitalio = types.SimpleNamespace(DigitalInOut=_FakeDigitalInOut, Pull=types.SimpleNamespace(UP="up"))
+
+        aux_input = module.build_auxiliary_input(board_module=board, digitalio_module=digitalio)
+
+        self.assertIsInstance(aux_input, module.AuxiliaryInput)
+        self.assertEqual([pin.pin for pin in created], ["gp6", "gp7", "gp8", "gp10", "gp11"])
+        self.assertEqual([pin.pull for pin in created], ["up", "up", None, "up", "up"])
+        self.assertEqual([pin.output_value for pin in created], [None, None, False, None, None])
+
+    def test_auxiliary_input_reports_slider_position_and_encoder_scroll_delta(self):
+        module = _load_button_input_module()
+        slider_values = {"1": True, "2": True}
+        encoder_values = {"a": False, "b": False}
+
+        class _Pin:
+            def __init__(self, name, source):
+                self.name = name
+                self.source = source
+
+            @property
+            def value(self):
+                return self.source[self.name]
+
+        aux_input = module.AuxiliaryInput(
+            slider_inputs=(
+                (1, _Pin("1", slider_values)),
+                (2, _Pin("2", slider_values)),
+            ),
+            encoder_a=_Pin("a", encoder_values),
+            encoder_b=_Pin("b", encoder_values),
+        )
+
+        first = aux_input.poll_changes()
+        self.assertEqual(first.slider_position, 3)
+        self.assertEqual(first.scroll_delta, 0)
+        self.assertEqual(first.slider_state, ((1, True), (2, True)))
+
+        slider_values.update({"1": True, "2": False})
+        encoder_values["a"] = True
+        second = aux_input.poll_changes()
+        self.assertEqual(second.slider_position, 2)
+        self.assertEqual(second.scroll_delta, 1)
+        self.assertEqual(second.slider_state, ((1, True), (2, False)))
+
+        slider_values.update({"1": False, "2": True})
+        encoder_values["b"] = True
+        third = aux_input.poll_changes()
+        self.assertEqual(third.slider_position, 1)
+        self.assertEqual(third.scroll_delta, 1)
+        self.assertEqual(third.slider_state, ((1, False), (2, True)))
+
+    def test_auxiliary_input_treats_no_readable_position_as_position_three(self):
+        module = _load_button_input_module()
+        slider_values = {"1": True, "2": True}
+        encoder_values = {"a": False, "b": False}
+
+        class _Pin:
+            def __init__(self, name, source):
+                self.name = name
+                self.source = source
+
+            @property
+            def value(self):
+                return self.source[self.name]
+
+        aux_input = module.AuxiliaryInput(
+            slider_inputs=(
+                (1, _Pin("1", slider_values)),
+                (2, _Pin("2", slider_values)),
+            ),
+            encoder_a=_Pin("a", encoder_values),
+            encoder_b=_Pin("b", encoder_values),
+        )
+
+        first = aux_input.poll_changes()
+
+        self.assertEqual(first.slider_position, 3)
+        self.assertEqual(first.slider_state, ((1, True), (2, True)))
+
     def test_button_input_yields_pressed_events_only(self):
         module = _load_button_input_module()
         raw_events = iter(

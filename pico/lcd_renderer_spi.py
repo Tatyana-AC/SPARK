@@ -59,6 +59,16 @@ DISPLAY_BAUDRATE = 24_000_000
 DISPLAY_ROTATION = 180
 FONT_SCALE = 2
 CELL_LABEL_FONT_SCALE = 2
+LOGO_TEXT = "SPARK"
+LOGO_TITLE_SCALE = 4
+LOGO_Y = 42
+UPPER_MODE_TITLE = 3
+UPPER_MODE_RELEASE = 2
+UPPER_MODE_HISTORY = 1
+UPPER_TEXT_SCALE = 2
+UPPER_TEXT_X = 10
+UPPER_HEADER_Y = 10
+UPPER_BODY_Y = 34
 FONT_WIDTH = 5
 FONT_HEIGHT = 7
 FONT_SPACING = 1
@@ -103,21 +113,46 @@ _MADCTL_BY_ROTATION = {
 _FONT_GLYPHS = {
     " ": ("00000", "00000", "00000", "00000", "00000", "00000", "00000"),
     "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
     "C": ("01110", "10001", "10000", "10000", "10000", "10001", "01110"),
     "D": ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
     "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
     "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
+    "G": ("01110", "10001", "10000", "10111", "10001", "10001", "01110"),
     "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
     "I": ("11111", "00100", "00100", "00100", "00100", "00100", "11111"),
+    "J": ("00111", "00010", "00010", "00010", "10010", "10010", "01100"),
     "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
+    "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
     "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
     "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
     "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
     "P": ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
+    "Q": ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
     "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
     "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
     "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+    "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
+    "W": ("10001", "10001", "10001", "10101", "10101", "10101", "01010"),
+    "X": ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
     "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
+    "Z": ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "10000", "11110", "00001", "00001", "11110"),
+    "6": ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
+    "-": ("00000", "00000", "00000", "11111", "00000", "00000", "00000"),
+    ".": ("00000", "00000", "00000", "00000", "00000", "01100", "01100"),
+    ":": ("00000", "01100", "01100", "00000", "01100", "01100", "00000"),
+    "/": ("00001", "00010", "00010", "00100", "01000", "01000", "10000"),
+    "_": ("00000", "00000", "00000", "00000", "00000", "00000", "11111"),
 }
 
 
@@ -170,6 +205,14 @@ def cell_label_position(index, text, *, scale=CELL_LABEL_FONT_SCALE):
     )
 
 
+def logo_title_position():
+    return ((W - text_width(LOGO_TEXT, scale=LOGO_TITLE_SCALE)) // 2, LOGO_Y)
+
+
+def upper_visible_line_count():
+    return max(1, (LAYOUT_TOP - UPPER_BODY_Y - PAD) // ((FONT_HEIGHT + 1) * UPPER_TEXT_SCALE))
+
+
 def _color565(color):
     red = (color >> 16) & 0xFF
     green = (color >> 8) & 0xFF
@@ -198,6 +241,12 @@ class SpiLcdRenderer:
         self._idle_drawn = False
         self._has_blit = hasattr(target, "blit_pixels")
         self._debug_sender = None
+        self._upper_mode = UPPER_MODE_TITLE
+        self._upper_content = {
+            "release": "No released text yet...",
+            "history": "No history yet",
+        }
+        self._upper_scroll_offsets = {"release": 0, "history": 0}
 
     def set_debug_sender(self, sender):
         self._debug_sender = sender
@@ -213,6 +262,7 @@ class SpiLcdRenderer:
 
         _record_stage("renderer:draw_idle:start")
         self._target.fill(BG)
+        self._draw_upper_panel()
         _record_stage("renderer:draw_idle:after-fill")
         if self._has_blit:
             for index in range(2):
@@ -240,6 +290,117 @@ class SpiLcdRenderer:
     def draw_idle_cell(self, index):
         self._draw_cell(index, SURFACE)
 
+    def set_upper_mode(self, mode):
+        if mode not in (UPPER_MODE_HISTORY, UPPER_MODE_RELEASE, UPPER_MODE_TITLE):
+            return
+        self._upper_mode = mode
+        mode_name = self._upper_mode_name()
+        if mode_name is not None:
+            self._upper_scroll_offsets[mode_name] = 0
+        self._draw_upper_panel()
+
+    def set_upper_content(self, mode, text):
+        if mode not in self._upper_content:
+            return
+        self._upper_content[mode] = str(text or "")
+        self._upper_scroll_offsets[mode] = 0
+        if self._upper_mode_name() == mode:
+            self._draw_upper_panel()
+
+    def scroll_upper_content(self, delta):
+        mode_name = self._upper_mode_name()
+        if mode_name is None:
+            return
+        lines = self._wrapped_upper_lines(self._upper_content.get(mode_name, ""))
+        max_offset = max(0, len(lines) - upper_visible_line_count())
+        next_offset = self._upper_scroll_offsets.get(mode_name, 0) + int(delta)
+        self._upper_scroll_offsets[mode_name] = min(max_offset, max(0, next_offset))
+        self._draw_upper_panel()
+
+    def _upper_mode_name(self):
+        if self._upper_mode == UPPER_MODE_RELEASE:
+            return "release"
+        if self._upper_mode == UPPER_MODE_HISTORY:
+            return "history"
+        return None
+
+    def _draw_upper_panel(self):
+        self._target.fill_rect(0, 0, W, LAYOUT_TOP, BG)
+        if self._upper_mode == UPPER_MODE_TITLE:
+            self._draw_static_branding()
+            return
+        mode_name = self._upper_mode_name()
+        if mode_name == "release":
+            self._draw_upper_text_panel("RELEASE OUTPUT", self._upper_content.get(mode_name, ""))
+        elif mode_name == "history":
+            self._draw_upper_text_panel("SESSION HISTORY", self._upper_content.get(mode_name, ""))
+
+    def _draw_upper_text_panel(self, header, text):
+        self._target.draw_text(
+            UPPER_TEXT_X,
+            UPPER_HEADER_Y,
+            self._display_text(header),
+            ACCENT,
+            scale=UPPER_TEXT_SCALE,
+            background_color=BG,
+        )
+        lines = self._wrapped_upper_lines(text)
+        mode_name = self._upper_mode_name()
+        offset = self._upper_scroll_offsets.get(mode_name, 0) if mode_name else 0
+        visible_count = upper_visible_line_count()
+        line_step = (FONT_HEIGHT + 1) * UPPER_TEXT_SCALE
+        for index, line in enumerate(lines[offset : offset + visible_count]):
+            self._target.draw_text(
+                UPPER_TEXT_X,
+                UPPER_BODY_Y + (index * line_step),
+                self._display_text(line),
+                WHITE,
+                scale=UPPER_TEXT_SCALE,
+                background_color=BG,
+            )
+        if len(lines) > visible_count:
+            marker = f"{offset + 1}/{max(1, len(lines) - visible_count + 1)}"
+            self._target.draw_text(
+                W - text_width(marker, scale=UPPER_TEXT_SCALE) - PAD,
+                UPPER_HEADER_Y,
+                marker,
+                WHITE,
+                scale=UPPER_TEXT_SCALE,
+                background_color=BG,
+            )
+
+    def _wrapped_upper_lines(self, text):
+        max_chars = max(1, (W - (2 * UPPER_TEXT_X)) // ((FONT_WIDTH + FONT_SPACING) * UPPER_TEXT_SCALE))
+        normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        lines = []
+        for raw_line in normalized.split("\n"):
+            words = raw_line.split(" ")
+            current = ""
+            for word in words:
+                if not word:
+                    continue
+                if len(word) > max_chars:
+                    if current:
+                        lines.append(current)
+                        current = ""
+                    for start in range(0, len(word), max_chars):
+                        lines.append(word[start : start + max_chars])
+                    continue
+                candidate = word if not current else f"{current} {word}"
+                if len(candidate) <= max_chars:
+                    current = candidate
+                else:
+                    lines.append(current)
+                    current = word
+            if current:
+                lines.append(current)
+            elif raw_line == "":
+                lines.append("")
+        return lines or [""]
+
+    def _display_text(self, text):
+        return "".join(char if char in _FONT_GLYPHS else " " for char in str(text).upper())
+
     def _draw_spacer(self, index):
         x, y = spacer_origin(index)
         self._draw_bordered_region(x, y, spacer_width(index), CELL_H, SURFACE)
@@ -259,6 +420,28 @@ class SpiLcdRenderer:
             scale=CELL_LABEL_FONT_SCALE,
             background_color=fill_color,
         )
+
+    def _draw_static_branding(self):
+        title_x, title_y = logo_title_position()
+        title_width = text_width(LOGO_TEXT, scale=LOGO_TITLE_SCALE)
+        title_height = FONT_HEIGHT * LOGO_TITLE_SCALE
+        center_x = W // 2
+        underline_y = title_y + title_height + 14
+        spark_y = title_y - 16
+
+        self._target.fill_rect(center_x - 48, spark_y + 8, 96, 2, ACCENT)
+        self._target.fill_rect(center_x - 12, spark_y, 24, 2, WHITE)
+        self._target.fill_rect(center_x - 1, spark_y - 7, 2, 14, ACCENT)
+        self._target.draw_text(
+            title_x,
+            title_y,
+            LOGO_TEXT,
+            WHITE,
+            scale=LOGO_TITLE_SCALE,
+            background_color=BG,
+        )
+        self._target.fill_rect(title_x - 6, underline_y, title_width + 12, 2, ACCENT)
+        self._target.fill_rect(center_x - 18, underline_y + 7, 36, 2, WHITE)
 
     def _draw_bordered_region(self, x, y, width, height, fill_color):
         self._target.fill_rect(x, y, width, height, fill_color)

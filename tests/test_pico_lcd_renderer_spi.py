@@ -71,7 +71,58 @@ def _cell_calls(renderer_spi, index, fill_color):
     ]
 
 
+def _spark_branding_calls(renderer_spi):
+    title_x, title_y = renderer_spi.logo_title_position()
+    title_width = renderer_spi.text_width(renderer_spi.LOGO_TEXT, scale=renderer_spi.LOGO_TITLE_SCALE)
+    title_height = renderer_spi.FONT_HEIGHT * renderer_spi.LOGO_TITLE_SCALE
+    center_x = renderer_spi.W // 2
+    underline_y = title_y + title_height + 14
+    spark_y = title_y - 16
+    return [
+        ("fill_rect", center_x - 48, spark_y + 8, 96, 2, renderer_spi.ACCENT),
+        ("fill_rect", center_x - 12, spark_y, 24, 2, renderer_spi.WHITE),
+        ("fill_rect", center_x - 1, spark_y - 7, 2, 14, renderer_spi.ACCENT),
+        (
+            "draw_text",
+            title_x,
+            title_y,
+            renderer_spi.LOGO_TEXT,
+            renderer_spi.WHITE,
+            renderer_spi.LOGO_TITLE_SCALE,
+            renderer_spi.BG,
+        ),
+        ("fill_rect", title_x - 6, underline_y, title_width + 12, 2, renderer_spi.ACCENT),
+        ("fill_rect", center_x - 18, underline_y + 7, 36, 2, renderer_spi.WHITE),
+    ]
+
+
 class PicoLcdRendererSpiTests(unittest.TestCase):
+    def test_renderer_draws_static_spark_branding_in_upper_idle_area(self):
+        renderer_spi = _load_module("pico.lcd_renderer_spi")
+        target = _FakeDrawTarget()
+        renderer = renderer_spi.SpiLcdRenderer(target=target)
+
+        renderer.draw_idle_layout()
+
+        title_calls = [call for call in target.calls if call[0] == "draw_text" and call[3] == "SPARK"]
+        self.assertEqual(len(title_calls), 1)
+        _kind, x, y, text, color, scale, background_color = title_calls[0]
+        self.assertEqual(text, "SPARK")
+        self.assertEqual(color, renderer_spi.WHITE)
+        self.assertEqual(scale, 4)
+        self.assertEqual(background_color, renderer_spi.BG)
+        self.assertLess(y, renderer_spi.LAYOUT_TOP)
+        self.assertLess(y + renderer_spi.FONT_HEIGHT * scale, renderer_spi.LAYOUT_TOP)
+        self.assertGreaterEqual(x, 0)
+        self.assertLessEqual(x + renderer_spi.text_width(text, scale=scale), renderer_spi.W)
+
+        accent_calls = [
+            call
+            for call in target.calls
+            if call[0] == "fill_rect" and call[-1] in (renderer_spi.ACCENT, renderer_spi.WHITE)
+        ]
+        self.assertTrue(any(call[2] < renderer_spi.LAYOUT_TOP for call in accent_calls))
+
     def test_renderer_uses_staggered_bottom_cell_geometry_with_fit_cell_labels(self):
         renderer_spi = _load_module("pico.lcd_renderer_spi")
 
@@ -120,7 +171,8 @@ class PicoLcdRendererSpiTests(unittest.TestCase):
 
         renderer.draw_idle_layout()
 
-        self.assertEqual(target.calls, [("fill", renderer_spi.BG)])
+        title_calls = [call for call in target.calls if call[0] == "draw_text" and call[3] == "SPARK"]
+        self.assertEqual(len(title_calls), 1)
         self.assertEqual(len(target.blit_calls), 6)
 
         target.calls.clear()
@@ -157,7 +209,9 @@ class PicoLcdRendererSpiTests(unittest.TestCase):
 
         expected_calls = [
             ("fill", renderer_spi.BG),
+            ("fill_rect", 0, 0, renderer_spi.W, renderer_spi.LAYOUT_TOP, renderer_spi.BG),
         ]
+        expected_calls.extend(_spark_branding_calls(renderer_spi))
         for index in range(2):
             expected_calls.extend(_spacer_calls(renderer_spi, index))
         for index in range(4):

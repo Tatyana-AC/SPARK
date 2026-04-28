@@ -92,6 +92,7 @@ class _FakeBridgeRuntime:
         button_input,
         debug_sender,
         time_sleep,
+        auxiliary_input=None,
         button_press_handler=None,
         ui=None,
         relay_chunk_size=64,
@@ -104,6 +105,7 @@ class _FakeBridgeRuntime:
         self.custom_hid = custom_hid
         self.raw_report_id = raw_report_id
         self.button_input = button_input
+        self.auxiliary_input = auxiliary_input
         self.button_press_handler = button_press_handler
         self.debug_sender = debug_sender
         self.time_sleep = time_sleep
@@ -352,7 +354,7 @@ class PicoCodeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "stop after runtime start"):
                 module._main(steps.append)
 
-        self.assertEqual(handler_preparers, ["bridge-preparer"])
+        self.assertEqual(len(handler_preparers), 1)
         self.assertEqual(len(bridge_app_calls), 1)
         self.assertIsInstance(bridge_app_calls[0]["jetson_transport"], _InitOnlyJetsonTransport)
         status = bridge_app_calls[0]["runtime_status"]()
@@ -361,6 +363,82 @@ class PicoCodeTests(unittest.TestCase):
         self.assertFalse(status.request_active)
         self.assertEqual(status.response_length, 0)
         self.assertFalse(status.response_complete)
+
+    def test_main_runtime_wraps_lcd_upload_commands_into_ui_updates(self):
+        module = self._load_code_module()
+        _FakeBridgeRuntime.instances = []
+        handler_preparers = []
+        ui_calls = []
+
+        fake_time = types.SimpleNamespace(monotonic=mock.Mock(return_value=1.0), sleep=lambda _: None)
+        fake_board = types.SimpleNamespace(GP0=object(), GP1=object())
+        fake_busio = types.SimpleNamespace(UART=lambda *args, **kwargs: object())
+        fake_supervisor = types.SimpleNamespace(runtime=types.SimpleNamespace(autoreload=True))
+        fake_usb_cdc = types.SimpleNamespace(data=object())
+        fake_hid_device = types.SimpleNamespace(usage_page=0xFF60, usage=0x61)
+        fake_usb_hid = types.SimpleNamespace(devices=[fake_hid_device])
+
+        class _CapturingUploadProtocolHandler:
+            def __init__(self, text_preparer):
+                handler_preparers.append(text_preparer)
+
+            def handle_report(self, report):
+                return None
+
+            def update_response_state(self, response_bytes, *, complete, active):
+                return None
+
+        fake_ui = types.SimpleNamespace(set_upper_content=lambda mode, text: ui_calls.append((mode, text)))
+        fake_upload_protocol_module = types.SimpleNamespace(
+            UploadProtocolHandler=_CapturingUploadProtocolHandler,
+            AppCommand=types.SimpleNamespace(LCD_RELEASE_OUTPUT=0x0201, LCD_SESSION_HISTORY=0x0202),
+        )
+        fake_bridge_app_module = types.SimpleNamespace(
+            build_text_preparer=lambda **kwargs: lambda app_command, text: {
+                "accepted_text": text,
+                "accepted_count": len(text),
+                "skipped_count": 0,
+                "detail": "base",
+            },
+            build_button_press_handler=lambda **kwargs: lambda *_: None,
+        )
+
+        import_overrides = {
+            "time": fake_time,
+            "board": fake_board,
+            "busio": fake_busio,
+            "supervisor": fake_supervisor,
+            "usb_cdc": fake_usb_cdc,
+            "usb_hid": fake_usb_hid,
+            "pico.bridge_app": fake_bridge_app_module,
+            "pico.jetson_transport": types.SimpleNamespace(JetsonTransport=_InitOnlyJetsonTransport),
+            "pico.serial_bridge": types.SimpleNamespace(SerialBridge=_InitOnlySerialBridge),
+            "pico.upload_protocol": fake_upload_protocol_module,
+            "pico.usb_config": types.SimpleNamespace(RAW_REPORT_ID=9, RAW_USAGE_ID=0x61, RAW_USAGE_PAGE=0xFF60),
+            "pico.bridge_runtime": types.SimpleNamespace(BridgeRuntime=_FakeBridgeRuntime),
+            "pico.button_input": types.SimpleNamespace(
+                build_button_input=lambda: object(),
+                build_auxiliary_input=lambda: object(),
+            ),
+            "pico.lcd_ui": types.SimpleNamespace(initialize_lcd_ui=lambda *, mode="standalone": fake_ui),
+        }
+        original_import = builtins.__import__
+
+        def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name in import_overrides:
+                return import_overrides[name]
+            return original_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=tracking_import):
+            with self.assertRaisesRegex(RuntimeError, "stop after runtime start"):
+                module._main(lambda _step: None)
+
+        release = handler_preparers[0](0x0201, "release text")
+        history = handler_preparers[0](0x0202, "Chrome - https://example.com")
+
+        self.assertEqual(ui_calls, [("release", "release text"), ("history", "Chrome - https://example.com")])
+        self.assertEqual(release["detail"], "lcd release")
+        self.assertEqual(history["detail"], "lcd history")
 
     def test_main_runtime_builds_button_press_handler_from_bridge_app(self):
         module = self._load_code_module()

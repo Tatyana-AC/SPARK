@@ -336,6 +336,62 @@ class BridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(sleeps, [0.002])
         self.assertEqual(runtime.current_status().loop_checkpoint, "after_sleep")
 
+    def test_bridge_runtime_applies_auxiliary_slider_and_encoder_to_upper_lcd(self):
+        from pico.bridge_runtime import BridgeRuntime
+
+        ui_calls = []
+        debug_calls = []
+        aux_events = iter(
+            [
+                types.SimpleNamespace(slider_state=((1, True), (2, False), (3, True)), slider_position=2, scroll_delta=0),
+                types.SimpleNamespace(slider_state=None, slider_position=None, scroll_delta=1),
+            ]
+        )
+
+        runtime = BridgeRuntime(
+            serial_bridge=types.SimpleNamespace(relay_once=lambda *, max_chunk_size: None),
+            jetson_transport=types.SimpleNamespace(
+                poll=lambda *, max_chunk_size: None,
+                request_active=False,
+                response_len=0,
+                response_complete=False,
+                response_bytes=b"",
+            ),
+            protocol_handler=types.SimpleNamespace(
+                update_response_state=lambda response_bytes, *, complete, active: None,
+                handle_report=lambda report: None,
+            ),
+            custom_hid=types.SimpleNamespace(
+                get_last_received_report=lambda raw_report_id: None,
+                send_report=lambda reply, raw_report_id: None,
+            ),
+            raw_report_id=9,
+            button_input=types.SimpleNamespace(drain_pressed_events=lambda: iter(())),
+            auxiliary_input=types.SimpleNamespace(poll_changes=lambda: next(aux_events)),
+            ui=types.SimpleNamespace(
+                set_upper_mode=lambda position: ui_calls.append(("mode", position)),
+                scroll_upper_content=lambda delta: ui_calls.append(("scroll", delta)),
+                tick=lambda *, now: ui_calls.append(("tick", now)),
+            ),
+            time_sleep=lambda _: None,
+            debug_sender=lambda message: debug_calls.append(message) or "sent:9",
+            heartbeat_interval_s=99.0,
+        )
+
+        runtime.run_once(now=1.0)
+        runtime.run_once(now=1.1)
+
+        self.assertEqual(
+            ui_calls,
+            [
+                ("mode", 2),
+                ("tick", 1.0),
+                ("scroll", 1),
+                ("tick", 1.1),
+            ],
+        )
+        self.assertEqual(debug_calls, ["slider_raw:1=H,2=L,3=H", "slider:2", "scroll:1"])
+
     def test_bridge_runtime_skips_serial_bridge_while_request_active(self):
         from pico.bridge_runtime import BridgeRuntime
 

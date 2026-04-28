@@ -327,6 +327,15 @@ class PicoLcdUiTests(unittest.TestCase):
         renderer_calls = []
 
         class _FakeBridgeRenderer:
+            def set_upper_mode(self, mode):
+                renderer_calls.append(("mode", mode))
+
+            def set_upper_content(self, mode, text):
+                renderer_calls.append(("content", mode, text))
+
+            def scroll_upper_content(self, delta):
+                renderer_calls.append(("scroll", delta))
+
             def draw_pressed_cell(self, index):
                 renderer_calls.append(("pressed", index))
 
@@ -350,8 +359,22 @@ class PicoLcdUiTests(unittest.TestCase):
         ui.handle_press(1, now=10.0)
         ui.handle_press(3, now=10.1)
         ui.tick(now=10.55)
+        ui.set_upper_mode(2)
+        ui.set_upper_content("release", "Release output text")
+        ui.scroll_upper_content(1)
 
-        self.assertEqual(renderer_calls, [("pressed", 1), ("idle", 1), ("pressed", 3), ("idle", 3)])
+        self.assertEqual(
+            renderer_calls,
+            [
+                ("pressed", 1),
+                ("idle", 1),
+                ("pressed", 3),
+                ("idle", 3),
+                ("mode", 2),
+                ("content", "release", "Release output text"),
+                ("scroll", 1),
+            ],
+        )
         self.assertIsNone(ui.active_cell)
         self.assertEqual(ui.press_time, 10.1)
 

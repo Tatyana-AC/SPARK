@@ -116,6 +116,43 @@ class SparkPanelUiTests(unittest.TestCase):
         dialog_cls.assert_called_once_with(panel)
         dialog.exec.assert_called_once()
 
+    def test_release_output_syncs_plain_text_to_pico_lcd(self):
+        hid_client = mock.Mock()
+        hid_client.is_connected.return_value = True
+        panel = self._make_panel(hid_client=hid_client)
+
+        panel._set_release_output("**Done**\n\nRendered output")
+
+        hid_client.upload.assert_called_with(
+            spark_app_v2.AppCommand.LCD_RELEASE_OUTPUT,
+            "**Done**\n\nRendered output",
+        )
+
+    def test_history_refresh_syncs_app_and_url_lines_to_pico_lcd(self):
+        hid_client = mock.Mock()
+        hid_client.is_connected.return_value = True
+        panel = self._make_panel(hid_client=hid_client)
+        tracker = WindowContextTracker()
+        tracker.update(
+            WindowInfo(title="Docs", app_name="Google Chrome", process_name="Chrome", pid=1),
+            "docs text",
+            TextSource.WEB_CONTENT,
+            tab=types.SimpleNamespace(tab_title="Docs", url="https://example.com/spec"),
+        )
+        tracker.update(
+            WindowInfo(title="main.py", app_name="Code", process_name="Code", pid=2),
+            "code",
+            TextSource.FULL_WINDOW,
+        )
+        panel.tracker = tracker
+
+        panel._refresh_history_cards()
+
+        hid_client.upload.assert_called_with(
+            spark_app_v2.AppCommand.LCD_SESSION_HISTORY,
+            "Google Chrome - https://example.com/spec",
+        )
+
     def test_reformat_blocked_when_selection_from_private_window(self):
         manager = mock.Mock()
         manager.get_active_window_info.return_value = types.SimpleNamespace(

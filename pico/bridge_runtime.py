@@ -23,6 +23,7 @@ class BridgeRuntime:
         custom_hid,
         raw_report_id,
         button_input,
+        auxiliary_input=None,
         button_press_handler=None,
         debug_sender=None,
         time_sleep,
@@ -38,6 +39,7 @@ class BridgeRuntime:
         self._custom_hid = custom_hid
         self._raw_report_id = raw_report_id
         self._button_input = button_input
+        self._auxiliary_input = auxiliary_input
         self._button_press_handler = button_press_handler
         self._debug_sender = debug_sender or (lambda message: None)
         self._time_sleep = time_sleep
@@ -132,6 +134,26 @@ class BridgeRuntime:
                 self._button_press_handler(button_event.index)
             break
         self._last_loop_checkpoint = "after_button_events"
+
+        if self._auxiliary_input is not None and self._ui is not None:
+            auxiliary_change = self._auxiliary_input.poll_changes()
+            slider_state = getattr(auxiliary_change, "slider_state", None)
+            slider_position = getattr(auxiliary_change, "slider_position", None)
+            scroll_delta = int(getattr(auxiliary_change, "scroll_delta", 0) or 0)
+            if slider_state is not None:
+                raw_state = ",".join(f"{position}={'H' if is_high else 'L'}" for position, is_high in slider_state)
+                self._emit_debug(f"slider_raw:{raw_state}")
+            if slider_position is not None:
+                self._emit_debug(f"slider:{slider_position}")
+                set_upper_mode = getattr(self._ui, "set_upper_mode", None)
+                if set_upper_mode is not None:
+                    set_upper_mode(slider_position)
+            if scroll_delta:
+                self._emit_debug(f"scroll:{scroll_delta}")
+                scroll_upper_content = getattr(self._ui, "scroll_upper_content", None)
+                if scroll_upper_content is not None:
+                    scroll_upper_content(scroll_delta)
+        self._last_loop_checkpoint = "after_auxiliary_input"
 
         if self._ui is not None:
             self._last_loop_checkpoint = "before_ui_tick"

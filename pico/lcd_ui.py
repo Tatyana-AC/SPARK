@@ -272,6 +272,15 @@ class SparkLcdUi:
             self.cell_views[change.previous_active].pressed_overlay.hidden = True
         self._sync_public_state()
 
+    def set_upper_mode(self, _position):
+        return None
+
+    def set_upper_content(self, _mode, _text):
+        return None
+
+    def scroll_upper_content(self, _delta):
+        return None
+
     def _sync_public_state(self):
         self.active_cell = self._state.active_index
         self.press_time = self._state.press_time
@@ -322,6 +331,21 @@ class _BridgeSparkLcdUi:
         if change.visible_changed:
             self._renderer.draw_idle_cell(change.previous_active)
         self._sync_public_state()
+
+    def set_upper_mode(self, position):
+        set_upper_mode = getattr(self._renderer, "set_upper_mode", None)
+        if set_upper_mode is not None:
+            set_upper_mode(position)
+
+    def set_upper_content(self, mode, text):
+        set_upper_content = getattr(self._renderer, "set_upper_content", None)
+        if set_upper_content is not None:
+            set_upper_content(mode, text)
+
+    def scroll_upper_content(self, delta):
+        scroll_upper_content = getattr(self._renderer, "scroll_upper_content", None)
+        if scroll_upper_content is not None:
+            scroll_upper_content(delta)
 
     def _sync_public_state(self):
         self.active_cell = self._state.active_index

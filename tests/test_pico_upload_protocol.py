@@ -217,6 +217,23 @@ class UploadProtocolTests(unittest.TestCase):
         self.assertEqual(self._detail(reply), "spark ready")
         self.assertEqual(self.prepared, [])
 
+    def test_lcd_display_upload_commands_are_accepted_by_protocol(self):
+        payload = b"release text"
+
+        begin = self.handler.handle_report(
+            self._begin_report(
+                message_id=22,
+                app_command=int(self.AppCommand.LCD_RELEASE_OUTPUT),
+                payload=payload,
+            )
+        )
+        self.handler.handle_report(self._chunk_report(message_id=22, index=0, chunk=payload))
+        commit = self.handler.handle_report(self._commit_report(message_id=22))
+
+        self.assertEqual(begin[4], self.StatusCode.OK)
+        self.assertEqual(commit[4], self.StatusCode.OK)
+        self.assertEqual(self.prepared, [(self.AppCommand.LCD_RELEASE_OUTPUT, "release text")])
+
     def test_handle_report_accepts_optional_leading_report_id_byte(self):
         reply = self.handler.handle_report(bytes([0x04, self.Command.GET_INFO]) + bytes(31))
 

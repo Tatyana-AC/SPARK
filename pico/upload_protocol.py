@@ -50,6 +50,8 @@ class AppCommand:
     FEATURE_2 = 0x0102
     FEATURE_3 = 0x0103
     FEATURE_4 = 0x0104
+    LCD_RELEASE_OUTPUT = 0x0201
+    LCD_SESSION_HISTORY = 0x0202
 
 
 VALID_APP_COMMANDS = {
@@ -59,6 +61,8 @@ VALID_APP_COMMANDS = {
     AppCommand.FEATURE_2,
     AppCommand.FEATURE_3,
     AppCommand.FEATURE_4,
+    AppCommand.LCD_RELEASE_OUTPUT,
+    AppCommand.LCD_SESSION_HISTORY,
 }
 
 

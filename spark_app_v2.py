@@ -964,6 +964,7 @@ class SparkPanel(QWidget):
         self._last_pico_runtime_emitted_at: float | None = None
         self._last_runtime_response_flags = (False, False)
         self._release_output_plain_text = "No released text yet…"
+        self._last_lcd_sync_text: dict[AppCommand, str] = {}
         self._capture_feed = LiveCaptureFeed(max_lines=self.MAX_CAPTURE_LINES)
         self._drag_pos: QPoint | None = None
 
@@ -1332,6 +1333,8 @@ class SparkPanel(QWidget):
             logger.info("[HID] Device connected")
             if self.processed_text:
                 self.btn_release.setEnabled(True)
+            self._sync_lcd_release_output(self._release_output_plain_text)
+            self._sync_lcd_session_history()
         else:
             self.device_dot.setText("● DEVICE DISCONNECTED")
             self.device_dot.setStyleSheet("color: #374151;")
@@ -1349,6 +1352,33 @@ class SparkPanel(QWidget):
         output = text if text else fallback
         self._release_output_plain_text = output
         self.release_output_lbl.setMarkdown(output)
+        self._sync_lcd_release_output(output)
+
+    def _sync_lcd_upload(self, app_command: AppCommand, text: str):
+        if getattr(self, "_summary_request_in_flight", False) or getattr(self, "_release_in_progress", False):
+            return
+        text = text[:4096]
+        if self._last_lcd_sync_text.get(app_command) == text:
+            return
+        try:
+            if not self.hid_client.is_connected():
+                return
+            status = self.hid_client.upload(app_command, text)
+            if getattr(status, "ok", False):
+                self._last_lcd_sync_text[app_command] = text
+        except Exception as exc:
+            logger.debug("[LCD SYNC] Could not sync LCD text: %s", exc)
+
+    def _sync_lcd_release_output(self, text: str):
+        self._sync_lcd_upload(AppCommand.LCD_RELEASE_OUTPUT, text)
+
+    def _sync_lcd_session_history(self):
+        previous = self.tracker.get_all_previous()
+        lines = [
+            f"{snap.window_info.app_name} - {(snap.url or snap.window_info.title or '').strip()}"
+            for snap in previous
+        ]
+        self._sync_lcd_upload(AppCommand.LCD_SESSION_HISTORY, "\n".join(lines) or "No history yet")
 
     def _copy_release_output(self):
         text = self._release_output_plain_text or self.release_output_lbl.toPlainText()
@@ -1367,6 +1397,7 @@ class SparkPanel(QWidget):
         self._release_in_progress = False
         if getattr(self, "_hid_connected", False):
             self.btn_release.setEnabled(True)
+        self._sync_lcd_release_output(self._release_output_plain_text)
 
     def _set_summary_buttons_enabled(self, enabled: bool):
         self.btn_summarize.setEnabled(enabled)
@@ -1431,6 +1462,7 @@ class SparkPanel(QWidget):
         self._active_feature_command = None
         self._drain_stale_hid_debug_events()
         self._set_summary_buttons_enabled(True)
+        self._sync_lcd_release_output(self._release_output_plain_text)
 
     def _on_pico_debug_message(self, message: str):
         if message == "post_press:1" and not self._summary_request_in_flight:
@@ -1774,6 +1806,7 @@ class SparkPanel(QWidget):
                 card.update_data(snap.window_info.app_name, subtitle or "", active=False)
             else:
                 card.update_data("—", "", active=False)
+        self._sync_lcd_session_history()
 
     def _push_poll_capture_line(self, line: str):
         self._capture_feed.push_poll_line(line)

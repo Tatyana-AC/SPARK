@@ -48,6 +48,36 @@ def _make_transport_debug_hook(*, status_sender):
     return _hook
 
 
+def _make_lcd_text_preparer(*, base_preparer, ui_provider, app_command_class):
+    release_command = int(app_command_class.LCD_RELEASE_OUTPUT)
+    history_command = int(app_command_class.LCD_SESSION_HISTORY)
+
+    def _prepare(app_command, text):
+        command_code = int(app_command)
+        ui = ui_provider()
+        if command_code == release_command:
+            ui.set_upper_content("release", text)
+            return {
+                "accepted_text": text,
+                "accepted_count": len(text),
+                "skipped_count": 0,
+                "detail": "lcd release",
+                "response_text": "",
+            }
+        if command_code == history_command:
+            ui.set_upper_content("history", text)
+            return {
+                "accepted_text": text,
+                "accepted_count": len(text),
+                "skipped_count": 0,
+                "detail": "lcd history",
+                "response_text": "",
+            }
+        return base_preparer(app_command, text)
+
+    return _prepare
+
+
 def _configure_runtime(supervisor, record_step):
     supervisor.runtime.autoreload = False
     record_step("autoreload disabled")
@@ -67,19 +97,35 @@ def _main(record_step):
         from pico.bridge_app import build_button_press_handler, build_text_preparer
         from pico.bridge_runtime import BridgeRuntime
         from pico.button_input import build_button_input
+        try:
+            from pico.button_input import build_auxiliary_input
+        except ImportError:
+            build_auxiliary_input = lambda: None
         from pico.jetson_transport import JetsonTransport
         from pico.lcd_ui import initialize_lcd_ui
         from pico.serial_bridge import SerialBridge
         from pico.upload_protocol import UploadProtocolHandler
+        try:
+            from pico.upload_protocol import AppCommand
+        except ImportError:
+            AppCommand = type("AppCommand", (), {"LCD_RELEASE_OUTPUT": 0x0201, "LCD_SESSION_HISTORY": 0x0202})
         from pico.usb_config import RAW_REPORT_ID, RAW_USAGE_ID, RAW_USAGE_PAGE
     except ImportError:
         from bridge_app import build_button_press_handler, build_text_preparer
         from bridge_runtime import BridgeRuntime
         from button_input import build_button_input
+        try:
+            from button_input import build_auxiliary_input
+        except ImportError:
+            build_auxiliary_input = lambda: None
         from jetson_transport import JetsonTransport
         from lcd_ui import initialize_lcd_ui
         from serial_bridge import SerialBridge
         from upload_protocol import UploadProtocolHandler
+        try:
+            from upload_protocol import AppCommand
+        except ImportError:
+            AppCommand = type("AppCommand", (), {"LCD_RELEASE_OUTPUT": 0x0201, "LCD_SESSION_HISTORY": 0x0202})
         from usb_config import RAW_REPORT_ID, RAW_USAGE_ID, RAW_USAGE_PAGE
 
     record_step("spark modules ready")
@@ -101,14 +147,20 @@ def _main(record_step):
     )
     record_step("transport ready")
     runtime = None
+    ui = None
     button_press_handler = build_button_press_handler(
         jetson_transport=jetson_transport,
         runtime_status=lambda: runtime.current_status(),
     )
+    base_text_preparer = build_text_preparer(
+        jetson_transport=jetson_transport,
+        runtime_status=lambda: runtime.current_status(),
+    )
     protocol_handler = UploadProtocolHandler(
-        text_preparer=build_text_preparer(
-            jetson_transport=jetson_transport,
-            runtime_status=lambda: runtime.current_status(),
+        text_preparer=_make_lcd_text_preparer(
+            base_preparer=base_text_preparer,
+            ui_provider=lambda: ui,
+            app_command_class=AppCommand,
         )
     )
     record_step("protocol handler ready")
@@ -116,6 +168,8 @@ def _main(record_step):
     record_step("lcd ui ready")
     button_input = build_button_input()
     record_step("button input ready")
+    auxiliary_input = build_auxiliary_input()
+    record_step("auxiliary input ready")
     runtime = BridgeRuntime(
         serial_bridge=serial_bridge,
         jetson_transport=jetson_transport,
@@ -123,6 +177,7 @@ def _main(record_step):
         custom_hid=custom_hid,
         raw_report_id=RAW_REPORT_ID,
         button_input=button_input,
+        auxiliary_input=auxiliary_input,
         button_press_handler=button_press_handler,
         ui=ui,
         debug_sender=_send_button_debug,

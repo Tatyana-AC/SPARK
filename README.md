@@ -223,7 +223,7 @@ If recovery stops on a Pico message about a read-only `CIRCUITPY` mount, reconne
 - The current Pico firmware target is CircuitPython.
 - `tools/monitoring/watch_full_stack.py` is the passive full-stack watcher for host, Pico, and Jetson logs.
 - `tools/monitoring/pico_monitor.py` is the direct Pico HID/runtime monitor.
-- Current auxiliary input wiring: EC11 encoder A/B/button/common -> GP10/GP11/GP9/GND, and three-position slide switch positions 1/2/3/common -> GP6/GP7/GP8/GND.
+- Current auxiliary input wiring: EC11 encoder A/B/button/common -> GP10/GP11/GP9/GND. The three-position slide switch uses GP6 for position 1, GP7 for position 2, and GP8 as a driven-low common; position 3 is inferred when neither GP6 nor GP7 is low, which also supports a P3 lug tied to GND.
 - `python tools/pico/deploy_to_pico.py` is the cross-platform helper to push the Pico firmware and `adafruit_hid` onto a mounted `CIRCUITPY` board.
 - Deploy now exact-syncs the default Pico runtime and removes stale non-preserved files from `CIRCUITPY`; use `--dry-run` to inspect planned deletions first.
 - `Release Text` uploads text to the Pico, waits for an acknowledgment, and updates the local `RELEASE OUTPUT` panel. It does not type text back into the currently focused external app.
