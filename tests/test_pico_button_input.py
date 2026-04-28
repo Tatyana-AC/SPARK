@@ -117,15 +117,57 @@ class PicoButtonInputTests(unittest.TestCase):
         encoder_values["a"] = True
         second = aux_input.poll_changes()
         self.assertEqual(second.slider_position, 2)
-        self.assertEqual(second.scroll_delta, 1)
+        self.assertEqual(second.scroll_delta, 0)
         self.assertEqual(second.slider_state, ((1, True), (2, False)))
 
         slider_values.update({"1": False, "2": True})
         encoder_values["b"] = True
         third = aux_input.poll_changes()
         self.assertEqual(third.slider_position, 1)
-        self.assertEqual(third.scroll_delta, 1)
+        self.assertEqual(third.scroll_delta, 0)
         self.assertEqual(third.slider_state, ((1, False), (2, True)))
+
+        encoder_values["a"] = False
+        fourth = aux_input.poll_changes()
+        self.assertIsNone(fourth.slider_position)
+        self.assertEqual(fourth.scroll_delta, 0)
+
+        encoder_values["b"] = False
+        fifth = aux_input.poll_changes()
+        self.assertIsNone(fifth.slider_position)
+        self.assertEqual(fifth.scroll_delta, 1)
+
+    def test_auxiliary_input_ignores_encoder_bounce_until_full_detent(self):
+        module = _load_button_input_module()
+        slider_values = {"1": True, "2": True}
+        encoder_values = {"a": False, "b": False}
+
+        class _Pin:
+            def __init__(self, name, source):
+                self.name = name
+                self.source = source
+
+            @property
+            def value(self):
+                return self.source[self.name]
+
+        aux_input = module.AuxiliaryInput(
+            slider_inputs=(
+                (1, _Pin("1", slider_values)),
+                (2, _Pin("2", slider_values)),
+            ),
+            encoder_a=_Pin("a", encoder_values),
+            encoder_b=_Pin("b", encoder_values),
+        )
+        aux_input.poll_changes()
+
+        encoder_values["a"] = True
+        first_edge = aux_input.poll_changes()
+        encoder_values["a"] = False
+        bounce_back = aux_input.poll_changes()
+
+        self.assertEqual(first_edge.scroll_delta, 0)
+        self.assertEqual(bounce_back.scroll_delta, 0)
 
     def test_auxiliary_input_treats_no_readable_position_as_position_three(self):
         module = _load_button_input_module()

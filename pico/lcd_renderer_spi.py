@@ -65,7 +65,11 @@ LOGO_Y = 42
 UPPER_MODE_TITLE = 3
 UPPER_MODE_RELEASE = 2
 UPPER_MODE_HISTORY = 1
-UPPER_TEXT_SCALE = 2
+UPPER_HEADER_TEXT_SCALE = 2
+UPPER_BODY_TEXT_X_SCALE = 1
+UPPER_BODY_TEXT_X_SCALE_DEN = 1
+UPPER_BODY_TEXT_Y_SCALE = 3
+UPPER_BODY_TEXT_Y_SCALE_DEN = 2
 UPPER_TEXT_X = 10
 UPPER_HEADER_Y = 10
 UPPER_BODY_Y = 34
@@ -194,6 +198,22 @@ def text_width(text, *, scale=FONT_SCALE):
     return (len(text) * char_step) - (FONT_SPACING * scale)
 
 
+def text_width_scaled(text, *, x_scale, x_scale_den=1):
+    if not text:
+        return 0
+    glyph_width = scaled_text_width(FONT_WIDTH, x_scale=x_scale, x_scale_den=x_scale_den)
+    char_step = scaled_text_width(FONT_WIDTH + FONT_SPACING, x_scale=x_scale, x_scale_den=x_scale_den)
+    return (len(text) * char_step) - (char_step - glyph_width)
+
+
+def scaled_text_width(width, *, x_scale, x_scale_den=1):
+    return (width * x_scale + x_scale_den - 1) // x_scale_den
+
+
+def scaled_text_height(y_scale, *, y_scale_den=1):
+    return (FONT_HEIGHT * y_scale + y_scale_den - 1) // y_scale_den
+
+
 def cell_label_position(index, text, *, scale=CELL_LABEL_FONT_SCALE):
     x, y = cell_origin(index)
     width = cell_width(index)
@@ -210,7 +230,7 @@ def logo_title_position():
 
 
 def upper_visible_line_count():
-    return max(1, (LAYOUT_TOP - UPPER_BODY_Y - PAD) // ((FONT_HEIGHT + 1) * UPPER_TEXT_SCALE))
+    return max(1, (LAYOUT_TOP - UPPER_BODY_Y - PAD) // (scaled_text_height(UPPER_BODY_TEXT_Y_SCALE, y_scale_den=UPPER_BODY_TEXT_Y_SCALE_DEN) + 1))
 
 
 def _color565(color):
@@ -313,7 +333,8 @@ class SpiLcdRenderer:
             return
         lines = self._wrapped_upper_lines(self._upper_content.get(mode_name, ""))
         max_offset = max(0, len(lines) - upper_visible_line_count())
-        next_offset = self._upper_scroll_offsets.get(mode_name, 0) + int(delta)
+        page_delta = int(delta) * upper_visible_line_count()
+        next_offset = self._upper_scroll_offsets.get(mode_name, 0) + page_delta
         self._upper_scroll_offsets[mode_name] = min(max_offset, max(0, next_offset))
         self._draw_upper_panel()
 
@@ -341,36 +362,56 @@ class SpiLcdRenderer:
             UPPER_HEADER_Y,
             self._display_text(header),
             ACCENT,
-            scale=UPPER_TEXT_SCALE,
+            scale=UPPER_HEADER_TEXT_SCALE,
             background_color=BG,
         )
         lines = self._wrapped_upper_lines(text)
         mode_name = self._upper_mode_name()
         offset = self._upper_scroll_offsets.get(mode_name, 0) if mode_name else 0
         visible_count = upper_visible_line_count()
-        line_step = (FONT_HEIGHT + 1) * UPPER_TEXT_SCALE
+        line_step = scaled_text_height(
+            UPPER_BODY_TEXT_Y_SCALE,
+            y_scale_den=UPPER_BODY_TEXT_Y_SCALE_DEN,
+        ) + 1
         for index, line in enumerate(lines[offset : offset + visible_count]):
-            self._target.draw_text(
+            self._target.draw_text_scaled(
                 UPPER_TEXT_X,
                 UPPER_BODY_Y + (index * line_step),
                 self._display_text(line),
                 WHITE,
-                scale=UPPER_TEXT_SCALE,
+                x_scale=UPPER_BODY_TEXT_X_SCALE,
+                x_scale_den=UPPER_BODY_TEXT_X_SCALE_DEN,
+                y_scale=UPPER_BODY_TEXT_Y_SCALE,
+                y_scale_den=UPPER_BODY_TEXT_Y_SCALE_DEN,
                 background_color=BG,
             )
         if len(lines) > visible_count:
-            marker = f"{offset + 1}/{max(1, len(lines) - visible_count + 1)}"
-            self._target.draw_text(
-                W - text_width(marker, scale=UPPER_TEXT_SCALE) - PAD,
+            marker = f"{(offset // visible_count) + 1}/{max(1, ((len(lines) - 1) // visible_count) + 1)}"
+            self._target.draw_text_scaled(
+                W
+                - text_width_scaled(
+                    marker,
+                    x_scale=UPPER_BODY_TEXT_X_SCALE,
+                    x_scale_den=UPPER_BODY_TEXT_X_SCALE_DEN,
+                )
+                - PAD,
                 UPPER_HEADER_Y,
                 marker,
                 WHITE,
-                scale=UPPER_TEXT_SCALE,
+                x_scale=UPPER_BODY_TEXT_X_SCALE,
+                x_scale_den=UPPER_BODY_TEXT_X_SCALE_DEN,
+                y_scale=UPPER_BODY_TEXT_Y_SCALE,
+                y_scale_den=UPPER_BODY_TEXT_Y_SCALE_DEN,
                 background_color=BG,
             )
 
     def _wrapped_upper_lines(self, text):
-        max_chars = max(1, (W - (2 * UPPER_TEXT_X)) // ((FONT_WIDTH + FONT_SPACING) * UPPER_TEXT_SCALE))
+        char_step = scaled_text_width(
+            FONT_WIDTH + FONT_SPACING,
+            x_scale=UPPER_BODY_TEXT_X_SCALE,
+            x_scale_den=UPPER_BODY_TEXT_X_SCALE_DEN,
+        )
+        max_chars = max(1, (W - (2 * UPPER_TEXT_X)) // char_step)
         normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
         lines = []
         for raw_line in normalized.split("\n"):
@@ -505,14 +546,40 @@ class Ili9341SpiTarget:
             self._write(data=pixel_bytes * pixel_count)
 
     def draw_text(self, x, y, text, color, *, scale, background_color=None):
+        self.draw_text_scaled(
+            x,
+            y,
+            text,
+            color,
+            x_scale=scale,
+            x_scale_den=1,
+            y_scale=scale,
+            y_scale_den=1,
+            background_color=background_color,
+        )
+
+    def draw_text_scaled(
+        self,
+        x,
+        y,
+        text,
+        color,
+        *,
+        x_scale,
+        y_scale,
+        x_scale_den=1,
+        y_scale_den=1,
+        background_color=None,
+    ):
         if not text:
             return
 
-        width = text_width(text, scale=scale)
-        height = FONT_HEIGHT * scale
+        width = text_width_scaled(text, x_scale=x_scale, x_scale_den=x_scale_den)
+        height = scaled_text_height(y_scale, y_scale_den=y_scale_den)
         foreground = _color565(color)
         background = _color565(background_color if background_color is not None else BG)
-        advance = (FONT_WIDTH + FONT_SPACING) * scale
+        advance = scaled_text_width(FONT_WIDTH + FONT_SPACING, x_scale=x_scale, x_scale_den=x_scale_den)
+        glyph_width = scaled_text_width(FONT_WIDTH, x_scale=x_scale, x_scale_den=x_scale_den)
         pixel_bytes = bytearray(width * height * 2)
 
         for row in range(height):
@@ -521,10 +588,10 @@ class Ili9341SpiTarget:
                 color_565 = background
                 char_index = column // advance
                 column_in_advance = column % advance
-                if char_index < len(text) and column_in_advance < (FONT_WIDTH * scale):
+                if char_index < len(text) and column_in_advance < glyph_width:
                     glyph = _FONT_GLYPHS.get(text[char_index], _FONT_GLYPHS[" "])
-                    glyph_column = column_in_advance // scale
-                    glyph_row = row // scale
+                    glyph_column = (column_in_advance * FONT_WIDTH) // glyph_width
+                    glyph_row = (row * FONT_HEIGHT) // height
                     if glyph[glyph_row][glyph_column] == "1":
                         color_565 = foreground
                 pixel_index = row_offset + (column * 2)

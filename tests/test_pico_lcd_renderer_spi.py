@@ -24,6 +24,23 @@ class _FakeDrawTarget:
     def draw_text(self, x, y, text, color, *, scale, background_color=None):
         self.calls.append(("draw_text", x, y, text, color, scale, background_color))
 
+    def draw_text_scaled(
+        self,
+        x,
+        y,
+        text,
+        color,
+        *,
+        x_scale,
+        y_scale,
+        x_scale_den=1,
+        y_scale_den=1,
+        background_color=None,
+    ):
+        self.calls.append(
+            ("draw_text_scaled", x, y, text, color, x_scale, y_scale, x_scale_den, y_scale_den, background_color)
+        )
+
     def append(self, *_args, **_kwargs):
         self.displayio_mutation_calls.append("append")
 
@@ -122,6 +139,64 @@ class PicoLcdRendererSpiTests(unittest.TestCase):
             if call[0] == "fill_rect" and call[-1] in (renderer_spi.ACCENT, renderer_spi.WHITE)
         ]
         self.assertTrue(any(call[2] < renderer_spi.LAYOUT_TOP for call in accent_calls))
+
+    def test_renderer_uses_intermediate_body_font_for_upper_text_modes(self):
+        renderer_spi = _load_module("pico.lcd_renderer_spi")
+        target = _FakeDrawTarget()
+        renderer = renderer_spi.SpiLcdRenderer(target=target)
+
+        renderer.set_upper_content("release", "small readable text")
+        renderer.set_upper_mode(renderer_spi.UPPER_MODE_RELEASE)
+
+        header_calls = [call for call in target.calls if call[0] == "draw_text" and call[3] == "RELEASE OUTPUT"]
+        body_calls = [call for call in target.calls if call[0] == "draw_text_scaled" and call[2] >= renderer_spi.UPPER_BODY_Y]
+        self.assertTrue(header_calls)
+        self.assertTrue(body_calls)
+        self.assertEqual(header_calls[-1][5], renderer_spi.UPPER_HEADER_TEXT_SCALE)
+        self.assertTrue(
+            all(
+                call[5] == renderer_spi.UPPER_BODY_TEXT_X_SCALE
+                and call[6] == renderer_spi.UPPER_BODY_TEXT_Y_SCALE
+                and call[7] == renderer_spi.UPPER_BODY_TEXT_X_SCALE_DEN
+                and call[8] == renderer_spi.UPPER_BODY_TEXT_Y_SCALE_DEN
+                for call in body_calls
+            )
+        )
+        self.assertEqual(renderer_spi.UPPER_BODY_TEXT_X_SCALE, 1)
+        self.assertEqual(renderer_spi.UPPER_BODY_TEXT_X_SCALE_DEN, 1)
+        self.assertEqual(renderer_spi.UPPER_BODY_TEXT_Y_SCALE, 3)
+        self.assertEqual(renderer_spi.UPPER_BODY_TEXT_Y_SCALE_DEN, 2)
+        self.assertLess(
+            renderer_spi.text_width_scaled(
+                "SMALL READABLE TEXT",
+                x_scale=renderer_spi.UPPER_BODY_TEXT_X_SCALE,
+                x_scale_den=renderer_spi.UPPER_BODY_TEXT_X_SCALE_DEN,
+            ),
+            renderer_spi.text_width("SMALL READABLE TEXT", scale=renderer_spi.UPPER_HEADER_TEXT_SCALE),
+        )
+        self.assertLess(
+            renderer_spi.scaled_text_height(
+                renderer_spi.UPPER_BODY_TEXT_Y_SCALE,
+                y_scale_den=renderer_spi.UPPER_BODY_TEXT_Y_SCALE_DEN,
+            ),
+            renderer_spi.FONT_HEIGHT * renderer_spi.UPPER_HEADER_TEXT_SCALE,
+        )
+
+    def test_renderer_scrolls_upper_text_by_page(self):
+        renderer_spi = _load_module("pico.lcd_renderer_spi")
+        target = _FakeDrawTarget()
+        renderer = renderer_spi.SpiLcdRenderer(target=target)
+        visible_count = renderer_spi.upper_visible_line_count()
+        lines = [f"line {index}" for index in range((visible_count * 3) + 1)]
+
+        renderer.set_upper_content("release", "\n".join(lines))
+        renderer.set_upper_mode(renderer_spi.UPPER_MODE_RELEASE)
+        target.calls.clear()
+        renderer.scroll_upper_content(1)
+
+        body_calls = [call for call in target.calls if call[0] == "draw_text_scaled" and call[2] >= renderer_spi.UPPER_BODY_Y]
+        self.assertTrue(body_calls)
+        self.assertEqual(body_calls[0][3], f"LINE {visible_count}")
 
     def test_renderer_uses_staggered_bottom_cell_geometry_with_fit_cell_labels(self):
         renderer_spi = _load_module("pico.lcd_renderer_spi")

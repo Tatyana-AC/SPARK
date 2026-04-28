@@ -72,18 +72,17 @@ def build_button_input(*, board_module=None, keypad_module=None):
 
 
 class AuxiliaryInput:
-    _FORWARD_STEPS = {
-        (False, False, True, False),
-        (True, False, True, True),
-        (True, True, False, True),
-        (False, True, False, False),
+    _ENCODER_TRANSITIONS = {
+        (False, False, True, False): 1,
+        (True, False, True, True): 1,
+        (True, True, False, True): 1,
+        (False, True, False, False): 1,
+        (False, False, False, True): -1,
+        (False, True, True, True): -1,
+        (True, True, True, False): -1,
+        (True, False, False, False): -1,
     }
-    _REVERSE_STEPS = {
-        (False, False, False, True),
-        (False, True, True, True),
-        (True, True, True, False),
-        (True, False, False, False),
-    }
+    _ENCODER_STEPS_PER_DETENT = 4
 
     def __init__(self, *, slider_inputs, encoder_a, encoder_b, slider_common=None):
         self._slider_inputs = tuple(slider_inputs)
@@ -93,6 +92,7 @@ class AuxiliaryInput:
         self._last_slider_position = None
         self._last_slider_state = None
         self._last_encoder_state = self._read_encoder_state()
+        self._encoder_accumulator = 0
 
     def poll_changes(self):
         slider_state = self._read_slider_state()
@@ -110,12 +110,7 @@ class AuxiliaryInput:
         next_encoder_state = self._read_encoder_state()
         transition = self._last_encoder_state + next_encoder_state
         self._last_encoder_state = next_encoder_state
-        if transition in self._FORWARD_STEPS:
-            scroll_delta = 1
-        elif transition in self._REVERSE_STEPS:
-            scroll_delta = -1
-        else:
-            scroll_delta = 0
+        scroll_delta = self._scroll_delta_from_transition(transition)
 
         return AuxiliaryInputChange(
             slider_position=slider_position,
@@ -139,6 +134,27 @@ class AuxiliaryInput:
 
     def _read_encoder_state(self):
         return (bool(self._encoder_a.value), bool(self._encoder_b.value))
+
+    def _scroll_delta_from_transition(self, transition):
+        step = self._ENCODER_TRANSITIONS.get(transition)
+        if step is None:
+            if transition[:2] != transition[2:]:
+                self._encoder_accumulator = 0
+            return 0
+
+        next_accumulator = self._encoder_accumulator + step
+        if next_accumulator >= self._ENCODER_STEPS_PER_DETENT:
+            self._encoder_accumulator = 0
+            return 1
+        if next_accumulator <= -self._ENCODER_STEPS_PER_DETENT:
+            self._encoder_accumulator = 0
+            return -1
+
+        if self._encoder_accumulator and (self._encoder_accumulator > 0) != (next_accumulator > 0):
+            self._encoder_accumulator = 0
+        else:
+            self._encoder_accumulator = next_accumulator
+        return 0
 
 
 def _make_pullup_input(pin, digitalio_module):
