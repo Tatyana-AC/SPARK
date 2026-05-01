@@ -150,10 +150,29 @@ class SerialSenderTests(unittest.TestCase):
         ok = sender.send_context_new(make_snapshot(text="x" * 2000))
 
         self.assertTrue(ok)
-        parser.feed(sender._serial.writes[0])
+        parser.feed(b"".join(sender._serial.writes))
         self.assertEqual(parser_packets[0]["type"], PKT_CONTEXT_NEW)
         self.assertEqual(len(parser_packets[0]["text"]), 2000)
         self.assertEqual(parser_packets[0]["text"], "x" * 2000)
+
+    def test_send_context_new_paces_large_packet_in_bounded_serial_chunks(self):
+        sender = serial_sender.SerialSender(port="COM7")
+        sender._serial = FakeSerialPort()
+        parser_packets = []
+        parser = PacketParser(on_packet=parser_packets.append)
+
+        with mock.patch.object(serial_sender.time, "sleep") as sleep:
+            ok = sender.send_context_new(make_snapshot(text="x" * 1500))
+
+        self.assertTrue(ok)
+        self.assertGreater(len(sender._serial.writes), 1)
+        self.assertTrue(
+            all(len(chunk) <= serial_sender._SERIAL_WRITE_CHUNK_BYTES for chunk in sender._serial.writes)
+        )
+        sleep.assert_called()
+        parser.feed(b"".join(sender._serial.writes))
+        self.assertEqual(parser_packets[0]["type"], PKT_CONTEXT_NEW)
+        self.assertEqual(parser_packets[0]["text"], "x" * 1500)
 
     def test_send_context_new_truncates_large_text_to_transport_budget(self):
         sender = serial_sender.SerialSender(port="COM7")
@@ -166,10 +185,10 @@ class SerialSenderTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertLessEqual(
-            len(sender._serial.writes[0]),
+            len(b"".join(sender._serial.writes)),
             serial_sender._MAX_CONTEXT_PACKET_BYTES,
         )
-        parser.feed(sender._serial.writes[0])
+        parser.feed(b"".join(sender._serial.writes))
         self.assertEqual(parser_packets[0]["type"], PKT_CONTEXT_NEW)
         self.assertLess(len(parser_packets[0]["text"]), len(huge_text))
         self.assertEqual(
@@ -188,10 +207,10 @@ class SerialSenderTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertLessEqual(
-            len(sender._serial.writes[0]),
+            len(b"".join(sender._serial.writes)),
             serial_sender._MAX_CONTEXT_PACKET_BYTES,
         )
-        parser.feed(sender._serial.writes[0])
+        parser.feed(b"".join(sender._serial.writes))
         self.assertEqual(parser_packets[0]["type"], PKT_CONTEXT_UPDATE)
         self.assertLess(len(parser_packets[0]["text"]), len(huge_text))
         self.assertEqual(

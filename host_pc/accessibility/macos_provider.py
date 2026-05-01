@@ -11,6 +11,7 @@ import time
 from typing import Optional
 
 from .base import AccessibilityProvider, WindowInfo, TextSource
+from host_pc.obsidian_context import resolve_obsidian_note_text
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +277,15 @@ class MacOSAccessibilityProvider(AccessibilityProvider):
             if not text_parts:
                 self._extract_text_recursive(ax_app, text_parts, depth=0)
 
-            return "\n".join(text_parts) if text_parts else None
+            window_text = "\n".join(text_parts) if text_parts else None
+            recovered_obsidian_text = resolve_obsidian_note_text(
+                app_name=active_app.get("NSApplicationName", ""),
+                window_title=None,
+                window_text=window_text,
+            )
+            if recovered_obsidian_text:
+                return recovered_obsidian_text
+            return window_text
 
         except Exception as e:
             logger.error(f"Failed to get window text: {e}")

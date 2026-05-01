@@ -35,6 +35,8 @@ EOT = b"\x04"
 RECONNECT_COOLDOWN_S = 3.0  # minimum seconds between connect() attempts
 PORT_FAILURE_COOLDOWN_S = 10.0
 _MAX_CONTEXT_PACKET_BYTES = 8192
+_SERIAL_WRITE_CHUNK_BYTES = 256
+_SERIAL_WRITE_CHUNK_DELAY_S = 0.03
 
 
 class SerialSender:
@@ -301,13 +303,37 @@ class SerialSender:
 
         with self._lock:
             try:
-                self._serial.write(packet)
+                self._write_packet(packet)
                 return True
             except Exception as exc:
                 logger.warning("SerialSender: write error - %s", exc)
                 self._mark_port_failed(self._connected_port, reason="write error")
                 self._disconnect_locked()
                 return False
+
+    def _write_packet(self, packet: bytes) -> None:
+        offset = 0
+        first_chunk = True
+        packet_len = len(packet)
+        while offset < packet_len:
+            if first_chunk:
+                first_chunk = False
+            else:
+                time.sleep(_SERIAL_WRITE_CHUNK_DELAY_S)
+
+            chunk_end = min(offset + _SERIAL_WRITE_CHUNK_BYTES, packet_len)
+            while offset < chunk_end:
+                written = self._serial.write(packet[offset:chunk_end])
+                if written is None:
+                    written = 0
+                written = int(written)
+                if written <= 0:
+                    raise TimeoutError("serial write returned no progress")
+                offset += written
+
+            flush = getattr(self._serial, "flush", None)
+            if flush is not None:
+                flush()
 
     def send_raw(self, payload: bytes, append_eot: bool = False) -> bool:
         if append_eot:
