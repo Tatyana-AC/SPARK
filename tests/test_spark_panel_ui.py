@@ -78,6 +78,7 @@ class SparkPanelUiTests(unittest.TestCase):
         self.assertEqual(
             visible_titles,
             [
+                "Clean Context",
                 "Copy Output",
                 "Custom Context",
                 "Reformat Selection",
@@ -90,6 +91,35 @@ class SparkPanelUiTests(unittest.TestCase):
         self.assertTrue(panel.btn_summarize.isHidden())
         self.assertTrue(panel.btn_test_context.isHidden())
         self.assertTrue(panel.btn_history.isHidden())
+
+    def test_clean_context_button_clears_only_local_ui_state(self):
+        hid_client = mock.Mock()
+        hid_client.is_connected.return_value = True
+        panel = self._make_panel(hid_client=hid_client)
+
+        panel.ctx_card_active.update_data("Chrome", "URL: https://example.com", active=True)
+        panel.ctx_card_prev1.update_data("Cursor", "Editor window", active=False)
+        panel.ctx_card_prev2.update_data("Terminal", "pytest", active=False)
+        panel._capture_feed.lines = ["Captured line", "Previous context sample"]
+        panel._capture_feed.last_poll_line = "Previous context sample"
+        panel.capture_lbl.setText("\n".join(panel._capture_feed.lines))
+        panel._set_release_output("# Released\n\nText")
+        hid_client.upload.reset_mock()
+
+        panel.btn_clean_context.click()
+
+        self.assertEqual(panel.ctx_card_active.title_lbl.text(), "—")
+        self.assertEqual(panel.ctx_card_active.sub_lbl.text(), "No window detected")
+        self.assertEqual(panel.ctx_card_prev1.title_lbl.text(), "—")
+        self.assertEqual(panel.ctx_card_prev1.sub_lbl.text(), "")
+        self.assertEqual(panel.ctx_card_prev2.title_lbl.text(), "—")
+        self.assertEqual(panel.ctx_card_prev2.sub_lbl.text(), "")
+        self.assertEqual(panel._capture_feed.lines, [])
+        self.assertIsNone(panel._capture_feed.last_poll_line)
+        self.assertEqual(panel.capture_lbl.text(), "")
+        self.assertEqual(panel._release_output_plain_text, "")
+        self.assertEqual(panel.release_output_lbl.toPlainText(), "")
+        hid_client.upload.assert_not_called()
 
     def test_no_visible_button_exposes_legacy_summarize_actions(self):
         panel = self._make_panel()

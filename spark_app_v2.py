@@ -1106,6 +1106,7 @@ class SparkPanel(QWidget):
         self.btn_custom_context = ActionButton("Custom Context", "Edit and send a fake app context")
         self.btn_view_jetson_db = ActionButton("View Jetson DB", "Browse snapshot tables")
         self.btn_copy_release_output = ActionButton("Copy Output", "Copy release output as plain text", self)
+        self.btn_clean_context = ActionButton("Clean Context", "Clear local context and output", self)
         self.btn_history  = ActionButton("Show History", "View previous window contexts", self)
 
         self.btn_release.setEnabled(False)
@@ -1123,12 +1124,14 @@ class SparkPanel(QWidget):
         self.btn_custom_context.clicked.connect(self._on_custom_context)
         self.btn_view_jetson_db.clicked.connect(self._on_view_jetson_db)
         self.btn_copy_release_output.clicked.connect(self._copy_release_output)
+        self.btn_clean_context.clicked.connect(self._clear_ui_context)
         self.btn_history.clicked.connect(self._on_show_history)
 
         grid.addWidget(self.btn_reformat, 0, 0)
         grid.addWidget(self.btn_copy_release_output, 0, 1)
         grid.addWidget(self.btn_custom_context, 1, 0)
         grid.addWidget(self.btn_view_jetson_db, 1, 1)
+        grid.addWidget(self.btn_clean_context, 2, 0, 1, 2)
         left.addLayout(grid)
         left.addStretch()
 
@@ -1384,6 +1387,17 @@ class SparkPanel(QWidget):
         text = self._release_output_plain_text or self.release_output_lbl.toPlainText()
         QApplication.clipboard().setText(text)
         self._set_status("Release output copied as plain text", GREEN)
+
+    def _clear_ui_context(self):
+        self.ctx_card_active.update_data("—", "No window detected", active=True)
+        self.ctx_card_prev1.update_data("—", "", active=False)
+        self.ctx_card_prev2.update_data("—", "", active=False)
+        self._capture_feed.lines = []
+        self._capture_feed.last_poll_line = None
+        self.capture_lbl.clear()
+        self._release_output_plain_text = ""
+        self.release_output_lbl.clear()
+        self._set_status("UI context cleared", GREEN)
 
     def _on_release_succeeded(self, text: str):
         self._set_release_output(format_release_output(text) if text else "")
